@@ -1,172 +1,126 @@
-# Soltex
+<p align="center">
+  <img src="docs/images/logo.png" width="96" alt="Soltex logo">
+</p>
 
-Soltex is a proprietary personal-computing workspace. **Soltex** is the canonical product, repository, solution, assembly, and namespace identity. A small, tested compatibility boundary preserves existing authenticated local state and historical evidence without presenting the retired working name as current product copy.
+<h1 align="center">Soltex</h1>
 
-The current desktop solution exposes eight related workspace areas:
+<p align="center">
+  A quieter, cleaner Windows 11, in one small app. Every change can be undone.
+</p>
 
-- **Home** — a real local summary with explicit partial/unavailable signals.
-- **Monitoring** — bounded CPU, physical-memory, process, and fixed-volume observation from supported Windows interfaces.
-- **Devices** — a sanitized local profile and exact non-executing capability model, explicitly not enrolled.
-- **Audio** — future per-application routing, parametric EQ, microphone processing, and stream mixes.
-- **Clips** — future bounded rolling capture with a separate, non-injected overlay.
-- **Security** — the implemented focus: a lightweight companion that cooperates with the antivirus provider registered with Windows, plus bounded local supply-chain verification primitives.
-- **Remote Assist** — a consent-first launcher for a separately installed, Windows-trusted RustDesk client; Soltex does not own or embed the remote-session transport.
-- **Updates** — a non-installing signed planner that authenticates bounded release artifacts and stops at an exact human-readable preview.
+<p align="center">
+  <a href="https://github.com/celubos/soltex/actions/workflows/windows.yml"><img src="https://img.shields.io/github/actions/workflow/status/celubos/soltex/windows.yml?branch=main&label=build" alt="Build"></a>
+  <a href="https://github.com/celubos/soltex/releases/latest"><img src="https://img.shields.io/github/v/release/celubos/soltex?label=release" alt="Latest release"></a>
+  <a href="https://github.com/celubos/soltex/releases"><img src="https://img.shields.io/github/downloads/celubos/soltex/total?label=downloads" alt="Downloads"></a>
+  <a href="LICENSE.txt"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4" alt="Windows 10 and 11">
+</p>
 
-This is a clean-room product. It is not affiliated with, endorsed by, or derived from SteelSeries, Malwarebytes, Zen Browser, AppControl, NZXT, or RustDesk. It contains no copied binaries, signatures, detection models, private protocols, branding, or UI assets from those products. RustDesk remains a separately licensed external program.
+<p align="center">
+  <a href="https://github.com/celubos/soltex/releases/latest"><b>Download</b></a> ·
+  <a href="#features">Features</a> ·
+  <a href="#building-from-source">Build</a>
+</p>
 
-## What works now
+<p align="center">
+  <img src="docs/images/taskbar.png" width="760" alt="The Taskbar page in Soltex">
+</p>
 
-Home is the default WPF surface. Home, Monitoring, and Devices share one warm graphite/coral design system with bounded sparklines, progress, slider/focus, table, and scrollbar resources. One sequential sampler publishes immutable snapshots and copied 48/72-sample histories, surfaces provenance and unsupported signals, retains last confirmed values briefly as stale, and cancels on shutdown. GPU and network telemetry are not implemented and remain visibly unavailable.
+Soltex turns off the ads, tips and tracking in Windows, restyles the taskbar, adds desktop groups and widgets, and puts a set of everyday tools and an audio mixer in the same place. It runs quietly from the tray, uses almost no CPU while idle, and keeps a history of every change so you can put Windows back the way it was.
 
-The .NET 10 WPF solution builds and executes on Windows. The Security companion currently provides:
+## Features
 
-- provider-neutral antivirus health through Windows Security Center;
-- Windows Security Center change notification with bounded polling fallback;
-- detailed Microsoft Defender status when Defender is available;
-- Defender operating-mode visibility and a bounded, path-redacted Operational event timeline;
-- supported Defender quick, file, and folder scan requests;
-- security-intelligence update requests;
-- AMSI inspection before Soltex consumes bounded untrusted content;
-- SHA-256 assessment and exact-hash allow decisions;
-- Authenticode verification through `WinVerifyTrust`;
-- authenticated, recoverable quarantine with restore and delete;
-- a bounded watcher limited to Soltex's import folder;
-- privacy-preserving, HMAC-chained local audit events.
+**De-Windows**
+- One click turns off ads, suggestions, tips, web results in search and diagnostic extras, about 30 Windows settings in all.
+- **Full De-Windows** (asks for administrator) also turns off telemetry services and tasks, Copilot and Recall, and can remove OneDrive, Edge, News, Weather and other built-in apps. Each item is listed before anything changes.
+- Update control: Windows asks before downloading updates and never restarts while you are signed in. Defender, the firewall, UAC and Windows Update itself are never turned off.
 
-The current supply-chain foundation adds:
+**Taskbar**, inspired by [TranslucentTB](https://github.com/TranslucentTB/TranslucentTB) and [Windhawk](https://github.com/ramensoftware/windhawk) mods
+- Clear, blurred, acrylic or tinted taskbar, with a different look when a window is maximized.
+- Hide the running-app line, choose what the clock shows, larger or smaller icons, square button corners.
+- Scroll over the taskbar to change the volume.
 
-- an explicit publisher policy that combines Windows Authenticode trust, a single requested embedded signature, zero secondary signatures, code-signing EKU, exact subject-name SHA-256, and SubjectPublicKeyInfo SHA-256;
-- strict schema-2 `Soltex` release manifests signed with detached RSA-PSS/SHA-256 signatures;
-- canonical Windows-relative manifest paths, explicit UTC publication time, length and SHA-256 validation, and reparse-point rejection;
-- authenticated per-user release-sequence state that rejects lower sequences and same-sequence/different-manifest equivocation;
-- a bounded, cancellation-aware cross-process lock around release-sequence reads and writes;
-- bounded ZIP staging that rejects traversal, Windows device names, alternate-data-stream syntax, case collisions, reparse/symbolic links, unsupported entry types, excessive entry counts, expanded sizes, and compression ratios;
-- private staging roots with failure, cancellation, and owner-disposal cleanup;
-- strict signed acquisition descriptors, metadata-signature quorum, signed trust-policy rotation, TLS SPKI pins, authorized redirect origins, bounded HTTPS acquisition, and exact byte/hash verification;
-- a composed non-installing planner that verifies manifest, archive, executable publisher, file-change, disk-impact, warning, recovery, deterministic plan-hash, and exact expiring confirmation evidence;
-- an authenticated current/last-known-good planning journal plus a real Soltex Updates page that displays bounded sanitized state and fails closed.
+**Desktop**, inspired by Fences and Rainmeter
+- Groups that show a folder or your own shortcuts, stay on the desktop through Win+D, and roll up when you don't need them.
+- Clock, CPU and memory, and network speed widgets.
+- A video as your wallpaper, paused while a window is maximized.
 
-This is not an installer or release service. No production Soltex signing identity, TLS pin, or signed descriptor source is configured. The planner can authenticate, download, stage, and preview inert bytes, but it cannot execute, install, elevate, activate, repair, roll back, or uninstall them.
+**Tools**, inspired by [PowerToys](https://github.com/microsoft/PowerToys)
+- Text extractor (Win+Shift+T): copy the text in any part of the screen.
+- Window zones: hold Shift while dragging a window and drop it into a zone.
+- Batch rename with a preview and undo, key remapping, always on top, color picker and keep awake.
+- Startup apps: choose what starts when you sign in.
 
-The current Remote Assist source provides explicit RustDesk executable selection, Authenticode and SHA-256 revalidation, fixed shell-free launch arguments, constrained peer IDs, local confirmation, and peer-ID-free auditing. It does not bundle RustDesk, store passwords, enable unattended access, request elevation, install a service, or hide the external client.
+**Audio**
+- A five-channel mixer (Mic, Game, Chat, Media, Aux) with a game and chat balance.
+- Microphone chain with a ten-band EQ, noise gate, compressor and noise suppression.
+- Per-app volume and output device.
 
-System-wide real-time scanning, behavior monitoring, cloud intelligence, and remediation come from Microsoft Defender or another antivirus provider registered with Windows. Soltex does not disable or replace that provider.
+**And also**
+- Start, File Explorer, Appearance and Multitasking settings in plain words, plus automatic dark mode by time of day, pointer schemes and folders next to the power button.
+- **History** lists every change, and each one can be undone.
+- If a Windows update turns something back on, Soltex tells you and offers to put it back.
+- Export your whole setup to a file and import it on another PC.
+- Search everything with Ctrl+K.
 
-## Install
+<p align="center">
+  <img src="docs/images/desktop.png" width="49%" alt="The Desktop page">
+  <img src="docs/images/audio.png" width="49%" alt="The Audio mixer">
+</p>
 
-`Soltex-1.0.0-win-x64-setup.exe` installs the workspace for the current user only. It writes to `%LocalAppData%\Programs\Soltex`, adds Start Menu entries and an Add/Remove Programs record, and never requests administrator rights — the application manifest requests `asInvoker` and the workspace is designed to run unelevated.
+## Installation
 
-Requirements: Windows 10 version 2004 (build 19041) or newer, x64. The .NET runtime is bundled, so no separate runtime install is needed.
+1. Download **`Soltex-<version>-win-x64-setup.exe`** from the [latest release](https://github.com/celubos/soltex/releases/latest).
+2. Run it. It installs for your account only, so no administrator rights are needed, and it can start Soltex when you sign in.
+3. Open **Soltex** from the Start menu.
 
-The installer is **not code-signed**. No production Soltex code-signing identity has been selected, so Windows SmartScreen will warn on first run and the publisher will show as unknown. Verify the download against its published SHA-256 before running it. Code signing is tracked with the rest of the release program in [`docs/VALIDATION.md`](docs/VALIDATION.md).
+Prefer not to install? Download `Soltex-<version>-win-x64.zip` instead, unzip it anywhere and run `Soltex.exe`.
 
-Uninstalling removes the installed program files and shortcuts. Local Soltex state — quarantine, the HMAC-chained audit log, release-sequence state, and planning journals — lives under your user profile and is deliberately left in place so an accidental uninstall cannot destroy authenticated history. Remove it by hand if that is what you want.
+Soltex is not code-signed yet, so Windows SmartScreen may say it "protected your PC". Choose **More info › Run anyway**. Each release lists SHA-256 checksums in `SHA256SUMS.txt` so you can check your download.
 
-To build the installer from source, publish the app and compile the script with [Inno Setup](https://jrsoftware.org/isinfo.php) 6:
+To uninstall, undo any changes you want reversed in **History**, then remove Soltex from **Settings › Apps › Installed apps**. Your settings stay in `%LOCALAPPDATA%\Soltex` until you delete that folder.
 
-```powershell
-.\eng\publish-release.ps1
-```
+### System requirements
 
-## Build and verify
+- Windows 11, x64. Most settings also work on Windows 10 version 2004 or later; the taskbar look needs Windows 11.
+- No administrator rights, except for Full De-Windows, which asks when you run it.
 
-Requirements:
+## Usage
 
-- Windows 10 version 2004 or newer, or Windows 11;
-- .NET 10 SDK;
-- PowerShell 5.1 and the Defender module for Defender-specific controls.
+- Soltex lives in the tray. Closing the window keeps it running; choose **Quit** from the tray icon to exit.
+- Press **Ctrl+K** in the window to find any setting.
+- Everything is off until you turn it on. To undo a change, open **History**.
+- Settings are stored in `%LOCALAPPDATA%\Soltex`.
 
-```powershell
-dotnet build .\Soltex.sln --configuration Release
+## Building from source
 
-dotnet run `
-  --project .\tests\Soltex.Security.Tests\Soltex.Security.Tests.csproj `
-  --configuration Release `
-  --no-build
-
-dotnet run `
-  --project .\tests\Soltex.Security.SupplyChain.Tests\Soltex.Security.SupplyChain.Tests.csproj `
-  --configuration Release `
-  --no-build
-
-dotnet run `
-  --project .\tests\Soltex.Security.Hardening.Tests\Soltex.Security.Hardening.Tests.csproj `
-  --configuration Release `
-  --no-build
-
-dotnet run `
-  --project .\tests\Soltex.Update.Tests\Soltex.Update.Tests.csproj `
-  --configuration Release `
-  --no-build
-
-dotnet run `
-  --project .\tests\Soltex.DeviceFabric.Tests\Soltex.DeviceFabric.Tests.csproj `
-  --configuration Release `
-  --no-build
-
-dotnet run `
-  --project .\tests\Soltex.Monitoring.Tests\Soltex.Monitoring.Tests.csproj `
-  --configuration Release `
-  --no-build
-
-dotnet run `
-  --project .\tests\Soltex.App.Tests\Soltex.App.Tests.csproj `
-  --configuration Release `
-  --no-build
-```
-
-The safe EICAR interoperability check is opt-in and submits the harmless marker to AMSI in memory only:
+You need Windows 10 or 11 (x64) and the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
 
 ```powershell
-.\eng\verify.ps1 -RunEicar
+git clone https://github.com/celubos/soltex.git
+cd soltex
+dotnet build Soltex.sln -c Release
+dotnet run --project src/Soltex.App
 ```
 
-Run the desktop app:
+The taskbar look uses a small native helper built with LLVM-MinGW. `native\Soltex.TaskbarStyle\build.ps1 -Acquire` downloads the pinned toolchain, checks its hash and builds it. See [docs/BUILDING.md](docs/BUILDING.md) for the tests and the release package.
 
-```powershell
-dotnet run --project .\src\Soltex.App\Soltex.App.csproj --configuration Release
-```
+## Contributing
 
-## Evidence
+Bug reports and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first. To report a security problem, see [SECURITY.md](SECURITY.md).
 
-The immersive-workspace implementation at exact branch commit `2a0699b2ca77b30fa636279b1d5ecab603a8bde9` was exercised by GitHub Actions run `30925606488`, job `92046999983`, on a hosted Windows runner:
+## Privacy
 
-- Release build: **passed** in 41.59 seconds, with 0 warnings and 0 errors across all 13 projects;
-- identity policy: **passed**;
-- Security companion suite: **31/31 passed**;
-- supply-chain suite: **18/18 passed**;
-- hostile hardening suite: **12/12 passed**;
-- update-planner suite: **17/17 passed** in 2,895.6 ms on that runner;
-- Device Fabric suite: **24/24 passed** in 47.7 ms;
-- monitoring suite: **13/13 passed** in 765.9 ms, including a representative 166.6 ms provider / 167.1 ms wall-clock bounded capture;
-- WPF control/render suite: **5/5 passed** in 1,704.3 ms;
-- opt-in hosted EICAR suite: **31/32** because the installed hosted-runner AMSI provider returned native result `1` for the in-memory marker;
-- native Home, Monitoring, Devices, Security, Remote Assist, and Updates renders: **passed** at 1044×788;
-- render artifact verification: **passed**, with no render-error files.
+Soltex has no telemetry, no account and no ads. It does not send anything about you anywhere. When you choose **Check now** for updates, Windows' own update service does the checking; the optional Sonar view talks only to SteelSeries Sonar on your own PC.
 
-The retained Actions artifact is `soltex-windows-evidence-30925606488-1` (artifact ID `8899014386`, 626,093-byte ZIP, SHA-256 `71905016B3A67F8CE340D90C2E404DEBFB185C3DAE8A973F21B80F1B8A94515`). Its downloaded bytes were independently re-hashed to the same digest. The hosted server did not expose a usable live `wscapi.dll` provider boundary, so this run proves bounded fallback behavior rather than successful live provider enumeration. A Human Eye cold-eye review of the six frozen captures found no gross clipping, hierarchy, or identity blocker after the final correction; this remains agent inspection, not owner visual acceptance. Broader viewport/scaling, keyboard/screen-reader, accessibility, and owner-review matrices remain pending.
+## Acknowledgements
 
-Documentation:
+- [TranslucentTB](https://github.com/TranslucentTB/TranslucentTB), [Windhawk](https://github.com/ramensoftware/windhawk), [PowerToys](https://github.com/microsoft/PowerToys), Stardock Fences and Start11, [Rainmeter](https://github.com/rainmeter/rainmeter) and Winaero Tweaker inspired many of the features. Soltex contains none of their code.
+- [NAudio](https://github.com/naudio/NAudio) for audio device access.
+- [LLVM-MinGW](https://github.com/mstorsjo/llvm-mingw) for building the taskbar helper.
 
-- Current continuation handoff: [`HANDOFF.md`](HANDOFF.md).
-- Documentation map: [`docs/INDEX.md`](docs/INDEX.md).
-- Current status and nonclaims: [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md).
-- Immersive workspace behavior and visual/data boundaries: [`docs/IMMERSIVE_WORKSPACE.md`](docs/IMMERSIVE_WORKSPACE.md).
-- Exact commands and evidence ledger: [`docs/VALIDATION.md`](docs/VALIDATION.md).
-- Frozen Wave B evidence and decision ledger: [`docs/evidence/2026-08-04-immersive-workspace/`](docs/evidence/2026-08-04-immersive-workspace/).
-- Publisher, signed-release, anti-rollback, and archive boundaries: [`docs/SUPPLY_CHAIN_SECURITY.md`](docs/SUPPLY_CHAIN_SECURITY.md).
-- Security architecture: [`docs/SECURITY_ENGINEERING_HANDOFF.md`](docs/SECURITY_ENGINEERING_HANDOFF.md).
-- Threat model: [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
-- Remote Assist license and trust boundary: [`docs/REMOTE_ASSIST.md`](docs/REMOTE_ASSIST.md).
-- Implemented Device Fabric policy foundation plus proposed NAS, Drive, and isolated Box boundaries: [`docs/PERSONAL_DEVICE_FABRIC.md`](docs/PERSONAL_DEVICE_FABRIC.md).
-- Complete built/current/planned systems and visual/coding roadmap: [`docs/MASTER_PROJECT_BLUEPRINT.md`](docs/MASTER_PROJECT_BLUEPRINT.md).
-- Product identity and installed-state compatibility contract: [`docs/NAMING_AND_COMPATIBILITY.md`](docs/NAMING_AND_COMPATIBILITY.md).
+## License
 
-## Important boundary
+Soltex is free and open source under the [MIT License](LICENSE.txt).
 
-Soltex Security is not a registered third-party antivirus product. It has no production detection organization, cloud reputation service, Windows Security Center provider registration, file-system minifilter, protected anti-malware service, ELAM component, MVI participation, independent efficacy certification, or supported detection-rate claim.
-
-The supply-chain and update-planning code does not constitute a production signed release system. Production certificate/key procurement and custody, real public pins and signed trust-policy rollout, timestamping/revocation policy, a production descriptor source, signed installer selection, transactional activation, rollback/recovery, uninstall, and retained release-candidate evidence remain separate work.
-
-Copyright © 2026. All rights reserved. See [`LICENSE.txt`](LICENSE.txt).
+Soltex is not affiliated with Microsoft, SteelSeries or any project named above. It changes Windows settings; every change is recorded and can be undone from History.

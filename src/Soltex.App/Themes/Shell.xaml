@@ -1,0 +1,164 @@
+<!--
+    Shell styles. Colours resolve through the shared Fluent keys, which the Studio palette re-points;
+    in high contrast the same keys fall back to Windows' own colours. No colour literals here.
+    Layout tokens (padding, gaps, nav height) are set by ThemeService from the user's density preference.
+-->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <FontFamily x:Key="Shell.IconFont">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
+    <Thickness x:Key="Shell.PagePadding">36,24,36,32</Thickness>
+    <Thickness x:Key="Shell.CardPadding">20,16,20,18</Thickness>
+    <Thickness x:Key="Shell.CardGap">0,0,0,14</Thickness>
+    <Thickness x:Key="Shell.RowGap">0,7,0,7</Thickness>
+    <system:Double xmlns:system="clr-namespace:System;assembly=System.Runtime" x:Key="Shell.NavItemHeight">40</system:Double>
+    <!-- Studio controls' animation length. ThemeService sets it to zero when the user or Windows turns animations off. -->
+    <Duration x:Key="Studio.MotionDuration">0:0:0.12</Duration>
+
+    <Style x:Key="Shell.Card" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource CardBackgroundFillColorDefaultBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Padding" Value="{DynamicResource Shell.CardPadding}" />
+        <Setter Property="Margin" Value="{DynamicResource Shell.CardGap}" />
+    </Style>
+
+    <Style x:Key="Shell.PageTitle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="28" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="FontFamily" Value="Segoe UI Variable Display, Segoe UI" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+        <Setter Property="Margin" Value="0,0,0,4" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="Shell.PageSubtitle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+        <Setter Property="Margin" Value="0,0,0,20" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="Shell.SectionTitle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="20" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="FontFamily" Value="Segoe UI Variable Display, Segoe UI" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+        <Setter Property="Margin" Value="0,0,0,8" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="Shell.CardTitle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="16" />
+        <Setter Property="FontFamily" Value="Segoe UI Variable Display, Segoe UI" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="Shell.Body" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="Shell.Secondary" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <Style x:Key="Shell.Metric" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="30" />
+        <Setter Property="FontWeight" Value="Bold" />
+        <Setter Property="FontFamily" Value="Segoe UI Variable Display, Segoe UI" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+    </Style>
+
+    <Style x:Key="Shell.Glyph" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource Shell.IconFont}" />
+        <Setter Property="FontSize" Value="16" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+    </Style>
+
+    <!-- Navigation item: selection pill + hover fill + visible focus ring. -->
+    <Style x:Key="Shell.NavItem" TargetType="ListBoxItem">
+        <Setter Property="Height" Value="{DynamicResource Shell.NavItemHeight}" />
+        <Setter Property="Margin" Value="6,2" />
+        <Setter Property="Padding" Value="14,0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        <Setter Property="AutomationProperties.Name" Value="{Binding Label}" />
+        <Setter Property="AutomationProperties.HelpText" Value="{Binding Description}" />
+        <Setter Property="ToolTip" Value="{Binding Description}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Grid>
+                        <Border x:Name="Fill" CornerRadius="10" Background="Transparent" />
+                        <Border x:Name="Pill" Width="4" Height="20" CornerRadius="2" HorizontalAlignment="Left"
+                                Background="{DynamicResource AccentFillColorDefaultBrush}" Visibility="Collapsed" />
+                        <Border x:Name="Focus" CornerRadius="10" BorderThickness="2" Visibility="Collapsed"
+                                BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}" />
+                        <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" />
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Fill" Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Fill" Property="Background" Value="{DynamicResource Studio.SelectedBrush}" />
+                            <Setter TargetName="Pill" Property="Visibility" Value="Visible" />
+                            <Setter Property="FontWeight" Value="SemiBold" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="Focus" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <DataTemplate x:Key="Shell.NavItemTemplate">
+        <StackPanel Orientation="Horizontal">
+            <TextBlock Style="{StaticResource Shell.Glyph}" Text="{Binding Glyph}" FontSize="16" Margin="2,0,14,0" />
+            <TextBlock Text="{Binding Label}" FontSize="14" VerticalAlignment="Center" />
+        </StackPanel>
+    </DataTemplate>
+
+    <!-- Severity-coloured message bar. Tag carries the severity name: Information, Success, Caution, Critical. -->
+    <Style x:Key="Shell.InfoBar" TargetType="Border">
+        <Setter Property="CornerRadius" Value="12" />
+        <Setter Property="Padding" Value="16,12" />
+        <Setter Property="Margin" Value="0,0,0,14" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}" />
+        <Setter Property="Background" Value="{DynamicResource SystemFillColorAttentionBackgroundBrush}" />
+        <Style.Triggers>
+            <Trigger Property="Tag" Value="Success">
+                <Setter Property="Background" Value="{DynamicResource SystemFillColorSuccessBackgroundBrush}" />
+            </Trigger>
+            <Trigger Property="Tag" Value="Caution">
+                <Setter Property="Background" Value="{DynamicResource SystemFillColorCautionBackgroundBrush}" />
+            </Trigger>
+            <Trigger Property="Tag" Value="Critical">
+                <Setter Property="Background" Value="{DynamicResource SystemFillColorCriticalBackgroundBrush}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- A settings row: label + description on the left, control on the right. -->
+    <Style x:Key="Shell.SettingRow" TargetType="Grid">
+        <Setter Property="Margin" Value="{DynamicResource Shell.RowGap}" />
+    </Style>
+
+    <Style x:Key="Shell.Divider" TargetType="Border">
+        <Setter Property="Height" Value="1" />
+        <Setter Property="Margin" Value="0,10" />
+        <Setter Property="Background" Value="{DynamicResource DividerStrokeColorDefaultBrush}" />
+    </Style>
+</ResourceDictionary>

@@ -1,0 +1,5 @@
+{
+  "SchemaVersion": 1,
+  "ApprovedReleases": [],
+  "Note": "No signed production release is approved. Do not add prototype hashes or test certificates. Reviewed release entries pin every payload SHA256, the Microsoft kernel catalog signer thumbprint, and the broker publisher certificate thumbprint/subject."
+}

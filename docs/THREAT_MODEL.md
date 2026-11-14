@@ -1,129 +1,173 @@
-# Soltex repository threat model
+# Threat model
 
-## Overview
+## Scope
 
-Soltex is a proprietary Windows desktop application intended to combine audio controls, local clip capture, security visibility, verified update planning, and user-approved remote assistance. In the current repository, the primary runtime surface is the .NET 10 WPF app under `src/Soltex.App`, the Security companion under `src/Soltex.Security`, the non-installing planner under `src/Soltex.Update`, and a narrow external-client adapter under `src/Soltex.RemoteAssist`. Audio and Clips are user-visible placeholders; their future C++ DSP, capture, encoder, APO, and driver implementations are not present and are not treated as deployed controls. Remote Assist does not contain a capture, transport, input, relay, or authentication implementation; it can only launch a separate RustDesk client.
+Soltex is a Windows desktop app (`src/Soltex.App`) that changes per-user Windows settings, makes administrator changes
+through a short-lived elevated helper, restyles the taskbar through a helper loaded into Explorer, runs audio through
+an unelevated helper process, shows Windows protection status, assesses files dropped into its imports folder, and can
+start a separately installed RustDesk client. The update planner (`src/Soltex.Update`) is a library with no installer
+behind it. The audio broker and driver are source only and are not installed by any build.
 
-The Security companion runs unelevated. It reads antivirus health, invokes supported Microsoft Defender operations, assesses Soltex-bound content, and manages a per-user quarantine. It does not provide system-wide enforcement and must coexist with the antivirus product registered with Windows.
+Assets: user files and quarantined payloads, the Windows settings Soltex changes and their journals, allow-list
+decisions, the honesty of displayed protection health, local audit integrity, audio routes and app routing policy,
+release and metadata signing keys, update policy and staged artifacts, the approved RustDesk fingerprint, and the
+user's intent behind each remote session.
 
-Security-sensitive assets are user files, quarantined payloads, original restore paths, exact-hash allow decisions, metadata/release signing keys, TLS and publisher policy, signed acquisition descriptors and manifests, update monotonicity/planning state, private staged artifacts, local audit integrity, the truthfulness of displayed Windows protection health, the approved external-client fingerprint, peer IDs, and remote-session authorization intent.
+## Actors and inputs
 
-## Threat Model, Trust Boundaries, and Assumptions
+- **Attacker-controlled:** files, archives, executables and presets that reach Soltex; file names, paths, reparse
+  points and files changed between check and use; update descriptors, manifests, signatures, redirects and response
+  bodies; peer IDs received through untrusted channels.
+- **User-controlled:** which settings to change, administrator prompts, scan targets, quarantine restore/delete,
+  allow-list entries, the RustDesk executable and each remote launch, audio devices and routes.
+- **Developer-controlled:** source, signing keys, approved publishers, CI, release packaging.
+- **Platform-controlled:** Windows Security Center, Defender, AMSI, Authenticode, DPAPI, UAC, Explorer, the Windows
+  audio stack, file-system semantics and enterprise policy.
 
-### Actors and inputs
+## Trust boundaries
 
-- **Attacker-controlled:** downloaded presets, plugins, archives, executables, acquisition descriptors, trust-policy proposals, manifests, detached signatures, redirect targets, response lengths/bodies, file names, paths, reparse points, file contents, peer IDs supplied through untrusted channels, and files changed between validation and use.
-- **Operator-controlled:** scan targets, quarantine restore/delete choices, exact-hash allow decisions, opening Windows-owned security surfaces, selecting a RustDesk client, confirming a remote launch, and verifying authorization for a peer.
-- **Developer-controlled:** source, release signing keys, accepted publisher identities, manifests, CI, installer/update logic, and future driver packages.
-- **Platform-controlled:** WSC health, Defender cmdlets, AMSI provider decisions, Authenticode chain policy, DPAPI, filesystem semantics, and enterprise security policy.
+1. **Files to intake.** `PathSafety`, `FileHashing`, `FileAssessmentService` and AMSI mediate files entering the
+   imports folder.
+2. **Soltex to Windows protection.** Security Center, Defender and AMSI results may be unavailable, managed by another
+   provider, stale or limited by policy.
+3. **Per-user Windows settings.** `Soltex.Customize` writes only `HKEY_CURRENT_USER` values from its catalogue,
+   journals each previous value before writing, and undoes only values that still hold what it wrote.
+4. **Unelevated app to elevated helper.** The request file names catalogue entries by id. The helper accepts it only
+   under its fixed name in `%LOCALAPPDATA%\Soltex\System`, rejects redirected folders and unknown ids, and runs nothing
+   else. UAC is the consent step for every elevated run.
+5. **App to Explorer.** The taskbar helper is copied to the user's data folder under a hash-derived name and loaded
+   into the user's own Explorer. It gains no privilege the user did not already have, takes settings only from
+   `HKCU\Software\Soltex\Taskbar`, and keeps original values so it can restore them.
+6. **UI to audio helper.** A current-user named pipe with a per-launch token, bounded frames, a strict schema and a
+   fixed operation list. The helper watches its parent's PID and start time and exits with it.
+7. **App routing.** `Soltex.Audio.WindowsRouting` uses an undocumented Windows policy interface, checks the target
+   process identity immediately before each call, journals all prior values, and fails closed where the interface is
+   unavailable.
+8. **Detection to quarantine and restore.** Metadata is authenticated, payloads are re-hashed, and restore writes
+   to the recorded path or a collision-safe sibling.
+9. **Per-user state.** DPAPI and HMACs detect accidental or cross-account changes. They do not stop malware running
+   as the same user.
+10. **Soltex to RustDesk.** A one-way launch of a fingerprinted, Authenticode-trusted executable with fixed
+    arguments. RustDesk and its network are a separate trust domain.
+11. **Release infrastructure to update preview.** Descriptor signature quorum, pinned HTTPS and bounded acquisition
+    before any byte is staged. No installer crosses this boundary.
 
-### Boundaries
+## Invariants
 
-1. **Untrusted filesystem to Soltex intake.** `PathSafety`, `FileHashing`, `FileAssessmentService`, AMSI, and future strict parsers mediate this transition.
-2. **Soltex to Windows antimalware.** `WindowsSecurityCenter`, `WindowsSecurityChangeMonitor`, `ProtectionMonitor`, `PowerShellDefenderClient`, and `AmsiContentScanner` consume platform results that may be unavailable, provider-managed, stale, or policy-limited.
-3. **Release infrastructure to inert update preview.** `UpdateDescriptorVerifier`, `UpdateTrustTransitionEvaluator`, `PinnedHttpsTransport`, `BoundedHttpsAcquirer`, `SignedReleaseManifestVerifier`, `BoundedArchiveStager`, and `AuthenticodePublisherVerifier` establish bounded acquisition and exact preview evidence. Production identities/source are not configured, and no installed-content transition exists.
-4. **Detection to quarantine and restore.** `QuarantineStore` moves data out of its original location, authenticates metadata, verifies payload hashes, and later writes back to an authenticated original path or a collision-safe sibling.
-5. **User intent to trust.** `AllowListStore` accepts exact hashes only. UI warnings are part of the control and must not be bypassed by background logic.
-6. **Application to per-user state.** DPAPI and HMACs protect accidental/cross-account modification. They do not stop malware already executing as the same user from deleting state or invoking DPAPI.
-7. **Security workload to future real-time workloads.** No security operation may run on audio, capture, encoder, APO, or driver threads.
-8. **Soltex to external remote client.** `RemoteAssistExecutable`, `RemotePeerId`, and `RustDeskExternalClient` mediate a one-way launch request. RustDesk and its infrastructure remain a separately licensed, separately updated, network-facing trust domain.
-9. **Preview to future installer.** No implementation crosses this boundary. A future privileged component must accept only the exact confirmed plan and immutable verified handles, never a URL, archive path, or generic command.
-10. **Future personal device fabric.** Device agents, Tailscale reachability, NAS storage, Google Drive, Box, and AI intent translation are designed but not implemented. Before code enters this boundary, jobs must be typed, target-bound, short-lived, replay-resistant, locally authorized, and free of generic shell semantics. The NAS must have no authorization role, and personal/work cloud identities must remain isolated by default.
+- Never disable, weaken, exclude, replace or misreport the registered antivirus provider.
+- Never put an attacker-controlled path into executable PowerShell text.
+- Never trust a path before full normalization, root containment where it applies, and reparse-point rejection.
+- Never let the elevated helper run anything not in `SystemCatalog`, or read its request from outside the app's data
+  folder.
+- Never write per-user settings outside the catalogue, and never undo a value that no longer holds what Soltex wrote.
+- Never load the taskbar helper into any process other than the user's Explorer (or the test host).
+- Never restore a quarantined payload before its metadata is authenticated and its SHA-256 matches.
+- Never turn a clean AMSI result or an unknown executable into publisher trust.
+- Never accept an allow-list rule broader than one exact SHA-256.
+- Never report unknown provider health as healthy.
+- Never treat a peer ID as command-line text, supply a remote password, configure unattended access, request
+  elevation for RustDesk, or launch it after its fingerprint or signature check fails.
+- Never fetch update artifacts before the descriptor meets the signature quorum, follow a redirect to an unsigned
+  origin, or execute staged bytes.
+- Never upload user data. Soltex has no telemetry.
 
-### Invariants
-
-- Never disable, weaken, exclude, replace, or misrepresent the registered Windows antivirus provider.
-- Never interpolate an attacker-controlled path into executable PowerShell.
-- Never trust a path before full normalization, root containment where applicable, and reparse-point rejection.
-- Never restore a quarantined payload before authenticating metadata and matching its stored SHA-256.
-- Never convert an unknown executable or a clean AMSI result into publisher trust.
-- Never accept an allow-list rule broader than an exact SHA-256 in the MVP.
-- Never call an unavailable provider state healthy merely because Defender-specific status could not be queried.
-- Never claim kernel, provider, ransomware, exploit, web, EDR, cloud-reputation, or certified antivirus capability from this user-mode companion.
-- Never treat a peer ID as a command line, provide a remote password, configure unattended access, request elevation, install a remote-control service, hide consent UI, or claim that Soltex owns RustDesk session security.
-- Never launch a selected remote client after its approved SHA-256 changes or its current Authenticode trust check fails.
-- Never fetch update artifacts before the exact descriptor satisfies the active metadata-signature quorum, and never follow a redirect to an unsigned origin.
-- Never treat downloaded/staged bytes as executable authority, cross an installer boundary from an unconfirmed plan, or expose arbitrary download-and-execute behavior.
-- Never treat private-network membership, NAS possession, AI output, or a cloud login as authority to execute a device capability.
-- Never expose a generic remote shell or silently move work Box data into personal Drive, the NAS, an AI prompt, or another trust domain.
-
-## Attack Surface, Mitigations, and Attacker Stories
+## Attack surface and mitigations
 
 ### Defender process boundary
 
-An attacker may choose a scan path containing quotes, metacharacters, or PowerShell syntax. `PowerShellDefenderClient` uses fixed encoded scripts and passes the normalized custom path through `SOLTEX_SCAN_PATH`; it is read as data. The child starts in its executable directory rather than an untrusted project/current directory. Output is redirected, byte-bounded while read, rejected on overflow, and parsed as JSON. Raw stderr is not copied into health or audit-facing models because it can echo the selected path; a bounded exit-code diagnostic is returned instead. A future regression that interpolates the path, restores post-read-only truncation, inherits an attacker-controlled working directory, or logs raw stderr would create command-execution, memory-exhaustion, or privacy risk.
+A scan path may contain quotes or PowerShell syntax. `PowerShellDefenderClient` uses fixed scripts and passes the
+normalized path through `SOLTEX_SCAN_PATH`, where it is read as data. The child starts in its own directory, imports
+system modules by full path, and uses module-qualified cmdlets, so a same-named command elsewhere cannot win. Output is
+bounded while read and parsed as JSON; raw stderr is replaced with an exit-code message because it can echo the path.
 
-Defender may be passive or disabled because another provider is active. Explicit WSC aggregate health remains authoritative: `Good` can represent that other provider, while `Poor`, `Snoozed`, and `NotMonitored` cannot be overridden by Defender detail flags. Only when WSC is unavailable may `Normal` plus active Defender antivirus/real-time flags provide a clearly disclosed fallback; passive Defender never fills that gap.
+### Native library loading
 
-### Native library boundary
+The security assembly resolves its P/Invokes (AMSI, Security Center, WinTrust, Crypt32, Kernel32) only from System32,
+so a DLL in the app or current directory cannot satisfy them.
 
-The security assembly imports only Windows system libraries for AMSI, WSC, Authenticode, DPAPI, and kernel memory release. An assembly-level `DefaultDllImportSearchPaths(System32)` policy prevents an application-directory or current-directory DLL from satisfying those imports. Removing that policy would reopen a native DLL preloading path before managed security checks run.
+### Defender events
 
-Defender orchestration launches the Windows PowerShell executable from System32 and does not rely on command-name module auto-loading. Each fixed script imports the Defender, Diagnostics, and Utility manifests through an explicit `$PSHOME\Modules\...\*.psd1` path and uses module-qualified cmdlets. A missing or invalid system manifest stops the operation instead of falling back to a same-named command from another module path. This reduces command-precedence and module-search hijacking risk; it does not independently authenticate Microsoft module contents or replace Windows file protection and Authenticode.
+Event XML can contain file and process paths. The query is fixed to documented event IDs and bounded by look-back,
+count, a 512 KiB output ceiling and a timeout. The parser builds descriptions from allow-listed non-path fields only.
 
-WSC callbacks can arrive during shutdown or in a burst. `ProtectionMonitor` treats them only as refresh signals, serializes observations, coalesces bursts, cancels each expired polling wait, preserves last-known-good state, retries nonfatal failures with bounded backoff, isolates provider/update-subscriber failures, and unregisters the callback on disposal. `WindowsSecurityChangeMonitor` invokes subscribers individually so one nonfatal handler failure cannot terminate the native notification path or suppress later handlers. The native shutdown-race and later fault-isolation regressions are included in the Windows-verified 27-case suite.
+### File intake
 
-Defender Operational event XML can contain file, process, and scan-resource paths. The query is fixed to documented event IDs and bounded by lookback, result count, a 512 KiB captured-output ceiling, and command timeout. Excess child output is drained and discarded before rejection. Only the no-matching-events PowerShell condition becomes an empty success; provider, log, and access failures remain visible. The requested count is enforced again after JSON deserialization. The parser constructs details only from allow-listed non-path fields and marks resource values as redacted; it does not pass raw event messages or arbitrary XML fields into the UI.
+An attacker may supply a large, malformed or rapidly changing file. Soltex rejects reparse points, hashes streams,
+limits AMSI buffers to 16 MiB and sends larger files to a Defender custom scan. A file can still be swapped between
+assessment and later use; consumers must use the validated handle or re-check.
 
-### AMSI and file intake
+### Settings changes and the elevated helper
 
-An attacker may provide a large file, detection marker, script, malformed content, high-risk extension, or rapidly changing file. Soltex rejects reparse-point files, hashes streams, limits AMSI buffers to 16 MiB, and flags larger inputs for a Defender custom scan. Executable extensions remain `ReviewRecommended` after a clean AMSI result. File replacement between assessment and later consumption remains a time-of-check/time-of-use risk; production import code must consume the validated handle or revalidate immediately before use.
+A same-user attacker can write the request file, but it can only name catalogue entries and still needs the user to
+accept the UAC prompt; a redirected request folder is refused. The journals are plain per-user files: a same-user
+attacker can edit them to make undo skip a value, but undo still writes only catalogue values and only where the
+current value matches the journal. App removals are not reversible from Soltex and say so before running.
 
-### Manifests and executable trust
+### Taskbar helper
 
-An attacker may forge JSON, reuse a signature with modified content, replay/roll back/equivocate a trust policy, redirect acquisition, lie about lengths, truncate or expand a body, include duplicate/case-variant paths, escape the content root, swap a reparse point, or alter payload/source bytes during verification. Exact acquisition-descriptor bytes require RSA-PSS/SHA-256 metadata-signature quorum before network access. Trust rotation requires increasing sequence plus overlap with currently authorized keys/pins/publishers and rejects same-ID replacement. HTTPS requires an active TLS SPKI pin; redirects remain inside signed origins. Acquired bytes are length/hash bounded, held by exclusive handles, and cleaned on failure. The detached release-manifest signature covers exact bytes, archive staging is bounded, and publisher authorization uses an immutable private snapshot before the preview is built. Production policy still needs real approved identities, secure key custody, an authenticated release source, online revocation at an appropriate checkpoint, and an installer transaction.
+The staged DLL sits in a user-writable folder. A same-user attacker could replace it, but that attacker can already run
+code as the user, including in Explorer. The app compares the staged file with the bundled one by SHA-256 before
+loading it. The helper uses only Windows system DLLs, makes no network connections, and writes only its log and an
+optional diagnostic dump of the taskbar's visual tree.
 
-An authenticated current/last-known-good planning journal records bounded sanitized phases and private staging tokens. A same-user attacker can delete both generations or deny access; Soltex fails closed and requires review. Cleanup accepts only authenticated Soltex token syntax and never creates installation state.
+### Audio helper and routing
+
+Only the parent's pipe client with the per-launch token is served. Requests are size-limited and schema-checked;
+a timed-out mutation is reported as unknown and never replayed. Routing calls re-check the target process (PID,
+start time, path, session) before each native call, but Windows accepts a PID, so a narrow PID-reuse race remains.
+Every routing change is journaled and undo restores only values that still match.
+
+### Manifests, publishers and updates
+
+Covered in [SUPPLY_CHAIN_SECURITY.md](SUPPLY_CHAIN_SECURITY.md): exact-byte signatures, publisher subject and key
+pins, anti-rollback sequence state, bounded ZIP staging, pinned HTTPS and a non-installing planner. Production keys,
+pins and a release source are not configured.
 
 ### Quarantine and allow list
 
-An attacker may tamper with the quarantine index, replace a stored payload, force an overwrite on restore, or seed an overly broad exclusion. DPAPI protects the HMAC key; metadata is authenticated; payloads are re-hashed; restore refuses paths inside quarantine and chooses a timestamped sibling on collision. Cross-volume moves use copy, flush, hash verification, then source deletion. Allow decisions are capped and exact-hash only. A same-user attacker can still delete state, replace a DPAPI-wrapped key they can themselves unwrap, or race files; this MVP is not a protected service.
+Metadata is authenticated with a DPAPI-protected key, payloads are re-hashed, restore never overwrites and refuses
+paths inside quarantine, and cross-volume moves are copy-verify-delete. A same-user attacker can still delete state.
 
-### Watcher, availability, and privacy
+### Imports watcher and audit log
 
-An attacker may flood the import folder. The channel holds at most 128 paths, drops the oldest under overload, debounces events, filters extensions, and has one sequential worker. Dropping means Soltex's extra assessment can be skipped under sustained flood; Windows real-time protection remains the primary control. Audit entries HMAC paths instead of storing them, bound text, chain entries, and rotate at 4 MiB. Local deletion/truncation remains possible and must not be represented as tamper-proof logging.
+The watcher queue holds at most 128 paths and drops the oldest under flood; Windows real-time protection remains the
+primary control. Audit entries store HMACs of paths, are chained and rotate at 4 MiB. Local deletion or truncation
+remains possible and is not described as tamper-proof logging.
 
-### WPF and user actions
+### Remote help
 
-Restore and permanent delete are user-driven high-impact actions with confirmation UI. The WPF process is unelevated and does not automate Windows Security settings. UI health labels must preserve unknown/provider-managed states and never turn missing telemetry into a green claim.
+The user may be persuaded to pick a renamed or replaced executable or to connect to the wrong peer. Soltex requires
+the exact file name, rejects reparse points, fingerprints the bytes, checks Authenticode, repeats both before each
+launch, limits peer IDs to a strict character set passed as one argument, and asks for confirmation. It cannot prove
+the remote party's identity or that the file is an official RustDesk release.
 
-### External Remote Assist boundary
+## Out of scope
 
-An attacker may persuade the user to select a renamed executable, replace an approved file, supply a peer ID containing shell syntax, or disguise an unauthorized support request. Soltex requires the exact filename `RustDesk.exe`, rejects a reparse-point file, fingerprints its bytes, asks Windows to verify Authenticode, and repeats byte/signature validation for every launch. Peer IDs are limited to 3–64 ASCII letters, numbers, hyphens, or underscores and enter `ProcessStartInfo.ArgumentList` as one value with `UseShellExecute=false`. Each launch requires local confirmation, and audit entries intentionally omit the peer ID.
+A kernel attacker, a compromised Windows trust provider, a stolen signing key, a malicious administrator, same-user
+malware with unrestricted process injection, boot-time malware, raw-disk modification, and supply-chain compromise
+before signing.
 
-These controls do not prove official RustDesk release provenance, remote-party identity, endpoint cleanliness, network security, or actual human consent on the other device. They also leave a narrow time-of-check/time-of-use interval before process creation. Soltex provides no password, unattended-access setting, elevation flag, service command, firewall mutation, retry loop, or background connection. A malicious administrator, same-user process injector, compromised Windows trust provider, or already-configured unattended RustDesk installation remains outside this adapter's enforcement. A production deployment needs publisher/release provenance, managed updates, compatibility testing, and a clearly owned support policy.
+## Severity guide
 
-### Out-of-scope attacker stories
+**Critical**
+- An update or release path runs attacker code without a valid approved signature.
+- The elevated helper can be made to run something outside its catalogue.
+- Soltex silently disables or weakens the registered antivirus provider.
 
-The current code cannot defend against a kernel attacker, compromised Windows trust provider, stolen release signing key, malicious administrator, same-user malware with unrestricted process injection, boot-time malware, direct raw-disk modification, or a supply-chain compromise before signing. These stories require platform, organizational, and release controls beyond this repository.
+**High**
+- Scan-path injection reaches PowerShell execution.
+- Archive or manifest handling writes outside its staging root.
+- Quarantine restore overwrites application or start-up binaries without authenticated metadata and user intent.
+- The remote-help path supplies credentials, skips consent or launches attacker-chosen code.
+- The taskbar helper can be made to load into another user's or an elevated process.
 
-## Severity Calibration (Critical, High, Medium, Low)
+**Medium**
+- A file swap between assessment and use lets unvalidated content through.
+- Same-user tampering produces false health, forged allow entries, misleading audit data or a wrong undo.
+- Raw paths or file contents reach logs.
+- An app-routing change lands on the wrong process through PID reuse.
 
-### Critical
-
-- A release/update path accepts attacker code without a valid approved signature and executes it for users.
-- A future privileged service or driver exposes arbitrary kernel/system code execution.
-- Soltex silently disables or weakens the registered antivirus provider across user systems.
-
-### High
-
-- Scan-path injection reaches PowerShell command execution as the user.
-- Manifest traversal or archive extraction writes executable content outside its staging root.
-- Quarantine restore can be redirected to overwrite startup or application binaries without authenticated metadata and explicit intent.
-- A stolen signing key can publish accepted malicious updates without revocation/rollback controls.
-- A remote-assistance path silently supplies credentials, bypasses consent, or launches attacker-selected code.
-
-### Medium
-
-- A race swaps a file after assessment but before import, causing unvalidated content to be consumed.
-- Same-user state tampering produces false health, forged allow entries, or misleading audit data without code execution.
-- Import flooding reliably bypasses Soltex assessment while the primary registered provider is unavailable.
-- Raw paths or file contents leak into logs without consent.
-- A trusted-but-unofficial signed executable is mistaken for an attested RustDesk release, or a user authorizes the wrong remote peer.
-
-### Low
-
-- A local unprivileged user causes bounded UI/service degradation with malformed but non-executed input.
-- Audit rotation loses old non-security-critical history while current protection continues.
-- Health wording is stale or confusing but does not alter protection or trust decisions.
-- Developer-only render/test tooling fails without affecting release binaries.
+**Low**
+- Malformed but non-executed input causes bounded UI degradation.
+- Audit rotation drops old non-critical history.
+- Wording is stale or confusing but does not change a protection or trust decision.

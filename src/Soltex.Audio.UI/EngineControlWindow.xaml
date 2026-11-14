@@ -1,0 +1,71 @@
+<Window x:Class="Soltex.Audio.UI.EngineControlWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:Soltex.Audio.UI" Title="Sound processing" Width="1120" Height="910"
+        MinWidth="1000" MinHeight="700" WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource CanvasBrush}" Foreground="{DynamicResource TextBrush}">
+  <Window.Resources><ResourceDictionary><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="Themes/Audio.xaml"/></ResourceDictionary.MergedDictionaries>
+    <Style x:Key="FieldLabel" TargetType="TextBlock"><Setter Property="VerticalAlignment" Value="Center"/><Setter Property="Foreground" Value="{DynamicResource MutedBrush}"/><Setter Property="Margin" Value="0,0,8,0"/></Style>
+    <Style x:Key="Numeric" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}"><Setter Property="Width" Value="70"/><Setter Property="Margin" Value="0,3"/><Setter Property="HorizontalContentAlignment" Value="Right"/></Style>
+    <Style TargetType="DataGridCell"><Setter Property="Foreground" Value="{DynamicResource TextBrush}"/><Setter Property="Background" Value="Transparent"/><Setter Property="BorderThickness" Value="0"/><Setter Property="Padding" Value="5,4"/></Style>
+    <Style TargetType="DataGridColumnHeader"><Setter Property="Background" Value="{DynamicResource RaisedBrush}"/><Setter Property="Foreground" Value="{DynamicResource MutedBrush}"/><Setter Property="Padding" Value="8,7"/><Setter Property="BorderThickness" Value="0"/></Style>
+    <Style TargetType="DataGridRow"><Setter Property="Background" Value="{DynamicResource SurfaceBrush}"/><Setter Property="Foreground" Value="{DynamicResource TextBrush}"/></Style>
+  </ResourceDictionary></Window.Resources>
+  <Grid Margin="24,18">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <DockPanel><StackPanel><TextBlock Text="Independent engine" FontSize="23" FontWeight="SemiBold"/><TextBlock Text="Soltex PCM processing · no GG dependency" Foreground="{DynamicResource MutedBrush}" Margin="0,4,0,0"/></StackPanel><TextBlock x:Name="RunState" DockPanel.Dock="Right" Text="STOPPED" Foreground="{DynamicResource MutedBrush}" FontFamily="Consolas" VerticalAlignment="Center" HorizontalAlignment="Right"/></DockPanel>
+    <Border Grid.Row="1" Margin="0,18,0,14" Padding="14" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="5">
+      <StackPanel>
+        <TextBlock Text="Uses a virtual cable you have installed. Playback: cable output → speakers. Microphone: mic → cable input. Nothing is installed here." TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,10"/>
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <StackPanel><TextBlock Text="Capture input" Margin="0,0,0,5"/><ComboBox x:Name="CaptureSelector" DisplayMemberPath="Name" ToolTip="Choose an explicit capture endpoint; nothing is selected automatically." AutomationProperties.Name="Independent engine capture input"/></StackPanel>
+          <TextBlock Grid.Column="1" Text="→" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,10"/>
+          <StackPanel Grid.Column="2"><TextBlock Text="Render output" Margin="0,0,0,5"/><ComboBox x:Name="RenderSelector" DisplayMemberPath="Name" AutomationProperties.Name="Independent engine render output"/></StackPanel>
+          <Button x:Name="RefreshButton" Grid.Column="3" Content="Refresh" Margin="12,22,0,0" Click="RefreshClicked"/>
+        </Grid>
+        <Button Content="Input channel / noise suppression / stereo" Click="AdvancedProcessingClicked" HorizontalAlignment="Left" Margin="0,10,0,0"/>
+        <DockPanel Margin="0,12,0,0"><CheckBox x:Name="MicrophonePath" Content="Microphone path — starting captures this input" VerticalAlignment="Center"/><StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right"><Button x:Name="StartButton" Content="Start selected path" Click="StartClicked" Margin="8,0"/><Button x:Name="StopButton" Content="Stop" Click="StopClicked" IsEnabled="False"/></StackPanel></DockPanel>
+        <DockPanel Margin="0,9,0,0"><TextBlock Text="Mic check: selected input with DSP → local WAV → selected output at −12 dB." Foreground="{DynamicResource MutedBrush}" VerticalAlignment="Center" FontSize="11"/><StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right"><Button x:Name="RecordButton" Content="Record input · 10s" Click="RecordClicked" Padding="10,6" Margin="8,0"/><Button x:Name="ReplayButton" Content="Replay test" Click="ReplayClicked" Padding="10,6" IsEnabled="False"/><Button x:Name="DiscardButton" Content="Discard test" Click="DiscardClicked" Padding="10,6" Margin="8,0,0,0" IsEnabled="False"/></StackPanel></DockPanel>
+        <TextBlock x:Name="RecordingLocation" Text="No test recording. Closing keeps your chosen WAV; Discard deletes the current test." Foreground="{DynamicResource MutedBrush}" FontSize="11" Margin="0,7,0,0" TextTrimming="CharacterEllipsis"/>
+      </StackPanel>
+    </Border>
+    <ScrollViewer x:Name="ControlsScroll" Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel Margin="0,0,10,0">
+        <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <TextBlock Text="Gain" Style="{StaticResource FieldLabel}"/><Slider x:Name="Gain" Grid.Column="1" Minimum="-80" Maximum="24" Value="0" TickFrequency="1" Margin="6,0,18,0" VerticalAlignment="Center" ValueChanged="ControlChanged" AutomationProperties.Name="Independent gain in dB"/>
+          <TextBlock x:Name="GainValue" Grid.Column="2" Text="0.0 dB" Width="70" VerticalAlignment="Center" FontFamily="Consolas"/><CheckBox x:Name="Mute" Grid.Column="3" Content="Mute" VerticalAlignment="Center" Margin="8,0,24,0" Checked="ControlChanged" Unchecked="ControlChanged"/>
+          <TextBlock Grid.Column="4" Text="Headroom dB" Style="{StaticResource FieldLabel}"/><TextBox x:Name="Headroom" Grid.Column="5" Text="-6" Style="{StaticResource Numeric}" TextChanged="ControlChanged" AutomationProperties.Name="Headroom dB"/>
+        </Grid>
+        <DockPanel Margin="0,0,0,8"><TextBlock Text="Parametric equalizer" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center"/><StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right"><CheckBox x:Name="EqBypass" Content="Bypass EQ" VerticalAlignment="Center" Margin="12,0" Checked="ControlChanged" Unchecked="ControlChanged"/><Button Content="Save preset" Click="SavePresetClicked" Padding="10,6" Margin="3,0"/><Button Content="Load preset" Click="LoadPresetClicked" Padding="10,6" Margin="3,0"/><Button Content="Reset DSP" Click="ResetPresetClicked" Padding="10,6" Margin="3,0"/></StackPanel></DockPanel>
+        <local:EngineResponseGraph x:Name="Response" Height="135" Margin="0,0,0,6" AutomationProperties.Name="Calculated equalizer response"/>
+        <TextBlock Text="Calculated EQ response, ±24 dB display. Dynamics and gain are separate. Edit a value and press Tab to apply." FontSize="11" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,8"/>
+        <DataGrid x:Name="BandsGrid" Height="315" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserReorderColumns="False" HeadersVisibility="Column" RowHeight="27" SelectionMode="Single" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="{DynamicResource BorderBrush}" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" RowHeaderWidth="0" CellEditEnding="BandEditEnding" AutomationProperties.Name="Ten parametric EQ bands">
+          <DataGrid.Columns>
+            <DataGridTextColumn Header="Band" Binding="{Binding Number}" IsReadOnly="True" Width="60"/>
+            <DataGridTextColumn Header="Frequency Hz" Binding="{Binding Frequency,UpdateSourceTrigger=PropertyChanged}" Width="*"/>
+            <DataGridTextColumn Header="Gain dB" Binding="{Binding Gain,UpdateSourceTrigger=PropertyChanged}" Width="*"/>
+            <DataGridTextColumn Header="Q" Binding="{Binding Q,UpdateSourceTrigger=PropertyChanged}" Width="*"/>
+            <DataGridComboBoxColumn Header="Type" SelectedItemBinding="{Binding Type,UpdateSourceTrigger=PropertyChanged}" ItemsSource="{x:Static local:EngineControlWindow.FilterTypes}" Width="190"/>
+            <DataGridCheckBoxColumn Header="Bypass" Binding="{Binding Bypass,UpdateSourceTrigger=PropertyChanged}" Width="85"/>
+          </DataGrid.Columns>
+        </DataGrid>
+        <TextBlock Text="Microphone dynamics" FontSize="17" FontWeight="SemiBold" Margin="0,20,0,10"/>
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <StackPanel>
+            <CheckBox x:Name="GateEnabled" Content="Noise gate" FontWeight="SemiBold" Checked="ControlChanged" Unchecked="ControlChanged" Margin="0,0,0,8"/>
+            <UniformGrid Columns="2"><TextBlock Text="Open threshold dB" Style="{StaticResource FieldLabel}"/><TextBox x:Name="GateThreshold" Text="-45" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/><TextBlock Text="Hysteresis dB" Style="{StaticResource FieldLabel}"/><TextBox x:Name="GateHysteresis" Text="6" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/><TextBlock Text="Attack ms" Style="{StaticResource FieldLabel}"/><TextBox x:Name="GateAttack" Text="5" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/><TextBlock Text="Hold ms" Style="{StaticResource FieldLabel}"/><TextBox x:Name="GateHold" Text="80" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/><TextBlock Text="Release ms" Style="{StaticResource FieldLabel}"/><TextBox x:Name="GateRelease" Text="100" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/><TextBlock Text="Closed gain dB" Style="{StaticResource FieldLabel}"/><TextBox x:Name="GateFloor" Text="-80" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/></UniformGrid>
+          </StackPanel>
+          <StackPanel Grid.Column="2">
+            <CheckBox x:Name="CompressorEnabled" Content="Compressor" FontWeight="SemiBold" Checked="ControlChanged" Unchecked="ControlChanged" Margin="0,0,0,8"/>
+            <UniformGrid Columns="2"><TextBlock Text="Threshold dB" Style="{StaticResource FieldLabel}"/><TextBox x:Name="CompressorThreshold" Text="-18" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/><TextBlock Text="Ratio : 1" Style="{StaticResource FieldLabel}"/><TextBox x:Name="CompressorRatio" Text="4" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/><TextBlock Text="Attack ms" Style="{StaticResource FieldLabel}"/><TextBox x:Name="CompressorAttack" Text="10" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/><TextBlock Text="Release ms" Style="{StaticResource FieldLabel}"/><TextBox x:Name="CompressorRelease" Text="120" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/><TextBlock Text="Makeup dB" Style="{StaticResource FieldLabel}"/><TextBox x:Name="CompressorMakeup" Text="0" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/></UniformGrid>
+          </StackPanel>
+          <StackPanel Grid.Column="4">
+            <CheckBox x:Name="ExpanderEnabled" Content="Downward expander" FontWeight="SemiBold" Checked="ControlChanged" Unchecked="ControlChanged" Margin="0,0,0,8"/>
+            <UniformGrid Columns="2"><TextBlock Text="Noise floor dB" Style="{StaticResource FieldLabel}"/><TextBox x:Name="ExpanderThreshold" Text="-45" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/><TextBlock Text="Ratio : 1" Style="{StaticResource FieldLabel}"/><TextBox x:Name="ExpanderRatio" Text="2" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/><TextBlock Text="Max reduction dB" Style="{StaticResource FieldLabel}"/><TextBox x:Name="ExpanderDepth" Text="24" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/><TextBlock Text="Attack ms" Style="{StaticResource FieldLabel}"/><TextBox x:Name="ExpanderAttack" Text="5" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/><TextBlock Text="Release ms" Style="{StaticResource FieldLabel}"/><TextBox x:Name="ExpanderRelease" Text="100" Style="{StaticResource Numeric}" TextChanged="ControlChanged"/></UniformGrid>
+            <TextBlock Text="Reduces quiet passages. Does not separate noise from speech." TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource MutedBrush}" Margin="0,8,0,0"/>
+          </StackPanel>
+        </Grid>
+      </StackPanel>
+    </ScrollViewer>
+    <Border Grid.Row="3" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Margin="0,12,0,0" Padding="0,10,0,0"><StackPanel><TextBlock x:Name="Feedback" Text="Choose both endpoints to start. Controls preview the independent DSP while stopped." TextWrapping="Wrap"/><TextBlock x:Name="Telemetry" Text="No stream active · no audio defaults are changed" Foreground="{DynamicResource MutedBrush}" FontFamily="Consolas" FontSize="11" Margin="0,5,0,0" TextWrapping="Wrap"/></StackPanel></Border>
+  </Grid>
+</Window>

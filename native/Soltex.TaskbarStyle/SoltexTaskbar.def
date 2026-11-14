@@ -1,0 +1,5 @@
+LIBRARY SoltexTaskbar
+EXPORTS
+    DllGetClassObject = SoltexDllGetClassObject PRIVATE
+    DllCanUnloadNow = SoltexDllCanUnloadNow PRIVATE
+    SoltexTaskbarHook

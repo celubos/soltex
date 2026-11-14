@@ -1,48 +1,128 @@
 using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Soltex.App.Controls;
-using Soltex.App.Views;
-using Soltex.Audio;
-using Soltex.DeviceFabric;
-using Soltex.Monitoring;
 
 namespace Soltex.App.Tests;
 
 internal static class Program
 {
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
+        // "--dump-taskbar <result file> <tree file>": read-only list of the live taskbar's XAML tree (types and names).
+        if (args is ["--dump-taskbar", string dumpResult, string treeFile])
+        {
+            using StreamWriter writer = new(dumpResult) { AutoFlush = true };
+            Console.SetOut(writer);
+            global::Soltex.App.App.HostedByTests = true;
+            global::Soltex.App.App dumpApplication = new();
+            System.Threading.SynchronizationContext.SetSynchronizationContext(
+                new System.Windows.Threading.DispatcherSynchronizationContext(System.Windows.Threading.Dispatcher.CurrentDispatcher));
+            try { TaskbarChecks.LiveExplorerTreeDump(treeFile); Console.WriteLine("PASS  tree listed"); return 0; }
+            catch (InvalidOperationException error) { Console.WriteLine("FAIL  " + error.Message); return 1; }
+        }
+        // "--live-taskbar <result file>": only the opt-in live taskbar check, written to a file (for runs started without a console).
+        if (args is ["--live-taskbar", string resultFile])
+        {
+            using StreamWriter writer = new(resultFile) { AutoFlush = true };
+            Console.SetOut(writer);
+            Environment.SetEnvironmentVariable("SOLTEX_LIVE_TASKBAR", "1");
+            Environment.SetEnvironmentVariable("SOLTEX_TEST_FILTER", "Live:");
+            return Run();
+        }
+        return Run();
+    }
+
+    private static int Run()
+    {
+        // Without this the application's real startup runs on the first pump: it would take the real single-instance lock
+        // (and quit when another copy is running), install the crash reporter into the real profile and start real services.
+        global::Soltex.App.App.HostedByTests = true;
         global::Soltex.App.App application = new();
         application.InitializeComponent();
-        LocalDeviceObservation device = LocalDeviceObservationProvider.Capture();
-        SystemTelemetrySnapshot snapshot = SystemTelemetryProvider.CaptureAsync(
-            TimeSpan.FromMilliseconds(150),
-            CancellationToken.None).GetAwaiter().GetResult();
-        AudioEndpointSnapshot audioSnapshot = AudioEndpointProvider.CaptureAsync().GetAwaiter().GetResult();
+        // A running WPF app always has this context on its UI thread; awaits in event handlers rely on it.
+        System.Threading.SynchronizationContext.SetSynchronizationContext(
+            new System.Windows.Threading.DispatcherSynchronizationContext(System.Windows.Threading.Dispatcher.CurrentDispatcher));
+        global::Soltex.App.Shell.ThemeService.Apply(application, new global::Soltex.App.Settings.AppSettings());
 
         List<(string Name, Action Test)> tests =
         [
-            ("Shared theme exposes required control resources", ThemeResourcesAreAvailable),
-            ("Telemetry runs only in visible live workspaces", TelemetryRunsOnlyInLiveWorkspaces),
+            ("Fluent light and dark palettes and shell styles are available", ShellChecks.ThemeResourcesAndPalettes),
+            ("Suite launch options preserve explicit paths and reject malformed arguments", IntegrationChecks.LaunchOptions),
+            ("Windows mixer construction and disposal do not activate audio services", IntegrationChecks.MixerConstructionAndResources),
+            ("Windows mixer preserves composite session identity and editing boundaries", IntegrationChecks.SessionUpdates),
+            ("Application routing UI requires explicit preflight and preserves device identity", IntegrationChecks.RoutingWindowIsInert),
+            ("Windows mixer chooses initial visible controls and retains explicit missing devices", IntegrationChecks.InitialDeviceSelection),
+            ("App settings survive corrupt and future files, normalize and round-trip", ShellChecks.SettingsStoreResilience),
+            ("Normal startup wiring constructs, stays inert with default settings and shuts down cleanly", ShellChecks.NormalStartupWiringIsInert),
+            ("Drift is reported once, in neutral words, and Put back reports its results", ShellChecks.DriftIsReportedOnceAndNeutrally),
+            ("Settings keep large desktop groups and back up before import", ShellChecks.SettingsStoreKeepsLargeDesktopGroups),
+            ("Import finds network and device locations and can strip them", ShellChecks.ImportFindsNetworkLocations),
+            ("Search ranks by title and synonyms, requires every word and skips hidden pages", ShellChecks.SearchRanking),
+            ("Navigation items are named, selectable and follow visibility settings", ShellChecks.NavigationIsNamedAndSelectable),
+            ("Every interactive control on every page has an accessible name", ShellChecks.EveryControlIsNamed),
+            ("My PC samples telemetry only while shown", ShellChecks.MyPcSamplesOnlyWhileShown),
+            ("Search results reveal and focus the exact setting", ShellChecks.RevealFocusesTarget),
+            ("Customize switches apply through UI Automation Toggle", ShellChecks.CustomizeToggleAppliesThroughAutomation),
+            ("Customize finishes a change on its own thread without a UI context", ShellChecks.CustomizeToggleSurvivesMissingSyncContext),
+            ("Elevated De-Windows helper accepts only its own request and known changes", ShellChecks.ElevatedHelperIsBounded),
+            ("Taskbar helper restyles and restores the taskbar background in a XAML test host", TaskbarChecks.HelperRestylesAndRestoresTaskbarBackground),
+            ("Taskbar helper applies, replaces and restores style rules in a XAML test host", TaskbarChecks.HelperAppliesAndRestoresStyleRules),
+            ("Taskbar look saves choices and shows only the rows that apply", ShellChecks.TaskbarLookSavesChoicesAndShowsRelevantRows),
+            ("Taskbar details save choices through UI Automation and are searchable", ShellChecks.TaskbarDetailsSaveChoices),
+            ("Taskbar detail rules are anchored to the taskbar and saved choices are normalized", TaskbarChecks.TweakCatalogIsAnchoredAndNormalized),
+            ("Maximized look needs a chosen look, and helper problems show where they belong", TaskbarChecks.MaximizedLookNeedsAChosenLook),
+            ("Scroll-for-volume hook starts and stops on its own thread", TaskbarChecks.ScrollVolumeHookStartsAndStops),
+            ("Desktop groups and widgets are normalized when saved", DesktopChecks.SettingsAreNormalized),
+            ("Desktop groups show folders and lists, widgets show readings, and both follow settings", DesktopChecks.ServiceShowsGroupsAndWidgets),
+            ("Desktop page saves groups, widgets and arranging", ShellChecks.DesktopPageSavesGroupsAndWidgets),
+            ("Folder groups read their folder only when it changes, once per burst of files", DesktopChecks.FolderGroupsReadOnlyWhenNeeded),
+            ("Groups and widgets reopen after Explorer restarts or Windows closes them", DesktopChecks.SurfacesComeBackAfterExplorerRestarts),
+            ("Explorer restart and display change messages settle into one event", DesktopChecks.DesktopEventsSettleBursts),
+            ("Off-screen groups and widgets come back; the clock wakes once a minute", DesktopChecks.SurfacesStayOnScreen),
+            ("Desktop page explains groups, saves names on Enter and keeps rows on rename", DesktopChecks.PageExplainsGroupsAndKeepsRows),
+            ("Dark mode schedule switches only when attached and when the period changes", PersonalizeChecks.ScheduleSwitchesOnlyWhenThePeriodChanges),
+            ("Windows default pointer scheme resolves to Windows' own pointers", PersonalizeChecks.PointerDefaultIsWindowsOwnScheme),
+            ("Live wallpaper reports a missing video and does nothing until attached", PersonalizeChecks.WallpaperReportsWhatHappened),
+            ("Window zones split the work area and fit a window's visible frame", ToolsChecks.ZonesSplitTheWorkAreaAndFitWindows),
+            ("Batch rename plans, refuses clashes, applies and undoes", ToolsChecks.BatchRenamePlansAppliesAndUndoes),
+            ("Text extractor reads text with Windows OCR", ToolsChecks.TextExtractorReadsText),
+            ("Key remapping hook starts, maps and stops", ToolsChecks.KeyRemapperStartsMapsAndStops),
+            ("Remapped keys carry real scan codes and extended flags", ToolsChecks.KeyRemapperSendsScanCodes),
+            ("Startup apps include 32-bit entries for every user with their Run32 state", ToolsChecks.StartupAppsInclude32BitMachineEntries),
+            ("PowerToys-class tools save their choices", ShellChecks.PowerToolsSaveChoices),
+            ("Start folders keep Windows' order in an isolated registry key", PersonalizeChecks.StartFoldersKeepWindowsOrder),
+            ("Dark mode schedule, pointer schemes and wallpaper settings", PersonalizeChecks.ScheduleAndSchemes),
+            ("Start and Appearance extras show and save", ShellChecks.PersonalizeExtrasShowAndSave),
+            ("Startup apps list every source and switch the user's own like Task Manager", ToolsChecks.StartupAppsListAndSwitch),
+            ("Setup export and import keep app preferences and Windows options", ShellChecks.ProfileExportsAndImports),
+            ("Setups exported by the first format keep their meaning after the switches were renamed", ShellChecks.OldProfilesKeepTheirMeaning),
+            ("Pages render in light and dark at 100 and 200 percent", ShellChecks.PagesRenderInThemesAndScales),
+            ("Microphone card names the app input and guides a capture-only test", MicrophoneChecks.CardDescribesRouteAndGuidesTest),
+            ("Microphone setup saves the route, never starts audio and fixes the input in one click", MicrophoneChecks.SetupSavesRouteAndFixesInput),
+            ("Processing editor keeps untouched values and presets", MicrophoneChecks.ProcessingEditorKeepsPresetsAndEdits),
+            ("Playback stages routing until Apply and saves one channel's sound", PlaybackChecks.PlaybackStagesAppliesAndEditsSound),
+            ("Microphone card explains the connection and shows refusals", MicrophoneChecks.CardExplainsConnectionAndRefusals),
+            ("Playback shows refusals and the output all channels share", PlaybackChecks.PlaybackShowsRefusalsAndSharedOutput),
             ("Sparkline renders bounded percentage values", SparklineRenders),
             ("Sparkline auto-scales unbounded throughput values", SparklineAutoScales),
-            ("Home view renders a live snapshot", () => HomeViewRenders(snapshot, device)),
-            ("Monitoring view renders provenance and bounded rows", () => MonitoringViewRenders(snapshot)),
-            ("Monitoring details are disclosed only on request", MonitoringDetailsAreProgressive),
-            ("Mixer prioritizes active endpoints", () => MixerPrioritizesActiveEndpoints(audioSnapshot)),
-            ("Devices view renders an explicit unnrolled profile", () => DevicesViewRenders(device)),
             ("Render-smoke uses an unconstrained popup viewport", RenderSmokeUsesCanonicalViewport)
         ];
 
-        int failed = 0;
+        // Opt-in: changes the real taskbar for a moment and restores it.
+        if (Environment.GetEnvironmentVariable("SOLTEX_LIVE_TASKBAR") == "1")
+            tests.Add(("Live: Explorer's taskbar turns clear and returns to Windows' look", TaskbarChecks.LiveExplorerClearAndRestore));
+
+        int failed = 0, skipped = 0;
         Stopwatch suite = Stopwatch.StartNew();
         foreach ((string name, Action test) in tests)
         {
+            if (Environment.GetEnvironmentVariable("SOLTEX_TEST_FILTER") is { Length: > 0 } filter && !name.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
             Stopwatch testTimer = Stopwatch.StartNew();
             try
             {
@@ -50,67 +130,27 @@ internal static class Program
                 testTimer.Stop();
                 Console.WriteLine($"PASS  {name} ({testTimer.Elapsed.TotalMilliseconds:F1} ms)");
             }
+            catch (SkipException skip)
+            {
+                testTimer.Stop();
+                skipped++;
+                Console.WriteLine($"SKIP  {name}: {skip.Message}");
+            }
             catch (Exception exception)
             {
                 testTimer.Stop();
                 failed++;
                 Console.WriteLine($"FAIL  {name} ({testTimer.Elapsed.TotalMilliseconds:F1} ms)");
                 Console.WriteLine("      " + exception.Message);
+                if (Environment.GetEnvironmentVariable("SOLTEX_TEST_VERBOSE") == "1") Console.WriteLine(exception);
             }
         }
 
         suite.Stop();
         Console.WriteLine();
-        Console.WriteLine($"{tests.Count - failed}/{tests.Count} tests passed.");
-        Console.WriteLine($"MEASURE app_control_suite tests={tests.Count} failed={failed} total_ms={suite.Elapsed.TotalMilliseconds:F1}");
+        Console.WriteLine($"{tests.Count - failed - skipped}/{tests.Count} tests passed" + (skipped > 0 ? $", {skipped} skipped." : "."));
+        Console.WriteLine($"MEASURE app_control_suite tests={tests.Count} failed={failed} skipped={skipped} total_ms={suite.Elapsed.TotalMilliseconds:F1}");
         return failed == 0 ? 0 : 1;
-    }
-
-    private static void ThemeResourcesAreAvailable()
-    {
-        ResourceDictionary resources = Application.Current.Resources;
-        True(resources.Contains("AccentBrush"), "The shared accent brush is missing.");
-        True(resources.Contains("HeroCardStyle"), "The shared hero-card style is missing.");
-        True(resources.Contains("SoltexSliderStyle"), "The shared slider style is missing.");
-    }
-
-    private static void TelemetryRunsOnlyInLiveWorkspaces()
-    {
-        True(TelemetryActivityPolicy.ShouldRun(
-            isLoaded: true,
-            isClosing: false,
-            WindowState.Normal,
-            homeVisible: true,
-            monitoringVisible: false),
-            "Home should keep telemetry active.");
-        True(TelemetryActivityPolicy.ShouldRun(
-            isLoaded: true,
-            isClosing: false,
-            WindowState.Maximized,
-            homeVisible: false,
-            monitoringVisible: true),
-            "Monitoring should keep telemetry active.");
-        True(!TelemetryActivityPolicy.ShouldRun(
-            isLoaded: true,
-            isClosing: false,
-            WindowState.Normal,
-            homeVisible: false,
-            monitoringVisible: false),
-            "Hidden live workspaces must suspend telemetry.");
-        True(!TelemetryActivityPolicy.ShouldRun(
-            isLoaded: true,
-            isClosing: false,
-            WindowState.Minimized,
-            homeVisible: true,
-            monitoringVisible: false),
-            "A minimized window must suspend telemetry.");
-        True(!TelemetryActivityPolicy.ShouldRun(
-            isLoaded: true,
-            isClosing: true,
-            WindowState.Normal,
-            homeVisible: true,
-            monitoringVisible: false),
-            "Closing must prevent telemetry restart.");
     }
 
     private static void SparklineRenders()
@@ -138,81 +178,6 @@ internal static class Program
         };
         byte[] pixels = Render(sparkline, 320, 90);
         True(CountVisiblePixels(pixels) > 50, "The auto-scaled sparkline did not produce visible pixels.");
-    }
-
-    private static void HomeViewRenders(SystemTelemetrySnapshot snapshot, LocalDeviceObservation device)
-    {
-        HomeView view = new();
-        view.UpdateSnapshot(snapshot, device);
-        byte[] pixels = Render(view, 980, 720);
-        True(CountVisiblePixels(pixels) > 5_000, "The Home view render was unexpectedly empty.");
-        True(view.HomeStateText.Text.Length > 0, "Home did not expose a telemetry state.");
-        True(view.MachineNameText.Text == device.DisplayName, "Home did not render the observed local device.");
-        True(view.NetworkStatusText.Text is "LIVE" or "UNAVAILABLE", "Home did not expose the network observation state.");
-        True(view.HomeHeroCard.ActualHeight <= 266, "The Home hero exceeded its bounded viewport height.");
-        True(view.MachineProfileCard.ActualWidth >= 220, "The Home machine profile collapsed below its usable width.");
-    }
-
-    private static void MonitoringViewRenders(SystemTelemetrySnapshot snapshot)
-    {
-        MonitoringView view = new();
-        view.UpdateSnapshot(snapshot);
-        byte[] pixels = Render(view, 980, 720);
-        True(CountVisiblePixels(pixels) > 5_000, "The Monitoring view render was unexpectedly empty.");
-        True(view.ProcessGrid.Items.Count <= SystemTelemetryProvider.MaximumProcessCount, "Monitoring exceeded the process-row bound.");
-        True(view.MonitoringProvenanceText.Text.Contains("GetSystemTimes", StringComparison.Ordinal), "Monitoring omitted provider provenance.");
-        True(view.MonitoringProvenanceText.Text.Contains("GPU", StringComparison.Ordinal), "Monitoring omitted the GPU limitation.");
-        True(view.NetworkCoverageText.Text is "SAMPLED" or "UNAVAILABLE", "Monitoring did not expose the network provider state.");
-    }
-
-    private static void MonitoringDetailsAreProgressive()
-    {
-        MonitoringView view = new();
-        True(view.MonitoringDetailsPanel.Visibility == Visibility.Collapsed,
-            "Monitoring detail must be collapsed on first view.");
-        view.MonitoringDetailsButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        True(view.MonitoringDetailsPanel.Visibility == Visibility.Visible,
-            "Monitoring detail did not open from its explicit disclosure control.");
-        view.MonitoringDetailsButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        True(view.MonitoringDetailsPanel.Visibility == Visibility.Collapsed,
-            "Monitoring detail did not close from its disclosure control.");
-    }
-
-    private static void MixerPrioritizesActiveEndpoints(AudioEndpointSnapshot snapshot)
-    {
-        MixerView view = new();
-        view.UpdateSnapshot(snapshot);
-        int activePlayback = snapshot.Render.Count(endpoint => endpoint.State == AudioEndpointState.Active);
-        int activeRecording = snapshot.Capture.Count(endpoint => endpoint.State == AudioEndpointState.Active);
-        int expectedPrimary = Math.Min(activePlayback, 6) + Math.Min(activeRecording, 6);
-        int moreCount = snapshot.Endpoints.Count - expectedPrimary;
-        True(view.PlaybackItems.Items.Count + view.RecordingItems.Items.Count == expectedPrimary,
-            "Mixer did not keep its primary endpoint lists bounded and active-only.");
-        True(expectedPrimary <= 12, "Mixer exposed more than twelve endpoints in the primary view.");
-        True(view.MorePlaybackItems.Items.Count + view.MoreRecordingItems.Items.Count == moreCount,
-            "Mixer lost endpoints while partitioning the primary and additional lists.");
-        True(view.MoreEndpointsPanel.Visibility == Visibility.Collapsed,
-            "Additional audio endpoints must be collapsed on first view.");
-        if (moreCount > 0)
-        {
-            True(view.MoreEndpointsButton.Visibility == Visibility.Visible,
-                "Mixer omitted the additional-endpoint disclosure control.");
-            view.MoreEndpointsButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            True(view.MoreEndpointsPanel.Visibility == Visibility.Visible,
-                "Mixer additional endpoints did not open from their disclosure control.");
-        }
-    }
-
-    private static void DevicesViewRenders(LocalDeviceObservation device)
-    {
-        DevicesView view = new();
-        view.UpdateObservation(device);
-        byte[] pixels = Render(view, 980, 720);
-        True(CountVisiblePixels(pixels) > 5_000, "The Devices view render was unexpectedly empty.");
-        True(view.CapabilityItems.Items.Count == 6, "Devices did not render the exact capability catalog.");
-        True(view.DeviceProvenanceText.Text.Contains("NotEnrolled", StringComparison.Ordinal), "Devices did not expose the unenrolled state.");
-        True(view.DeviceHeroCard.ActualHeight <= 221, "The Devices hero exceeded its bounded viewport height.");
-        True(view.DeviceProfileCard.ActualWidth >= 240, "The Devices profile collapsed below its usable width.");
     }
 
     private static void RenderSmokeUsesCanonicalViewport()
@@ -275,7 +240,7 @@ internal static class Program
             "Render-smoke clipped content that expanded beyond the constrained host viewport.");
     }
 
-    private static byte[] Render(FrameworkElement element, int width, int height)
+    internal static byte[] Render(FrameworkElement element, int width, int height)
     {
         element.Measure(new Size(width, height));
         element.Arrange(new Rect(0, 0, width, height));
@@ -287,7 +252,7 @@ internal static class Program
         return pixels;
     }
 
-    private static int CountVisiblePixels(byte[] pixels)
+    internal static int CountVisiblePixels(byte[] pixels)
     {
         int visible = 0;
         for (int index = 3; index < pixels.Length; index += 4)
@@ -301,7 +266,7 @@ internal static class Program
         return visible;
     }
 
-    private static void True(bool condition, string message)
+    internal static void True(bool condition, string message)
     {
         if (!condition)
         {
@@ -309,3 +274,6 @@ internal static class Program
         }
     }
 }
+
+/// <summary>Thrown by a check that cannot run on this machine (for example, no OCR language installed). Reported as SKIP, never as PASS.</summary>
+internal sealed class SkipException(string reason) : Exception(reason);

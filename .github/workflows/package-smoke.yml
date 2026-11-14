@@ -9,6 +9,8 @@ on:
       - 'eng/make-icon.ps1'
       - 'eng/publish-release.ps1'
       - 'eng/record-package-identity.ps1'
+      - 'eng/package/**'
+      - 'native/Soltex.TaskbarStyle/**'
       - 'src/**'
   pull_request:
     paths:
@@ -18,6 +20,8 @@ on:
       - 'eng/make-icon.ps1'
       - 'eng/publish-release.ps1'
       - 'eng/record-package-identity.ps1'
+      - 'eng/package/**'
+      - 'native/Soltex.TaskbarStyle/**'
       - 'src/**'
   workflow_dispatch:
 
@@ -31,7 +35,7 @@ env:
 jobs:
   publish-smoke:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -39,12 +43,29 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
-          dotnet-version: 10.0.x
+          # Same feature band as global.json.
+          dotnet-version: 10.0.3xx
 
-      - name: Prepare evidence directory
+      - name: Prepare validation directory
         shell: pwsh
         run: New-Item -ItemType Directory -Force .\artifacts\validation | Out-Null
 
+      # -Acquire downloads the pinned LLVM-MinGW release and checks its size and SHA-256 before use;
+      # later steps and scripts find that toolchain through SOLTEX_LLVM_MINGW.
+      - name: Build native taskbar helper
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $cacheRoot = Join-Path $env:RUNNER_TEMP 'toolchains'
+          .\native\Soltex.TaskbarStyle\build.ps1 -Acquire -CacheRoot $cacheRoot 2>&1 |
+            Tee-Object -FilePath .\artifacts\validation\native-taskbar.log
+          $lock = Get-Content -Raw .\native\Soltex.TaskbarStyle\toolchain.lock.json | ConvertFrom-Json
+          "SOLTEX_LLVM_MINGW=$(Join-Path $cacheRoot $lock.packages[0].folder)" |
+            Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
+
+      # Publishes the same folder layout the installer and the release zip ship: the app with its
+      # runtime, TaskbarHelper\ and Soltex.Audio.Host\.
       - name: Publish self-contained desktop package
         shell: pwsh
         run: |
@@ -54,13 +75,14 @@ jobs:
 
       - name: Launch published package render smoke
         shell: pwsh
+        timeout-minutes: 3
         run: |
           $ErrorActionPreference = 'Stop'
           $exe = Resolve-Path .\artifacts\publish\win-x64\Soltex.exe
-          $output = [System.IO.Path]::GetFullPath('.\artifacts\validation\package-home.png')
+          $output = [System.IO.Path]::GetFullPath('.\artifacts\validation\package-my-pc.png')
           $process = Start-Process `
             -FilePath $exe `
-            -ArgumentList @('--render-smoke', $output, '--panel', 'home') `
+            -ArgumentList @('--render-smoke', $output, '--panel', 'my-pc') `
             -WindowStyle Hidden `
             -Wait `
             -PassThru
@@ -68,11 +90,11 @@ jobs:
           if ($process.ExitCode -ne 0) {
             throw "Published package render failed with exit code $($process.ExitCode)."
           }
-          if (-not (Test-Path -LiteralPath .\artifacts\validation\package-home.png -PathType Leaf)) {
-            throw 'The published package did not create its Home render evidence.'
+          if (-not (Test-Path -LiteralPath .\artifacts\validation\package-my-pc.png -PathType Leaf)) {
+            throw 'The published package did not create its My PC render.'
           }
-          if (Test-Path -LiteralPath .\artifacts\validation\package-home.png.error.txt -PathType Leaf) {
-            Get-Content -LiteralPath .\artifacts\validation\package-home.png.error.txt
+          if (Test-Path -LiteralPath .\artifacts\validation\package-my-pc.png.error.txt -PathType Leaf) {
+            Get-Content -LiteralPath .\artifacts\validation\package-my-pc.png.error.txt
             throw 'The published package produced a render-smoke error file.'
           }
 
@@ -84,7 +106,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           .\eng\record-package-identity.ps1 `
             -ExecutablePath .\artifacts\publish\win-x64\Soltex.exe `
-            -RenderPath .\artifacts\validation\package-home.png `
+            -RenderPath .\artifacts\validation\package-my-pc.png `
+            -Panel my-pc `
             -OutputPath .\artifacts\validation\package-smoke.json `
             -Runtime win-x64 `
             -SourceHeadSha $env:SOLTEX_SOURCE_HEAD_SHA `
@@ -92,17 +115,18 @@ jobs:
             -EventName $env:GITHUB_EVENT_NAME `
             -HeadRef $env:GITHUB_HEAD_REF
 
-      - name: Upload package evidence
+      - name: Upload package smoke results
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: soltex-package-smoke-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             artifacts/publish/win-x64/Soltex.exe
+            artifacts/publish/win-x64/Soltex.dll
             artifacts/validation/package-publish.log
             artifacts/validation/package-launch.log
-            artifacts/validation/package-home.png
-            artifacts/validation/package-home.png.error.txt
+            artifacts/validation/package-my-pc.png
+            artifacts/validation/package-my-pc.png.error.txt
             artifacts/validation/package-smoke.json
           if-no-files-found: warn
           retention-days: 30

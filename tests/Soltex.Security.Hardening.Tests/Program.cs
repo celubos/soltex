@@ -399,15 +399,32 @@ static void WriteEndRecord(
 
 static string FindRepositoryRoot()
 {
-    DirectoryInfo? current = new(AppContext.BaseDirectory);
-    while (current is not null)
+    string? explicitRoot = Environment.GetEnvironmentVariable("SOLTEX_TEST_REPOSITORY_ROOT");
+    if (!string.IsNullOrWhiteSpace(explicitRoot))
     {
-        if (File.Exists(Path.Combine(current.FullName, ".github", "workflows", "windows.yml")))
+        if (!Path.IsPathFullyQualified(explicitRoot) ||
+            !File.Exists(Path.Combine(explicitRoot, "Soltex.sln")) ||
+            !File.Exists(Path.Combine(explicitRoot, ".github", "workflows", "windows.yml")))
         {
-            return current.FullName;
+            throw new DirectoryNotFoundException("SOLTEX_TEST_REPOSITORY_ROOT must name an absolute Soltex checkout containing its workflow.");
         }
 
-        current = current.Parent;
+        return Path.GetFullPath(explicitRoot);
+    }
+
+    foreach (string start in new[] { AppContext.BaseDirectory, Environment.CurrentDirectory })
+    {
+        DirectoryInfo? current = new(start);
+        while (current is not null)
+        {
+            if (File.Exists(Path.Combine(current.FullName, "Soltex.sln")) &&
+                File.Exists(Path.Combine(current.FullName, ".github", "workflows", "windows.yml")))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
+        }
     }
 
     throw new DirectoryNotFoundException("The repository root could not be located.");

@@ -12,5 +12,6 @@
     <ProjectReference Include="..\..\src\Soltex.Audio\Soltex.Audio.csproj" />
     <ProjectReference Include="..\..\src\Soltex.DeviceFabric\Soltex.DeviceFabric.csproj" />
     <ProjectReference Include="..\..\src\Soltex.Monitoring\Soltex.Monitoring.csproj" />
+    <ProjectReference Include="..\..\src\Soltex.Customize\Soltex.Customize.csproj" />
   </ItemGroup>
 </Project>

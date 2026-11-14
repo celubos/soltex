@@ -1,218 +1,97 @@
-# Soltex design system
+# Design system
 
-The visual language of the Soltex workspace, defined once and enforced. Every
-colour, radius, spacing, type, and motion value lives in
-[`src/Soltex.App/Themes/Tokens.xaml`](../src/Soltex.App/Themes/Tokens.xaml).
-No other XAML file may contain a raw colour literal —
-[`eng/verify-design-tokens.ps1`](../eng/verify-design-tokens.ps1) fails the
-Windows gate if one appears. New features tie to these tokens so the product
-stays consistent as it grows.
+Soltex uses WPF's Fluent theme for control behaviour and its own palette, called Studio, for colour. All theme files
+live in [`src/Soltex.App/Themes`](../src/Soltex.App/Themes).
 
-## Principles
+## Files
 
-- **A quiet technical workspace.** Warm near-black ground, parchment text, one
-  coral interaction accent. Colour carries meaning, not decoration.
-- **Green means confirmed-good, never brand.** Green is reserved for healthy or
-  supported state; amber for attention; red for danger. A neutral state stays
-  neutral rather than borrowing a status colour.
-- **Tokens first.** Add a primitive to `Tokens.xaml`, consume it by name. A value
-  that is worth using twice is worth naming once.
-- **Lightweight.** No control library, no theming framework, no runtime colour
-  computation. Flat `ResourceDictionary` merges only.
+| File | Contents |
+| --- | --- |
+| `Tokens.xaml` | Every colour literal in the app, plus radius, spacing, type and motion scales. No other XAML file may contain a colour literal. |
+| `Studio.Dark.xaml`, `Studio.Light.xaml` | Turn the Studio colours into `Studio.*` brushes and re-point the shared Fluent keys (`CardBackgroundFillColorDefaultBrush`, `TextFillColorPrimaryBrush`, `AccentFillColorDefaultBrush`, the `SystemFillColor*BackgroundBrush` set, and so on) so standard controls follow the palette. |
+| `Studio.HighContrast.xaml` | Maps every `Studio.*` brush to a Windows system colour. Fluent keys are left to Fluent's own high-contrast handling. |
+| `Studio.Controls.xaml` | Keyed Studio control styles: `Studio.PrimaryButton`, `Studio.SecondaryButton`, `Studio.GhostButton`, `Studio.Switch`, `Studio.Fader`, `Studio.Chip`, `Studio.SegmentItem`, `Studio.TogglePill`, `Studio.Row`, `Studio.Hero`, `Studio.Eyebrow`, `Studio.CompactCombo`, the shared `Studio.FocusVisual`, and an `AccentButtonStyle` override. |
+| `Shell.xaml` | Shell layout and text styles: `Shell.Card`, `Shell.PageTitle`, `Shell.PageSubtitle`, `Shell.SectionTitle`, `Shell.CardTitle`, `Shell.Body`, `Shell.Secondary`, `Shell.Metric`, `Shell.Glyph`, `Shell.NavItem`, `Shell.InfoBar`, `Shell.SettingRow`, `Shell.Divider`, and layout values (`Shell.PagePadding`, `Shell.CardPadding`, `Shell.CardGap`, `Shell.RowGap`, `Shell.NavItemHeight`). |
 
-## Layers
+## How a theme is applied
 
-`Tokens.xaml` is merged before `SoltexTheme.xaml` in
-[`App.xaml`](../src/Soltex.App/App.xaml):
+`App.xaml` merges `Tokens.xaml` and `Shell.xaml`. At start-up and whenever a setting changes,
+`Shell/ThemeService.cs`:
 
-1. **Colour primitives** — the only raw hex in the app.
-2. **Semantic brushes** — roles (`SurfaceBrush`, `AccentBrush`, …) that reference
-   the primitives. UI references brushes, never primitives directly.
-3. **Scales** — radius, spacing, type, motion.
+1. sets the Fluent `ThemeMode` (Light, Dark or System);
+2. writes the density-dependent layout values into the `Shell.*` keys (Comfortable or Compact);
+3. removes any merged `Studio.*` dictionary and appends the palette (`Studio.Dark`, `Studio.Light`, or
+   `Studio.HighContrast` when Windows high contrast is on), then `Studio.Controls`. Appending last lets the palette win
+   over the Fluent theme dictionary;
+4. turns animations off when the user picks reduced motion or Windows has client-area animation disabled.
 
-`SoltexTheme.xaml` holds component styles only; it references tokens and contains
-no literals.
+Text and control size (100–200 %) is a `LayoutTransform` on the window content, so everything scales together.
 
-## Colour
+Brushes are consumed with `DynamicResource`, so switching between light and dark restyles open windows without a
+restart.
 
-Warm graphite ground, darkest to lightest. All contrast ratios are against
-`CanvasColor` (`#1F1F1F`) unless noted.
+## Studio palette
 
-### Surfaces
+Dark is the default look: deep ink surfaces, cool text, a violet accent with a cyan secondary. Light uses paper
+surfaces, ink text and the deeper accent variants for contrast.
 
-| Token | Hex | Role |
-|---|---|---|
-| `SidebarColor` | `#181816` | Navigation rail |
-| `FieldColor` | `#1B1B19` | Text input wells |
-| `InsetColor` | `#1D1D1A` | Inset pills and code chips |
-| `CanvasColor` | `#1F1F1F` | Window ground |
-| `QuietColor` | `#21211E` | Quiet cards and inset rows |
-| `SurfaceColor` | `#252522` | Default card |
-| `RaisedColor` | `#2B2B27` | Raised controls, table headers |
-| `ElevatedColor` | `#302B27` | Keyboard-focus surface |
-| `HeroBaseColor` | `#292622` | Hero panels |
-| `TrackColor` | `#34332E` | Progress / slider track |
+| Role | Dark | Light |
+| --- | --- | --- |
+| Base | `StudioDarkBase` `#0A0C11` | `StudioLightBase` `#F3F4F9` |
+| Rail | `StudioDarkRail` `#0D1016` | `StudioLightRail` `#ECEEF5` |
+| Card | `StudioDarkCard` `#131720` | `StudioLightCard` `#FFFFFF` |
+| Raised | `StudioDarkRaised` `#1B2130` | `StudioLightRaised` `#F6F7FB` |
+| Control | `StudioDarkControl` `#1F2534` | `StudioLightControl` `#EDEFF5` |
+| Stroke | `StudioDarkStroke` `#232A38` | `StudioLightStroke` `#E1E4ED` |
+| Text | `StudioDarkText` `#EEF1F7` | `StudioLightText` `#0E1220` |
+| Secondary text | `StudioDarkTextSecondary` `#A2ABBD` | `StudioLightTextSecondary` `#4A5367` |
+| Tertiary text | `StudioDarkTextTertiary` `#6B7588` | `StudioLightTextTertiary` `#7A8396` |
 
-Elevation is expressed by stepping up this ramp and adding a border — not by
-drop shadows, which are avoided for performance.
-
-### Text (parchment)
-
-| Token | Hex | Contrast | Use |
-|---|---|---:|---|
-| `TextBrightColor` | `#E7E3D6` | ~12:1 | Emphasised values, input text |
-| `TextColor` | `#D8D5C8` | ~11:1 | Primary body and headings |
-| `TextSecondaryColor` | `#BDBAAF` | ~8:1 | Secondary detail, table headers |
-| `MutedColor` | `#96938A` | ~5.3:1 | Labels, descriptions (AA) |
-| `QuietTextColor` | `#716F68` | ~3.2:1 | Non-essential mono metadata only |
-
-`QuietTextColor` is below the 4.5:1 threshold for body text and is reserved for
-non-essential metadata (provenance strings, timestamps, sample counts) rendered
-in the mono face. Do not use it for information a user must read to act.
-
-### Accent (coral)
-
-| Token | Hex | Use |
-|---|---|---|
-| `AccentColor` | `#F76F53` | Primary action, eyebrows, active nav (~5.9:1) |
-| `AccentFocusColor` | `#F9A08D` | Keyboard-focus ring on accent controls |
-| `AccentDimColor` | `#8E5A4E` | Active nav index numeral |
-| `AccentQuietColor` | `#3A2925` | Accent-tinted quiet fill |
-| `OnAccentColor` | `#211714` | Text on an accent fill (~6.5:1 on coral) |
-
-### Status
-
-| Token | Hex | Meaning |
-|---|---|---|
-| `SignalColor` | `#7ED0A7` | Confirmed-good / supported (green) |
-| `SignalTextColor` | `#B8C4B9` | Body text inside a green surface |
-| `SignalSurfaceColor` | `#20251F` | Green-tinted card ground |
-| `SignalQuietColor` | `#202B25` | Green pill fill |
-| `SignalBorderColor` | `#3D4C42` | Green surface border |
-| `WarningColor` | `#E6B866` | Attention / waiting (amber) |
-| `DangerColor` | `#F18279` | Danger (red) |
-| `DangerTextColor` | `#FF9BA2` | Destructive control label |
-
-Status is never encoded by colour alone. Every status pairs a colour with a text
-label or mono tag (`LIVE`, `PARTIAL`, `NOT ENROLLED`, `UNAVAILABLE`) so it reads
-without colour perception.
-
-### Edges, navigation, and translucent fills
-
-| Token | Hex | Role |
-|---|---|---|
-| `BorderColor` | `#3B3A34` | Default hairline border |
-| `BorderStrongColor` | `#4A4840` | Emphasised / secondary-button border |
-| `HeroBorderColor` | `#514239` | Hero panel border |
-| `NavSelectedColor` | `#372925` | Selected navigation entry |
-| `ScrollTrackColor` | `#242421` | Scrollbar rail |
-| `ScrollThumbColor` | `#5B5850` | Scrollbar thumb |
-| `AccentAreaColor` | `#183F302A` | Coral chart area fill (≈9% alpha) |
-| `SignalAreaColor` | `#1422381F` | Green chart area fill (≈8% alpha) |
-| `SelectionColor` | `#8058453F` | Text selection highlight |
-
-Each colour primitive has a matching `…Brush` (for example `SurfaceColor` →
-`SurfaceBrush`). UI binds to the brush.
-
-## Radius
+Shared accent and status colours:
 
 | Token | Value | Use |
-|---|---:|---|
-| `RadiusXs` | 4 | Scrollbar, track caps |
-| `RadiusSm` | 8 | Buttons, nav entries |
-| `RadiusMd` | 10 | Inset chips |
-| `RadiusLg` | 12 | Pills, small cards |
-| `RadiusCard` | 14 | Default card |
-| `RadiusHero` | 18 | Hero card |
-| `RadiusHeroXl` | 24 | Large hero panel |
+| --- | --- | --- |
+| `StudioAccent` | `#8B5CF6` | Primary actions, selection |
+| `StudioAccentBright` / `StudioAccentDeep` | `#A78BFA` / `#6D28D9` | Accent text on dark / filled buttons and light-theme text |
+| `StudioAccentCyan` | `#22D3EE` | Decorative gradients (rules, rings, meters) only |
+| `StudioSuccess` | `#34D399` | Confirmed-good state |
+| `StudioCaution` | `#FBBF24` | Needs attention |
+| `StudioCritical` | `#F87171` | Danger |
 
-## Spacing
+Each status colour has a `…Deep` variant for text on light surfaces and a tinted surface colour per theme
+(`Studio{Dark,Light}{Success,Caution,Critical,Info}Surface`).
 
-An 8-based scale with a 4/6 fine step for dense controls. Use these for new gaps
-and padding rather than fresh numbers.
+Audio channels have fixed identity colours used by meters and strips: Microphone `#F472B6`, Game `#FB923C`, Chat
+`#34D399`, Media `#38BDF8`, Aux `#A78BFA`, Master `#E2E8F0`.
 
-| Token | Value | | Padding token | Value |
-|---|---:|---|---|---|
-| `Space2xs` | 4 | | `PadCard` | 22 |
-| `SpaceXs` | 6 | | `PadHero` | 26 |
-| `SpaceSm` | 8 | | `PadCompact` | 15 |
-| `SpaceMd` | 12 | | `PadPill` | 10,6 |
-| `SpaceLg` | 16 | | `PadField` | 14,11 |
-| `SpaceXl` | 20 | | `PadButton` | 16,10 |
-| `Space2xl` | 24 | | | |
-| `Space3xl` | 28 | | | |
+## Scales
 
-## Type
+Defined in `Tokens.xaml`:
 
-Three roles: **Georgia** for display moments, **Segoe UI** for controls and body,
-**Cascadia Mono** for measurements and identifiers.
+- **Radius:** `RadiusXs` 4, `RadiusSm` 8, `RadiusMd` 10, `RadiusLg` 12, `RadiusCard` 14, `RadiusHero` 18,
+  `RadiusHeroXl` 24. Fluent controls use `ControlCornerRadius` 8 and `OverlayCornerRadius` 12 from the palette files.
+- **Spacing:** `Space2xs` 4, `SpaceXs` 6, `SpaceSm` 8, `SpaceMd` 12, `SpaceLg` 16, `SpaceXl` 20, `Space2xl` 24,
+  `Space3xl` 28, plus padding thicknesses `PadCard`, `PadHero`, `PadCompact`, `PadPill`, `PadField`, `PadButton`.
+- **Type:** Segoe UI Variable for text and display (`Studio.TextFont`, `Studio.DisplayFont`), Cascadia Mono for
+  numbers and identifiers (`MonoFont`). Size tokens run from `FontMicro` 9 to `FontDisplay` 38. Prefer a named text
+  style over an inline `FontSize`.
+- **Motion:** `MotionFast` 140 ms, `MotionBase` 180 ms, `MotionSlow` 220 ms. Check `ThemeService.AnimationsEnabled`
+  before animating.
 
-| Token | Size | Role |
-|---|---:|---|
-| `FontMicro` | 9 | Mono tags |
-| `FontMono` | 10 | Eyebrows, mono captions |
-| `FontCaption` | 11 | Fine print |
-| `FontSmall` | 12 | Muted descriptions |
-| `FontLabel` | 13 | Navigation labels |
-| `FontBody` | 14 | Body |
-| `FontSection` | 17 | Section titles |
-| `FontTitle` | 22 | Card titles (display) |
-| `FontDisplaySm` | 24 | Hero subtitles (display) |
-| `FontMetric` | 36 | Metric values (display) |
-| `FontDisplay` | 38 | Page titles (display) |
+## Older audio palette
 
-Named text styles in `SoltexTheme.xaml` — `PageEyebrowStyle`, `PageTitleStyle`,
-`SectionTitleStyle`, `MutedTextStyle`, `MetricValueStyle` — apply these roles.
-Prefer a named style over an inline `FontSize`.
+Sections 1–6 of `Tokens.xaml` also hold an earlier warm graphite palette (`CanvasColor`, `SurfaceColor`, `TextColor`,
+`AccentColor` and their `…Brush` forms). The audio views in `src/Soltex.Audio.UI` still use it through
+`Soltex.Audio.UI/Themes/Audio.xaml`, which links `Tokens.xaml`. New shell work should use the Studio and `Shell.*`
+resources instead.
 
-## Motion
+## Rules
 
-Swiss-quiet transitions, 140–220 ms. Respect the system reduced-motion setting
-before animating.
-
-| Token | Duration |
-|---|---:|
-| `MotionFast` | 140 ms |
-| `MotionBase` | 180 ms |
-| `MotionSlow` | 220 ms |
-
-## Components
-
-Styles in `SoltexTheme.xaml`, all token-driven:
-
-| Style | Applies to |
-|---|---|
-| `CardStyle`, `QuietCardStyle`, `HeroCardStyle` | Surface containers |
-| `StatusPillStyle` | Status pills |
-| `ActionButton`, `SecondaryButton`, `NavButton` | Buttons and nav entries |
-| `FieldStyle` | Text inputs |
-| `MetricProgressStyle` | Metric bars |
-| `SoltexSliderStyle` | Sliders |
-| implicit `ScrollBar`, `DataGrid`, `DataGridColumnHeader`, `DataGridCell` | Lists and tables |
-
-### Interaction states
-
-Every interactive control defines rest, hover, pressed, keyboard-focus, and
-disabled. Focus is always visible: accent controls thicken to a 2px
-`AccentFocusBrush` ring; nav entries raise to `ElevatedBrush`. Disabled controls
-drop to 0.42 opacity rather than changing hue.
-
-## Accessibility status
-
-Implemented: visible focus on every control, non-colour status labels, AA body
-contrast, `AutomationProperties.Name` on charts and key controls.
-
-Not yet verified (tracked in [`VALIDATION.md`](VALIDATION.md) and `HANDOFF.md`):
-high-contrast theme behaviour, reduced-motion wiring, a full keyboard/UI
-Automation traversal, the 100/125/150/200% scaling matrix, and owner visual
-acceptance. No accessibility-conformance claim is made.
-
-## Extending the system
-
-1. **New colour** → add a `Color` primitive and its `…Brush` to `Tokens.xaml`,
-   then reference the brush. The guard rejects a raw hex used anywhere else.
-2. **New component** → add a keyed `Style` to `SoltexTheme.xaml` that references
-   tokens; do not inline values.
-3. **New size or gap** → reuse a scale token; add a new scale step only when a
-   genuinely new rhythm is needed, and document it here.
-4. Run `pwsh eng/verify-design-tokens.ps1` (also runs in CI) before committing.
+- Colour lives only in `Tokens.xaml`. `eng/verify-design-tokens.ps1` scans the XAML under `src/Soltex.App`,
+  `src/Soltex.Audio.App` and `src/Soltex.Audio.UI` and fails on any other colour literal. CI runs it.
+- Add a colour as a token, give it a brush in each palette file (and a system-colour mapping in
+  `Studio.HighContrast.xaml`), then reference the brush.
+- Status is never colour alone: pair it with a word or icon.
+- Every interactive control has visible rest, hover, pressed, keyboard-focus and disabled states. Focus uses
+  `Studio.FocusVisual`.
+- Keep it light: no third-party control library and no runtime colour computation.

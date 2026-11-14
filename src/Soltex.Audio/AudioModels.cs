@@ -26,9 +26,16 @@ public enum AudioObservationState
     Unavailable
 }
 
+public enum AudioDeviceRole
+{
+    Console,
+    Multimedia,
+    Communications
+}
+
 /// <summary>
 /// One observed audio endpoint. Volume is the endpoint's current master scalar as
-/// reported by Windows; Soltex reads it and does not set it.
+/// reported by Windows. The suite provider remains read-only; AudioDeviceService exposes explicit controls.
 /// </summary>
 public sealed record AudioEndpoint(
     string Name,
@@ -38,6 +45,14 @@ public sealed record AudioEndpoint(
     double? VolumeScalar,
     bool? IsMuted)
 {
+    /// <summary>Opaque Windows identity; never use the friendly name as a routing key.</summary>
+    public string EndpointId { get; init; } = string.Empty;
+
+    /// <summary>Complete sanitized name, retained independently of a compact display label.</summary>
+    public string FullName { get; init; } = Name;
+
+    public IReadOnlyList<AudioDeviceRole> DefaultRoles { get; init; } = Array.Empty<AudioDeviceRole>();
+
     /// <summary>Volume as a whole percentage, or null when the endpoint did not report one.</summary>
     public double? VolumePercent => VolumeScalar is double scalar
         ? Math.Clamp(scalar * 100, 0, 100)

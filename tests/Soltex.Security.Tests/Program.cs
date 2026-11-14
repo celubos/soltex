@@ -58,6 +58,7 @@ List<(string Name, Func<Task> Test)> tests =
     ("AMSI accepts a benign fixture", AmsiAcceptsBenignFixtureAsync),
     ("Defender event parser redacts resource paths", DefenderEventParserRedactsPathsAsync),
     ("Protection monitor backs off and reports recovery", ProtectionMonitorRecoversAsync),
+    ("Protection monitor never defaults to minute-scale polling", ProtectionMonitorDefaultIntervalAsync),
     ("Protection monitor isolates provider and subscriber faults", ProtectionMonitorIsolatesFaultsAsync),
     ("Protection monitor shuts down during a pending wake", ProtectionMonitorShutdownRaceAsync),
     ("Protection monitor does not abandon timed-out refresh waits", ProtectionMonitorRefreshAfterPollsAsync),
@@ -434,6 +435,18 @@ static async Task ProtectionMonitorRecoversAsync()
     Equal(0, restored.ConsecutiveFailures);
     Equal(recovered, restored.LastKnownGood);
     True(restored.Detail.Contains("recovered", StringComparison.OrdinalIgnoreCase), "Recovery should be explicit.");
+}
+
+static async Task ProtectionMonitorDefaultIntervalAsync()
+{
+    // Without change notifications the fallback must still be far from the old one-minute
+    // cadence, because every observation can start a PowerShell process.
+    ScriptedHealthSource source = new([HealthySnapshot(DateTimeOffset.UtcNow, "1.0")]);
+    await using ProtectionMonitor monitor = new(source);
+    ProtectionMonitorUpdate update = await monitor.RefreshOnceAsync();
+    Equal(ProtectionMonitor.PollingFallbackInterval, update.NextRefreshIn);
+    True(ProtectionMonitor.PollingFallbackInterval >= TimeSpan.FromMinutes(15), "Fallback polling must be at least 15 minutes.");
+    True(ProtectionMonitor.EventBackedInterval >= TimeSpan.FromHours(1), "Event-backed re-checks must be hourly or rarer.");
 }
 
 static async Task ProtectionMonitorIsolatesFaultsAsync()

@@ -11,7 +11,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $tokenFile = 'src/Soltex.App/Themes/Tokens.xaml'
 
 $tracked = @(
-    & git -C $repoRoot ls-files 'src/Soltex.App/*.xaml' |
+    & git -C $repoRoot ls-files 'src/Soltex.App/*.xaml' 'src/Soltex.Audio.App/*.xaml' 'src/Soltex.Audio.UI/*.xaml' |
         ForEach-Object { $_.Replace('\', '/') }
 )
 if ($LASTEXITCODE -ne 0) {

@@ -4,10 +4,8 @@ using System.Runtime.InteropServices;
 
 namespace Soltex.Audio;
 
-// Minimal Core Audio (MMDevice) declarations. Only the reads Soltex needs are
-// bound; the remaining vtable slots are declared so the interface layout stays
-// correct, and are never invoked. Every method is PreserveSig so a failing
-// endpoint degrades into an explicit "inaccessible" count instead of throwing.
+// Core Audio declarations shared by the read-only suite provider and the explicit
+// AudioDeviceService controller. PreserveSig keeps Windows failures observable.
 
 internal enum DataFlow
 {
@@ -58,12 +56,6 @@ internal struct PropVariant
 }
 
 [ComImport]
-[Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
-internal sealed class MMDeviceEnumeratorObject
-{
-}
-
-[ComImport]
 [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
 [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IMMDeviceEnumerator
@@ -78,10 +70,10 @@ internal interface IMMDeviceEnumerator
     int GetDevice([MarshalAs(UnmanagedType.LPWStr)] string id, out IMMDevice device);
 
     [PreserveSig]
-    int RegisterEndpointNotificationCallback(IntPtr client);
+    int RegisterEndpointNotificationCallback(IMMNotificationClient client);
 
     [PreserveSig]
-    int UnregisterEndpointNotificationCallback(IntPtr client);
+    int UnregisterEndpointNotificationCallback(IMMNotificationClient client);
 }
 
 [ComImport]
@@ -175,6 +167,34 @@ internal static class CoreAudio
     };
 
     internal static Guid AudioEndpointVolumeId => new("5CDF2C82-841E-4546-9722-0CF74078229A");
+
+    // MMDeviceEnumerator can return a shared native identity in the process MTA.
+    // A typed COM coclass RCW collides with other libraries' coclass declarations
+    // (including NAudio), even though their interface IID is identical. Own a unique
+    // interface-only RCW so activation and ReleaseComObject never borrow that cache entry.
+    internal static IMMDeviceEnumerator CreateEnumerator()
+    {
+        Guid clsid = new("BCDE0395-E52F-467C-8E3D-C4579291692E");
+        Guid unknown = new("00000000-0000-0000-C000-000000000046");
+        IntPtr pointer = IntPtr.Zero;
+        object? wrapper = null;
+        try
+        {
+            Marshal.ThrowExceptionForHR(CoCreateInstance(ref clsid, IntPtr.Zero, ClassContextAll, ref unknown, out pointer));
+            wrapper = Marshal.GetUniqueObjectForIUnknown(pointer);
+            IMMDeviceEnumerator result = (IMMDeviceEnumerator)wrapper;
+            wrapper = null; // ownership transfers to the calling MTA lease
+            return result;
+        }
+        finally
+        {
+            if (wrapper is not null) Marshal.ReleaseComObject(wrapper);
+            if (pointer != IntPtr.Zero) Marshal.Release(pointer);
+        }
+    }
+
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    private static extern int CoCreateInstance(ref Guid clsid, IntPtr outer, uint context, ref Guid iid, out IntPtr instance);
 
     [DllImport("ole32.dll")]
     internal static extern int PropVariantClear(ref PropVariant value);

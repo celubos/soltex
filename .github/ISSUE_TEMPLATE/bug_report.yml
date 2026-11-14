@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in Soltex doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Taskbar
+        2. Set Background to Blur
+        3. ...
+  - type: input
+    id: soltex
+    attributes:
+      label: Soltex version
+      description: Settings › About
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and build
+      description: Run `winver`
+      placeholder: "Windows 11 24H2 (26100.2605)"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - Installer (setup.exe)
+        - Portable zip
+        - Built from source
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or crash report
+      description: Crash reports are in `%LOCALAPPDATA%\Soltex\logs\crash`. Remove anything private before attaching.

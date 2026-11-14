@@ -1,0 +1,169 @@
+<UserControl x:Class="Soltex.App.Pages.SettingsPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer x:Name="Scroller" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
+        <Grid Margin="{DynamicResource Shell.PagePadding}">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" MaxWidth="900" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Style="{StaticResource Shell.PageTitle}" Text="Settings" />
+                <TextBlock x:Name="Intro" Style="{StaticResource Shell.PageSubtitle}" />
+
+                <!-- Every row: label and description on the left, control on the right (same layout as the other pages). -->
+                <TextBlock x:Name="AppearanceSection" Style="{StaticResource Shell.CardTitle}" Text="Appearance" Margin="2,0,0,8" />
+                <Border Style="{StaticResource Studio.Row}">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Style="{StaticResource Shell.Body}" Text="App theme" />
+                            <TextBlock Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" Text="Follow Windows, or always use light or dark. High contrast from Windows always wins." />
+                        </StackPanel>
+                        <ComboBox x:Name="ThemeChoice" Grid.Column="1" MinWidth="220" VerticalAlignment="Center" AutomationProperties.Name="App theme" SelectionChanged="ThemeChoice_SelectionChanged">
+                            <ComboBoxItem Content="Use Windows setting" />
+                            <ComboBoxItem Content="Light" />
+                            <ComboBoxItem Content="Dark" />
+                        </ComboBox>
+                    </Grid>
+                </Border>
+                <Border Style="{StaticResource Studio.Row}">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Style="{StaticResource Shell.Body}" Text="Text and control size" />
+                            <TextBlock Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" Text="Make everything in this app larger. Windows display scaling applies as well." />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Slider x:Name="ScaleSlider" Width="172" Minimum="100" Maximum="200" SmallChange="10" LargeChange="25" TickFrequency="10"
+                                    IsSnapToTickEnabled="True" AutomationProperties.Name="Text and control size, percent" ValueChanged="ScaleSlider_ValueChanged"
+                                    Thumb.DragStarted="ScaleSlider_DragStarted" Thumb.DragCompleted="ScaleSlider_DragCompleted" />
+                            <TextBlock x:Name="ScaleValue" Style="{StaticResource Shell.Body}" Width="48" Margin="12,0,0,0" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+                <Border Style="{StaticResource Studio.Row}">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Style="{StaticResource Shell.Body}" Text="Spacing" />
+                            <TextBlock Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" Text="Compact fits more on the screen." />
+                        </StackPanel>
+                        <ComboBox x:Name="DensityChoice" Grid.Column="1" MinWidth="220" VerticalAlignment="Center" AutomationProperties.Name="Spacing" SelectionChanged="DensityChoice_SelectionChanged">
+                            <ComboBoxItem Content="Comfortable" />
+                            <ComboBoxItem Content="Compact" />
+                        </ComboBox>
+                    </Grid>
+                </Border>
+                <Border Style="{StaticResource Studio.Row}">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Style="{StaticResource Shell.Body}" Text="Reduce animations" />
+                            <TextBlock Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" Text="Animations also stay off whenever Windows animation effects are off." />
+                        </StackPanel>
+                        <CheckBox x:Name="ReduceMotion" Grid.Column="1" Style="{StaticResource Studio.Switch}" VerticalAlignment="Center"
+                                  AutomationProperties.Name="Reduce animations" Checked="ReduceMotion_Changed" Unchecked="ReduceMotion_Changed" />
+                    </Grid>
+                </Border>
+
+                <ContentControl x:Name="ProfileHost" Focusable="False" />
+
+                <TextBlock x:Name="StartupSection" Style="{StaticResource Shell.CardTitle}" Text="Starting and closing" Margin="2,14,0,8" />
+                <Border Style="{StaticResource Studio.Row}">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Style="{StaticResource Shell.Body}" Text="Start when I sign in to Windows" />
+                            <TextBlock x:Name="StartAtSignInHint" Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" Text="Starts quietly in the notification area." />
+                        </StackPanel>
+                        <CheckBox x:Name="StartAtSignIn" Grid.Column="1" Style="{StaticResource Studio.Switch}" VerticalAlignment="Center"
+                                  AutomationProperties.Name="Start when I sign in to Windows" Checked="StartAtSignIn_Changed" Unchecked="StartAtSignIn_Changed" />
+                    </Grid>
+                </Border>
+                <Border Style="{StaticResource Studio.Row}" Margin="24,0,0,4">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Style="{StaticResource Shell.Body}" Text="Start audio automatically after sign-in" />
+                            <TextBlock Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" Text="Turns on your saved mixer and microphone routes so voice apps hear you without opening this window." />
+                        </StackPanel>
+                        <CheckBox x:Name="StartAudio" Grid.Column="1" Style="{StaticResource Studio.Switch}" VerticalAlignment="Center"
+                                  AutomationProperties.Name="Start audio automatically after sign-in" Checked="StartAudio_Changed" Unchecked="StartAudio_Changed" />
+                    </Grid>
+                </Border>
+                <Border Style="{StaticResource Studio.Row}">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Style="{StaticResource Shell.Body}" Text="Start page" />
+                            <TextBlock Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" Text="The page you see when the window opens." />
+                        </StackPanel>
+                        <ComboBox x:Name="StartPageChoice" Grid.Column="1" MinWidth="220" VerticalAlignment="Center" AutomationProperties.Name="Start page" SelectionChanged="StartPageChoice_SelectionChanged" />
+                    </Grid>
+                </Border>
+                <Border Style="{StaticResource Studio.Row}">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Style="{StaticResource Shell.Body}" Text="Ask before quitting while audio is running" />
+                            <TextBlock Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" Text="Closing the window never stops audio; only Quit does." />
+                        </StackPanel>
+                        <CheckBox x:Name="ConfirmQuit" Grid.Column="1" Style="{StaticResource Studio.Switch}" VerticalAlignment="Center"
+                                  AutomationProperties.Name="Ask before quitting while audio is running" Checked="ConfirmQuit_Changed" Unchecked="ConfirmQuit_Changed" />
+                    </Grid>
+                </Border>
+
+                <TextBlock x:Name="NavigationSection" Style="{StaticResource Shell.CardTitle}" Text="Pages" Margin="2,14,0,4" />
+                <TextBlock Style="{StaticResource Shell.Secondary}" Text="Hide pages you do not use. Your start page stays visible." Margin="2,0,0,8" />
+                <StackPanel x:Name="NavigationRows" />
+
+                <TextBlock x:Name="ShortcutsSection" Style="{StaticResource Shell.CardTitle}" Text="Keyboard shortcuts" Margin="2,14,0,8" />
+                <Border Style="{StaticResource Studio.Row}">
+                    <Grid x:Name="ShortcutGrid" VerticalAlignment="Center">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="160" /><ColumnDefinition /></Grid.ColumnDefinitions>
+                    </Grid>
+                </Border>
+
+                <TextBlock x:Name="DataSection" Style="{StaticResource Shell.CardTitle}" Text="Privacy and data" Margin="2,14,0,8" />
+                <Border Style="{StaticResource Studio.Row}">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Style="{StaticResource Shell.Body}" Text="Settings, audio profiles, activity records and crash reports stay on this PC. Nothing is uploaded." />
+                            <TextBlock x:Name="DataFolderText" Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Button x:Name="OpenDataFolder" Content="Open data folder" Margin="0,0,8,0" Click="OpenDataFolder_Click" />
+                            <Button x:Name="OpenCrashFolder" Content="Open crash reports" Click="OpenCrashFolder_Click" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <TextBlock x:Name="EventsSection" Style="{StaticResource Shell.CardTitle}" Text="Recent events" Margin="2,14,0,8" />
+                <Border Style="{StaticResource Studio.Row}">
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock x:Name="EventsEmpty" Style="{StaticResource Shell.Secondary}" Text="Nothing has happened that needs your attention." />
+                        <ItemsControl x:Name="EventsList" Focusable="False" AutomationProperties.Name="Recent events">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,3">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="80" /><ColumnDefinition Width="140" /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding When}" Style="{StaticResource Shell.Secondary}" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Area}" Style="{StaticResource Shell.Secondary}" />
+                                        <TextBlock Grid.Column="2" Text="{Binding Message}" Style="{StaticResource Shell.Body}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <TextBlock x:Name="AboutSection" Style="{StaticResource Shell.CardTitle}" Text="About" Margin="2,14,0,8" />
+                <Border Style="{StaticResource Studio.Row}">
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock x:Name="AboutName" Style="{StaticResource Shell.Body}" FontWeight="SemiBold" />
+                        <TextBlock x:Name="AboutVersion" Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</UserControl>

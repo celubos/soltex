@@ -1,0 +1,35 @@
+# Independent audio host
+
+`Soltex.Audio.Host` is an owned user-mode graph and control library. `Soltex.Audio.Host.Cli` builds `Soltex.Audio.Host.Service.exe`. It has no Sonar API/project dependency and never sets Windows defaults, app routing, endpoint gain/mute, drivers, services, startup policy or security settings. Its only audio streams are the explicit paths the user enables and starts. Independent virtual endpoints must be supplied separately; the host does not turn one cable into four buses or create a microphone endpoint.
+
+## Application integration
+
+Create `AudioHostClient(profileDirectory, hostExecutablePath)` and await `EnsureConnectedAsync`. The client starts an unelevated hidden helper, which loads desired settings and stays stopped. `ReadAsync` returns desired profile plus confirmed channel states/endpoints. `ApplyProfileAsync` validates, atomically persists and serializes a complete requested profile. When stopped it opens nothing. `StartAsync` opens enabled paths; `StopAsync` retires all owned paths. Client disposal gracefully shuts down its owned helper, falling back only to termination of that retained helper process after an eight-second shutdown timeout; forced shutdown is reported as an error. It never searches for or terminates GG, RustDesk or unrelated processes.
+
+The package layout is `Soltex.Audio.Host/Soltex.Audio.Host.Service.exe` beside the application's other subfolders. The host executable is not a user-facing terminal command: its arguments contain a private per-launch token and exact parent process creation identity. The normal UI uses the typed client.
+
+`Running` means at least one healthy confirmed path is running. `StartRequested` means the user explicitly enabled graph execution, including when devices are missing and no path is running. Per-channel state and `ActiveCaptureId`/`ActiveRenderId` are authoritative. The requested profile must not be shown as a successful switch. `Peak` is the actual input endpoint peak, nullable when unmeasured; `Bridge.OutputPeak` is the actual final rendered-block peak. Neither substitutes a fader value for a signal meter.
+
+## Signal and switching semantics
+
+Five channels represent Game, Chat, Media, Aux and Microphone. Each is an explicit capture-to-render `WasapiBridge` using the shared real DSP engine. Playback master gain/mute applies to the four playback channels; microphone return is separate. Channel gain adds to DSP gain and playback master gain, clamped at the engine's -80 dB floor / +24 dB ceiling. Existing DSP headroom and sample ceiling remain active. This is not an aggregate multi-stream limiter: Windows performs shared-mode summing at a common physical destination.
+
+ChatMix uses the existing independent cosine law only when Game and Chat are enabled, configured for one matching destination and both actually have matching healthy destinations. It stays neutral if either path cannot start or falls back to different hardware. Media/Aux and Microphone do not receive the ChatMix factor. Matching actual fallback devices with different configured destinations remain conservatively ineligible.
+
+One MTA worker owns graph creation, changes and disposal. A 64-command queue bounds control work. Each channel retains its selected output, ordered fallback IDs, exclusions, manual pin and automatic-return choice. Manual selection takes effect when available. A pin keeps that selected device ahead of priority rules. With automatic return off, a working fallback remains until a manual selection changes it or it disappears. Unrecognized new devices are never automatically selected. Duplicate names are routed by exact opaque IDs.
+
+Switches create and start the replacement muted, validate its reported stream state, ramp the old path down using its own compatible DSP settings, retire it, then ramp the replacement in. Open failure retains a still-eligible previous path and tries the next explicitly configured fallback on reconciliation. Failed output opens are suppressed for five seconds; applying a profile or explicit start retries immediately. A retirement failure is visible and blocks reopening that channel until the host is restarted. An individual DSP/observation failure cannot terminate the command worker or leave ordinary callers awaiting a dead queue.
+
+Known base VB-CABLE render pins have one shared transport identity. Duplicate captures and known same-transport/cross-channel feedback routes—including selected fallbacks and confirmed paths—are refused. Sonar endpoints are refused in this independent graph. Other virtual transports without explicit grouping remain a hardware qualification boundary; opaque IDs alone cannot prove two endpoints are separate cables. Users must supply real isolated sources, not aliases of one stream.
+
+Endpoint discovery is cached for one second; actual input peak reads are fresh. The graph reconciles at most every 500 ms when idle, and in response to user commands; UI polling may refresh meters without repeated Windows enumeration. Unchanged DSP settings are not rebuilt each tick. Real hotplug interruption, cross-device clock drift, acoustic feedback/latency and hours-long stability remain live qualification tasks.
+
+## Profiles and protocol
+
+Version 1 profiles contain five unique bus entries and bounded scalar/ID/priority/DSP data. Loading/importing settings never starts audio. Corrupt or future-version files remain untouched and produce an explicit error with a stopped default graph. Saving uses a bounded validated UTF-8 payload, flushed temporary file and same-directory atomic replacement. Failed saving leaves the prior requested graph intact. Import/export use `HostProfileStore.Load` / `Save`; machine endpoint IDs remain explicit and missing devices remain unavailable.
+
+IPC is local named pipes only, `CurrentUserOnly`, with a user/profile-derived name, one process-lifetime owner, per-launch random token, version/request identity, 512 KiB frame limit, strict JSON schema/depth and operation whitelist. Partial requests and responses have deadlines. A client I/O timeout reports the outcome as unknown and never silently replays a mutation; a subsequent read reconciles state. Disconnecting a UI connection does not stop intentional background audio while the owning application remains alive. The helper watches the exact parent PID and start time and shuts down on exit/reuse. Explicit client disposal provides bounded graceful/forced owned-child cleanup while the main process is still alive.
+
+## Verification boundary
+
+`tests/Soltex.Audio.Host.Tests` uses fake audio paths plus real local named-pipe framing and an owned no-device failure helper. It checks switching order, fallback/exclusions/manual return, format-safe ramps, DSP error containment, snapshot isolation, profile persistence/corruption, transport-loop refusal, request authentication/bounds, parent identity, shutdown and orphan prevention. No real device is opened and no Windows audio setting is changed by this suite. Live signal testing needs a separate, journaled run on real devices; these tests do not establish five independent installed drivers or Sonar parity.

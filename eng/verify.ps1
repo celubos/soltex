@@ -1,11 +1,18 @@
 [CmdletBinding()]
 param(
-    [switch]$RunEicar
+    [switch]$RunEicar,
+    # Download the pinned LLVM-MinGW toolchain for the native taskbar helper when it is missing.
+    [switch]$Acquire
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 & (Join-Path $PSScriptRoot 'verify-identity.ps1')
+
+# The App suite drives the native taskbar helper, and the app build copies it only when it exists.
+$nativeArguments = @{}
+if ($Acquire) { $nativeArguments.Acquire = $true }
+& (Join-Path $repoRoot 'native\Soltex.TaskbarStyle\build.ps1') @nativeArguments
 
 $dotnet = Join-Path $repoRoot '.dotnet\dotnet.exe'
 if (-not (Test-Path $dotnet)) {

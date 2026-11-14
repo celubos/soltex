@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- Windowless: a console subsystem helper costs a conhost.exe per launch even with CreateNoWindow.
+         The session secret still arrives on redirected stdin. -->
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>Soltex.Audio.Host.Service</AssemblyName>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Soltex.Audio.Host/Soltex.Audio.Host.csproj" /><ProjectReference Include="../Soltex.Audio.OwnedEndpoints/Soltex.Audio.OwnedEndpoints.csproj" /></ItemGroup>
+</Project>

@@ -1,0 +1,113 @@
+name: release
+
+# Adds the Windows installer to a published release. The installer wraps exactly the
+# app folder from the release's verified zip, so both downloads contain the same files.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to add the installer to (for example v1.0.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    name: Installer
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          persist-credentials: false
+
+      - name: Download and check the release zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force dist | Out-Null
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --pattern 'Soltex-*-win-x64.zip' --pattern 'SHA256SUMS.txt' --dir dist
+          $zip = Get-ChildItem dist -Filter 'Soltex-*-win-x64.zip' | Select-Object -First 1
+          if (-not $zip) { throw 'The release has no Soltex-<version>-win-x64.zip.' }
+          $line = Get-Content dist\SHA256SUMS.txt | Where-Object { $_ -match ('\s' + [regex]::Escape($zip.Name) + '$') } | Select-Object -First 1
+          $expected = ($line -split '\s+')[0]
+          $actual = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "SHA-256 of $($zip.Name) does not match SHA256SUMS.txt." }
+          tar -xf $zip.FullName -C dist
+          if ($LASTEXITCODE) { throw 'Unpacking the zip failed.' }
+          $folder = Get-ChildItem dist -Directory | Where-Object Name -like 'Soltex-*-win-x64' | Select-Object -First 1
+          $version = $folder.Name -replace '^Soltex-(.+)-win-x64$', '$1'
+          "APP_DIR=$($folder.FullName)" >> $env:GITHUB_ENV
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Get Inno Setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE) { throw "Installing Inno Setup failed: $LASTEXITCODE" }
+          }
+          if (-not (Test-Path $iscc)) { throw 'ISCC.exe was not found.' }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $numeric = ($env:APP_VERSION -split '-')[0]
+          & $env:ISCC /Qp "/DPublishDir=$env:APP_DIR" "/DAppVersion=$env:APP_VERSION" "/DNumericVersion=$numeric" "/DOutputDir=$PWD\dist\out" eng\soltex.iss
+          if ($LASTEXITCODE) { throw "ISCC failed: $LASTEXITCODE" }
+
+      - name: Install, start and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem dist\out -Filter '*-setup.exe' | Select-Object -First 1
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Soltex'
+          $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Soltex.lnk'
+          $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{8E1F0C6A-5B3D-4A77-9F2E-1C4D6B8A0E52}_is1'
+          $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+
+          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=startup' -PassThru -Wait
+          if ($p.ExitCode) { throw "Setup exited with $($p.ExitCode)." }
+          foreach ($file in 'Soltex.exe', 'LICENSE.txt', 'README.txt', 'TaskbarHelper\x64\SoltexTaskbar.dll', 'Soltex.Audio.Host\Soltex.Audio.Host.Service.exe') {
+            if (-not (Test-Path (Join-Path $dir $file))) { throw "Not installed: $file" }
+          }
+          if (-not (Test-Path $shortcut)) { throw 'The Start menu shortcut is missing.' }
+          if ((Get-ItemProperty $uninstallKey).DisplayName -ne 'Soltex') { throw 'Soltex is not listed in Installed apps.' }
+          $expectedRun = '"' + (Join-Path $dir 'Soltex.exe') + '" --tray'
+          if ((Get-ItemProperty $runKey -Name Soltex).Soltex -ne $expectedRun) { throw 'The sign-in entry is missing or wrong.' }
+
+          $png = Join-Path $env:RUNNER_TEMP 'installed-home.png'
+          $p = Start-Process (Join-Path $dir 'Soltex.exe') -ArgumentList '--render-smoke', $png, '--panel', 'my-pc', '--profile-dir', (Join-Path $env:RUNNER_TEMP 'profile') -PassThru -Wait
+          if ($p.ExitCode -or -not (Test-Path $png)) { throw "The installed app did not start (exit $($p.ExitCode))." }
+
+          $uninstaller = (Get-ItemProperty $uninstallKey).UninstallString.Trim('"')
+          Start-Process $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          for ($i = 0; $i -lt 60 -and (Test-Path (Join-Path $dir 'Soltex.exe')); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path (Join-Path $dir 'Soltex.exe')) { throw 'Uninstall left the program files.' }
+          if (Test-Path $shortcut) { throw 'Uninstall left the Start menu shortcut.' }
+          if (Test-Path $uninstallKey) { throw 'Uninstall left the Installed apps entry.' }
+          if ((Get-ItemProperty $runKey).PSObject.Properties.Name -contains 'Soltex') { throw 'Uninstall left the sign-in entry.' }
+          Write-Host 'Install, start and uninstall all worked.'
+
+      - name: Add the installer to the release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem dist\out -Filter '*-setup.exe' | Select-Object -First 1
+          $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sums = @(Get-Content dist\SHA256SUMS.txt | Where-Object { $_ -and $_ -notmatch ('\s' + [regex]::Escape($setup.Name) + '$') })
+          $sums += "$hash  $($setup.Name)"
+          Set-Content -Path dist\SHA256SUMS.txt -Value $sums
+          gh release upload $env:TAG $setup.FullName dist\SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE) { throw 'Uploading to the release failed.' }

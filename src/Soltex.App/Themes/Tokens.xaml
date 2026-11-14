@@ -198,4 +198,78 @@
     <Duration x:Key="MotionFast">0:0:0.14</Duration>
     <Duration x:Key="MotionBase">0:0:0.18</Duration>
     <Duration x:Key="MotionSlow">0:0:0.22</Duration>
+
+    <!-- ============================================================ -->
+    <!-- 7. Studio palette: the suite's own look, dark first.        -->
+    <!--    Studio.Dark.xaml / Studio.Light.xaml turn these into       -->
+    <!--    brushes and re-point the shared Fluent keys at them.       -->
+    <!-- ============================================================ -->
+
+    <!-- Dark: deep ink surfaces, cool text, violet → cyan accent. -->
+    <Color x:Key="StudioDarkBase">#0A0C11</Color>
+    <Color x:Key="StudioDarkRail">#0D1016</Color>
+    <Color x:Key="StudioDarkCard">#131720</Color>
+    <Color x:Key="StudioDarkCardTop">#171C27</Color>
+    <Color x:Key="StudioDarkRaised">#1B2130</Color>
+    <Color x:Key="StudioDarkControl">#1F2534</Color>
+    <Color x:Key="StudioDarkTrack">#262D3D</Color>
+    <Color x:Key="StudioDarkStroke">#232A38</Color>
+    <Color x:Key="StudioDarkStrokeStrong">#323B4F</Color>
+    <Color x:Key="StudioDarkText">#EEF1F7</Color>
+    <Color x:Key="StudioDarkTextSecondary">#A2ABBD</Color>
+    <Color x:Key="StudioDarkTextTertiary">#6B7588</Color>
+    <Color x:Key="StudioDarkHover">#0FFFFFFF</Color>
+    <Color x:Key="StudioDarkSelected">#1A8B5CF6</Color>
+    <Color x:Key="StudioDarkSmoke">#B3050609</Color>
+    <Color x:Key="StudioDarkGlowViolet">#408B5CF6</Color>
+    <Color x:Key="StudioDarkGlowCyan">#2622D3EE</Color>
+    <Color x:Key="StudioDarkSuccessSurface">#1F34D399</Color>
+    <Color x:Key="StudioDarkCautionSurface">#1FFBBF24</Color>
+    <Color x:Key="StudioDarkCriticalSurface">#24F87171</Color>
+    <Color x:Key="StudioDarkInfoSurface">#1F8B5CF6</Color>
+
+    <!-- Light: paper surfaces, ink text, deeper accent for contrast. -->
+    <Color x:Key="StudioLightBase">#F3F4F9</Color>
+    <Color x:Key="StudioLightRail">#ECEEF5</Color>
+    <Color x:Key="StudioLightCard">#FFFFFF</Color>
+    <Color x:Key="StudioLightCardTop">#FFFFFF</Color>
+    <Color x:Key="StudioLightRaised">#F6F7FB</Color>
+    <Color x:Key="StudioLightControl">#EDEFF5</Color>
+    <Color x:Key="StudioLightTrack">#DDE1EA</Color>
+    <Color x:Key="StudioLightStroke">#E1E4ED</Color>
+    <Color x:Key="StudioLightStrokeStrong">#C9CFDC</Color>
+    <Color x:Key="StudioLightText">#0E1220</Color>
+    <Color x:Key="StudioLightTextSecondary">#4A5367</Color>
+    <Color x:Key="StudioLightTextTertiary">#7A8396</Color>
+    <Color x:Key="StudioLightHover">#0A0E1220</Color>
+    <Color x:Key="StudioLightSelected">#147C3AED</Color>
+    <Color x:Key="StudioLightSmoke">#660E1220</Color>
+    <Color x:Key="StudioLightGlowViolet">#267C3AED</Color>
+    <Color x:Key="StudioLightGlowCyan">#1A0891B2</Color>
+    <Color x:Key="StudioLightSuccessSurface">#1F059669</Color>
+    <Color x:Key="StudioLightCautionSurface">#24D97706</Color>
+    <Color x:Key="StudioLightCriticalSurface">#1FDC2626</Color>
+    <Color x:Key="StudioLightInfoSurface">#177C3AED</Color>
+
+    <!-- Accent and status (shared; light theme uses the Deep variants for text). -->
+    <Color x:Key="StudioAccent">#8B5CF6</Color>
+    <Color x:Key="StudioAccentBright">#A78BFA</Color>
+    <Color x:Key="StudioAccentDeep">#6D28D9</Color>
+    <Color x:Key="StudioAccentCyan">#22D3EE</Color>
+    <Color x:Key="StudioAccentCyanDeep">#0891B2</Color>
+    <Color x:Key="StudioOnAccent">#FFFFFF</Color>
+    <Color x:Key="StudioSuccess">#34D399</Color>
+    <Color x:Key="StudioSuccessDeep">#059669</Color>
+    <Color x:Key="StudioCaution">#FBBF24</Color>
+    <Color x:Key="StudioCautionDeep">#B45309</Color>
+    <Color x:Key="StudioCritical">#F87171</Color>
+    <Color x:Key="StudioCriticalDeep">#DC2626</Color>
+
+    <!-- Audio channel identities. -->
+    <Color x:Key="StudioChannelMic">#F472B6</Color>
+    <Color x:Key="StudioChannelGame">#FB923C</Color>
+    <Color x:Key="StudioChannelChat">#34D399</Color>
+    <Color x:Key="StudioChannelMedia">#38BDF8</Color>
+    <Color x:Key="StudioChannelAux">#A78BFA</Color>
+    <Color x:Key="StudioChannelMaster">#E2E8F0</Color>
 </ResourceDictionary>

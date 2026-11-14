@@ -1,12 +1,12 @@
-# Soltex supply-chain security boundary
+# Supply-chain security
 
-Status: Windows-verified non-installing planner; no installer or activation boundary
-Snapshot: 2026-08-04
-Implementation namespaces: `Soltex.Security`, `Soltex.Update`
+Code: `src/Soltex.Security`, `src/Soltex.Update`. There is a non-installing update planner; there is no installer or
+activation step.
 
 ## 1. Scope
 
-This document records the clean-room, user-mode supply-chain controls implemented for Soltex. The purpose of this slice is to make later package, plugin, preset, installer, and update work fail closed at explicit trust boundaries.
+This document describes the user-mode supply-chain controls in Soltex. Their purpose is to make package, plugin,
+preset, installer and update work fail closed at explicit trust boundaries.
 
 The implemented components are:
 
@@ -58,7 +58,7 @@ Official references:
 
 After Windows reports success for the explicitly requested signature index, Soltex reads the embedded signer certificate to derive the publisher identity. Requiring zero secondary signatures makes that certificate selection unambiguous for this bounded implementation.
 
-The observed `dwVerifiedSigIndex` is retained as evidence, but it is not used as the authorization condition. The GitHub-hosted Windows implementation successfully validated the explicitly requested index `0` while returning an inconsistent observed index value. The enforced conditions are therefore:
+The observed `dwVerifiedSigIndex` is recorded, but it is not used as the authorization condition: on GitHub-hosted Windows runners `WinVerifyTrust` validated the requested index `0` while reporting an inconsistent observed index. The enforced conditions are therefore:
 
 1. requested signature index is exactly `0`;
 2. `WinVerifyTrust` succeeds;
@@ -81,7 +81,7 @@ The file is SHA-256 hashed before and after trust and identity evaluation. A mis
 
 ### 3.4 Production configuration gap
 
-No Soltex production publisher entry exists. The automated test observes the trusted signer on the installed Microsoft `.NET` host and constructs a temporary in-memory policy for that exact test file.
+No Soltex production publisher entry exists, and release builds are not code-signed. The automated test observes the trusted signer on the installed Microsoft `.NET` host and constructs a temporary in-memory policy for that exact test file.
 
 Before production use, release engineering must define:
 
@@ -95,7 +95,7 @@ Before production use, release engineering must define:
 - overlapping pin rotation and retirement;
 - evidence showing the shipped installer and binaries match the approved identity.
 
-Private keys, certificate passwords, signing tokens, and recovery secrets must not enter source control, logs, prompts, NAS storage, or ordinary application settings.
+Private keys, certificate passwords, signing tokens, and recovery secrets must not enter source control, logs, shared storage, or ordinary application settings.
 
 ## 4. Signed release manifest
 
@@ -266,33 +266,21 @@ The planner's deterministic preview binds product, channel, current/target versi
 
 The installer phase must then provide transactional activation, rollback, repair, uninstall, crash recovery, disk-full handling, locked-file handling, reboot behavior, and retained evidence. It must not execute directly from the archive or staging directory.
 
-## 8. Windows-verified test evidence
+## 8. Build inputs
 
-Implementation commit `8ca28f8aa1f50de929787fe1c1cbd23b96b3f6e9` passed the Windows warnings-as-errors build, 27 existing checks, 18 supply-chain checks, 12 hostile hardening checks, 17 update-planner checks, and 20 non-executing Device Fabric policy checks in GitHub Actions run `30918120029`.
+- NuGet: the only third-party package is NAudio.Wasapi 2.3.0 (and its NAudio.Core dependency), pinned by exact version.
+  Its MIT notice ships in `src/Soltex.Audio.Engine/THIRD-PARTY-NOTICES.txt`.
+- Native toolchains: `native/Soltex.TaskbarStyle/toolchain.lock.json` and `native/Soltex.Audio.Driver/toolchain.lock.json`
+  pin each download by URL, byte size and SHA-256. The taskbar build script refuses an archive that does not match and
+  checks that the built DLL imports only Windows system libraries.
+- CI: every GitHub Action is pinned to a full commit SHA.
+- The test suites cover subject/key policy matching, code-signing EKU, primary-signature verification, release
+  sequence upgrade/replay/rollback/equivocation, authenticated-state tampering, cross-process locking, manifest path
+  canonicalization, archive traversal/collision/link/size/ratio limits, descriptor quorum and expiry, redirects, trust
+  rotation, exact acquisition bytes, cleanup and expiring confirmation (`tests/Soltex.Security.SupplyChain.Tests`,
+  `tests/Soltex.Security.Hardening.Tests`, `tests/Soltex.Update.Tests`).
 
-The suite covers:
-
-- exact subject/SPKI policy match;
-- same-subject/different-key rejection;
-- code-signing EKU rejection;
-- trusted primary-signature publisher verification with zero secondary signatures;
-- first release, upgrade, idempotency, rollback, and equivocation;
-- authenticated-state mutation;
-- cross-process lock cancellation and recovery;
-- noncanonical manifest path;
-- non-UTC publication time;
-- benign archive preservation;
-- traversal cleanup;
-- case collision;
-- symbolic link;
-- expanded-size limit;
-- compression-ratio limit.
-
-The update-planner suite additionally covers signed descriptor validity/expiry/quorum, unauthorized redirects, trust replay/rollback/equivocation/overlap/key replacement, exact locked acquisition bytes, rejection/cancellation cleanup, journal sanitization/recovery cleanup, and exact expiring confirmation. It completed in 2,895.6 ms on current Windows run `30925606488`; that diagnostic timing is not a performance guarantee.
-
-The hosted EICAR interoperability run remained 31/32 because the installed hosted AMSI provider returned native result `1`. Home, Monitoring, Devices, Security, Remote Assist, and Updates rendered natively and produced the expected artifacts. Current-capture inspection found no gross layout blocker after the final corrections; broader visual/accessibility and owner acceptance remain open. See [`VALIDATION.md`](VALIDATION.md) for exact commands, environment, logs, and artifact identity.
-
-## 9. Explicit nonclaims
+## 9. Not claimed
 
 This implementation is not described as:
 
@@ -306,7 +294,6 @@ This implementation is not described as:
 - a registered antivirus provider;
 - a substitute for Defender, another registered provider, SmartScreen, or Windows trust policy;
 - proof that staged content is safe to execute;
-- proof that an approved publisher's software is benign;
-- proof of accessibility or visual approval.
+- proof that an approved publisher's software is benign.
 
 Minifilter, ELAM, PPL/protected service, Windows Security Center provider registration, cloud reputation, detection research, MVI participation, certification, and efficacy claims remain separate future programs.

@@ -15,7 +15,7 @@ env:
 jobs:
   build-test-render:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -23,9 +23,10 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
-          dotnet-version: 10.0.x
+          # Same feature band as global.json; a newer band can add analyzer warnings, which are errors here.
+          dotnet-version: 10.0.3xx
 
-      - name: Prepare evidence directory
+      - name: Prepare validation directory
         shell: pwsh
         run: New-Item -ItemType Directory -Force .\artifacts\validation | Out-Null
 
@@ -44,6 +45,22 @@ jobs:
           $ErrorActionPreference = 'Stop'
           .\eng\verify-design-tokens.ps1 2>&1 |
             Tee-Object -FilePath .\artifacts\validation\design-tokens.log
+
+      # Must run before the build: Soltex.App.csproj includes the helper DLLs only when they exist.
+      # -Acquire downloads the pinned LLVM-MinGW release and checks its size and SHA-256 before use;
+      # later steps and scripts find that toolchain through SOLTEX_LLVM_MINGW.
+      - name: Build native taskbar helper
+        id: native
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $cacheRoot = Join-Path $env:RUNNER_TEMP 'toolchains'
+          .\native\Soltex.TaskbarStyle\build.ps1 -Acquire -CacheRoot $cacheRoot 2>&1 |
+            Tee-Object -FilePath .\artifacts\validation\native-taskbar.log
+          $lock = Get-Content -Raw .\native\Soltex.TaskbarStyle\toolchain.lock.json | ConvertFrom-Json
+          "SOLTEX_LLVM_MINGW=$(Join-Path $cacheRoot $lock.packages[0].folder)" |
+            Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
 
       - name: Build Release
         id: build
@@ -99,6 +116,15 @@ jobs:
             Tee-Object -FilePath .\artifacts\validation\tests-device-fabric.log
           if ($LASTEXITCODE -ne 0) { throw "Device Fabric suite failed with exit code $LASTEXITCODE." }
 
+      - name: Run Windows customization engine suite
+        id: customize_tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run --project .\tests\Soltex.Customize.Tests\Soltex.Customize.Tests.csproj --configuration Release --no-build 2>&1 |
+            Tee-Object -FilePath .\artifacts\validation\tests-customize.log
+          if ($LASTEXITCODE -ne 0) { throw "Customization engine suite failed with exit code $LASTEXITCODE." }
+
       - name: Run bounded monitoring provider suite
         id: monitoring_tests
         shell: pwsh
@@ -137,7 +163,7 @@ jobs:
             Tee-Object -FilePath .\artifacts\validation\tests-eicar.log
           if ($LASTEXITCODE -ne 0) { throw "EICAR interoperability suite failed with exit code $LASTEXITCODE." }
 
-      - name: Capture complete UI evidence matrix
+      - name: Render every page in light and dark themes
         id: render_matrix
         shell: pwsh
         env:
@@ -152,19 +178,21 @@ jobs:
             -TestedCommitSha $env:GITHUB_SHA `
             -DotnetPath (Get-Command dotnet -ErrorAction Stop).Source
 
-      - name: Record complete-gate classification
+      - name: Summarize results
         if: always()
         shell: pwsh
         run: |
           $outcomes = [ordered]@{
             identity = '${{ steps.identity.outcome }}'
             design_tokens = '${{ steps.design_tokens.outcome }}'
+            native = '${{ steps.native.outcome }}'
             build = '${{ steps.build.outcome }}'
             default_tests = '${{ steps.default_tests.outcome }}'
             supply_chain = '${{ steps.supply_chain.outcome }}'
             hardening = '${{ steps.hardening.outcome }}'
             update_tests = '${{ steps.update_tests.outcome }}'
             device_fabric_tests = '${{ steps.device_fabric_tests.outcome }}'
+            customize_tests = '${{ steps.customize_tests.outcome }}'
             monitoring_tests = '${{ steps.monitoring_tests.outcome }}'
             audio_tests = '${{ steps.audio_tests.outcome }}'
             app_tests = '${{ steps.app_tests.outcome }}'
@@ -179,17 +207,17 @@ jobs:
               ForEach-Object { "$($_.Key)=$($_.Value)" }
           )
           if ($requiredFailures.Count -gt 0) {
-            $classification = 'The repository gate is incomplete: ' + ($requiredFailures -join ', ') + '.'
+            $classification = 'Required steps did not pass: ' + ($requiredFailures -join ', ') + '.'
           } elseif ($outcomes.eicar -eq 'success') {
-            $classification = 'Release build, required security suites, native renders, and the opt-in EICAR interoperability suite completed.'
+            $classification = 'Native helper, Release build, required test suites, page renders and the opt-in EICAR interoperability suite passed.'
           } else {
-            $classification = 'Release build, required security suites, and native renders completed; the hosted Windows AMSI provider did not block the in-memory EICAR marker, so provider-interoperability confirmation remains pending on an owner-controlled Windows host.'
+            $classification = 'Native helper, Release build, required test suites and page renders passed. The hosted runner''s AMSI provider did not block the in-memory EICAR marker, so provider interoperability still needs a run on a Windows host with an active AMSI provider.'
           }
           @(
             $outcomes.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }
             $classification
-          ) | Set-Content -Encoding UTF8 .\artifacts\validation\gate-classification.log
-          Add-Content -Encoding UTF8 -Path $env:GITHUB_STEP_SUMMARY -Value "## Soltex Windows gate"
+          ) | Set-Content -Encoding UTF8 .\artifacts\validation\summary.log
+          Add-Content -Encoding UTF8 -Path $env:GITHUB_STEP_SUMMARY -Value "## Soltex Windows build"
           Add-Content -Encoding UTF8 -Path $env:GITHUB_STEP_SUMMARY -Value ""
           Add-Content -Encoding UTF8 -Path $env:GITHUB_STEP_SUMMARY -Value $classification
           if ($requiredFailures.Count -gt 0 -or $outcomes.eicar -ne 'success') {
@@ -197,10 +225,10 @@ jobs:
           }
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        name: Upload Windows evidence
+        name: Upload logs and renders
         if: always()
         with:
-          name: soltex-windows-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          name: soltex-windows-validation-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             artifacts/validation/**
             artifacts/visual/**

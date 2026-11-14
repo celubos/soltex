@@ -1,0 +1,64 @@
+name: Integrated Soltex application
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'native/Soltex.TaskbarStyle/**'
+      - 'docs/audio/**'
+      - 'eng/build-audio.ps1'
+      - 'eng/verify-integrated.ps1'
+      - 'eng/verify-design-tokens.ps1'
+      - 'eng/verify-identity.ps1'
+      - 'eng/identity-allowlist.json'
+      - '.github/workflows/audio.yml'
+      - 'Directory.Build.props'
+      - 'Directory.Build.targets'
+      - 'Soltex.sln'
+      - 'NuGet.Config'
+      - 'global.json'
+permissions:
+  contents: read
+jobs:
+  windows-audio:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          # Same feature band as global.json.
+          dotnet-version: '10.0.3xx'
+      # -Acquire downloads the pinned LLVM-MinGW release and checks its size and SHA-256 before use;
+      # the eng scripts find that toolchain through SOLTEX_LLVM_MINGW.
+      - name: Build native taskbar helper
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $cacheRoot = Join-Path $env:RUNNER_TEMP 'toolchains'
+          ./native/Soltex.TaskbarStyle/build.ps1 -Acquire -CacheRoot $cacheRoot
+          $lock = Get-Content -Raw ./native/Soltex.TaskbarStyle/toolchain.lock.json | ConvertFrom-Json
+          "SOLTEX_LLVM_MINGW=$(Join-Path $cacheRoot $lock.packages[0].folder)" |
+            Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
+      - name: Verify suite and publish integrated development application
+        shell: pwsh
+        run: ./eng/build-audio.ps1 -Integrated -FrameworkDependent -ArtifactRoot "${{ runner.temp }}/soltex-integrated"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: soltex-integrated-development-win-x64
+          path: '${{ runner.temp }}/soltex-integrated/package-*'
+          if-no-files-found: error
+      - name: Retain verification and publish logs
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: soltex-integrated-verification
+          path: |
+            ${{ runner.temp }}/soltex-integrated/build-*/logs/*.log
+            ${{ runner.temp }}/soltex-integrated/build-*/verification/verify-*/results.json
+            ${{ runner.temp }}/soltex-integrated/build-*/verification/verify-*/logs/*.log
+          if-no-files-found: warn

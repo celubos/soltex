@@ -11,4 +11,5 @@
     <InternalsVisibleTo Include="Soltex.Update" />
     <InternalsVisibleTo Include="Soltex.Update.Tests" />
   </ItemGroup>
+  <ItemGroup><Compile Include="..\Shared\AtomicFileReplace.cs" Link="Shared\AtomicFileReplace.cs" /></ItemGroup>
 </Project>

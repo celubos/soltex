@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <Description>Independent Windows Core Audio session mixer. No GG dependency.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Soltex.Audio/CoreAudioInterop.cs" Link="Interop/CoreAudioInterop.cs" />
+    <Compile Include="../Soltex.Audio/AudioNotificationInterop.cs" Link="Interop/AudioNotificationInterop.cs" />
+    <InternalsVisibleTo Include="Soltex.Audio.Sessions.Tests" />
+  </ItemGroup>
+</Project>

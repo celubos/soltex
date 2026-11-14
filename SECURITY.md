@@ -1,16 +1,23 @@
 # Security policy
 
-Soltex is pre-release software. Do not use public issues to disclose a vulnerability that could put users or their files at risk. Contact the repository owner privately and include the affected revision, reproducible steps using benign fixtures, impact, and suggested mitigations.
+## Reporting a vulnerability
 
-## Security invariants
+Please report vulnerabilities privately through GitHub: open the repository's **Security** tab and choose
+**Report a vulnerability**. Do not open a public issue, pull request or discussion for a security problem.
 
-- Soltex must never disable, weaken, exclude itself from, or misrepresent the antivirus provider registered with Windows.
-- File paths, imported content, manifests, presets, plugins, archives, and update metadata are attacker-controlled until validated.
-- PowerShell commands must be fixed application code; untrusted paths may cross the boundary only as data, never interpolated script.
-- Quarantine restore must verify the stored hash and authenticated metadata before writing outside quarantine.
-- Exact-hash allow-list entries require deliberate user action and must never become path-wide exclusions.
-- Executable release artifacts and updates require both an approved publisher policy and authenticated content metadata.
-- Security work must never execute on future real-time audio, capture, encoder, APO, or driver threads.
-- Test material is limited to benign fixtures and the standard harmless EICAR marker. Do not add live malware to this repository.
+Include the affected version or commit, steps to reproduce (with harmless test files only), and the impact you
+observed. You will get a reply in the report thread.
 
-The reusable repository threat model is maintained in `docs/THREAT_MODEL.md`.
+## Scope
+
+Examples of what we want to hear about:
+
+- a way to make the elevated helper (`Soltex.exe --system`) do anything outside its fixed catalogue of changes;
+- untrusted file names, paths or file contents reaching PowerShell as code, or escaping a folder Soltex writes to;
+- quarantine restore or the allow list being abused to overwrite files or trust unintended content;
+- Soltex weakening or misreporting the antivirus product registered with Windows;
+- the taskbar or audio helper being loaded or controlled by another user or process.
+
+Do not include live malware in reports or pull requests. The standard EICAR test string is fine.
+
+The threat model is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).

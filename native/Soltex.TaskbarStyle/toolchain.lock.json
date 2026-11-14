@@ -1,0 +1,15 @@
+{
+  "formatVersion": 1,
+  "release": "llvm-mingw-20261104",
+  "clang": "23.1.5",
+  "packages": [
+    {
+      "file": "llvm-mingw-20261104-ucrt-x86_64.zip",
+      "folder": "llvm-mingw-20261104-ucrt-x86_64",
+      "sha256": "552191b5754c49a5a20723276a6fc56541ea1922c4c50b7b669022333fc1b40f",
+      "bytes": 191037046,
+      "url": "https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/llvm-mingw-20261104-ucrt-x86_64.zip"
+    }
+  ],
+  "license": "LLVM (Apache-2.0 with LLVM exception), mingw-w64 (ZPL/public domain headers); the built helper links only Windows system DLLs"
+}

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Soltex.Audio.Engine/Soltex.Audio.Engine.csproj" />
+    <ProjectReference Include="../../src/Soltex.Audio/Soltex.Audio.csproj" />
+    <ProjectReference Include="../../src/Soltex.Audio.Sessions/Soltex.Audio.Sessions.csproj" />
+    <Compile Include="../Soltex.Audio.Transport.Tests/AudioProbe.cs" Link="Signal/AudioProbe.cs" />
+    <Compile Include="../Soltex.Audio.Transport.Tests/SignalMeasurement.cs" Link="Signal/SignalMeasurement.cs" />
+    <Compile Include="../Soltex.Audio.Sessions.Tests/RecorderClient.cs" Link="Signal/RecorderClient.cs" />
+    <Compile Include="../Soltex.Audio.Transport.Tests/LocalOutputFile.cs" Link="Shared/LocalOutputFile.cs" />
+  </ItemGroup>
+</Project>

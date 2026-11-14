@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$ExecutablePath = 'artifacts\publish\win-x64\Soltex.exe',
-    [string]$RenderPath = 'artifacts\validation\package-home.png',
+    [string]$RenderPath = 'artifacts\validation\package-my-pc.png',
+    # The page the render shows (the app's --panel value).
+    [string]$Panel = 'my-pc',
     [string]$OutputPath = 'artifacts\validation\package-smoke.json',
     [string]$Runtime = 'win-x64',
     [string]$SourceHeadSha,
@@ -72,7 +74,7 @@ if (-not (Test-Path -LiteralPath $resolvedRender -PathType Leaf)) {
     throw "Published package render was not found: '$resolvedRender'."
 }
 if (Test-Path -LiteralPath $resolvedOutput) {
-    throw "Refusing to overwrite existing package identity evidence: '$resolvedOutput'."
+    throw "Refusing to overwrite an existing package identity record: '$resolvedOutput'."
 }
 
 $outputDirectory = Split-Path -Parent $resolvedOutput
@@ -112,7 +114,7 @@ if ($signatureStatus -notin @('Valid', 'NotSigned')) {
     authenticode_status = $signatureStatus
     signed = ($signature.Status -eq 'Valid')
     render = [ordered]@{
-        panel = 'home'
+        panel = $Panel
         file = $renderItem.Name
         length = $renderItem.Length
         sha256 = $renderHash.Hash.ToLowerInvariant()

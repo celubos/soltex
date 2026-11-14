@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Soltex.Audio.Engine.Core</AssemblyName>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <Description>Independent PCM DSP and explicit WASAPI bridge; requires separately supplied audio endpoints.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="Program.cs" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.3.0" />
+    <None Update="THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

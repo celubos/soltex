@@ -93,7 +93,7 @@ public static class AudioEndpointProvider
     {
         try
         {
-            return (IMMDeviceEnumerator)(object)new MMDeviceEnumeratorObject();
+            return CoreAudio.CreateEnumerator();
         }
         catch (COMException)
         {
@@ -208,13 +208,20 @@ public static class AudioEndpointProvider
                 return false;
             }
 
+            _ = TryGetEndpointId(device, out string? id);
             bool isDefault = defaultId is not null &&
-                TryGetEndpointId(device, out string? id) &&
                 string.Equals(id, defaultId, StringComparison.OrdinalIgnoreCase);
-            string name = SanitizeName(ReadFriendlyName(device));
+            string? rawName = ReadFriendlyName(device);
+            string name = SanitizeName(rawName);
+            string fullName = rawName is null ? name : new string(rawName.Where(character => !char.IsControl(character)).ToArray()).Trim();
             (double? volumeScalar, bool? isMuted) = ReadVolume(device);
 
-            endpoint = new AudioEndpoint(name, direction, MapState(stateValue), isDefault, volumeScalar, isMuted);
+            endpoint = new AudioEndpoint(name, direction, MapState(stateValue), isDefault, volumeScalar, isMuted)
+            {
+                EndpointId = id ?? string.Empty,
+                FullName = string.IsNullOrWhiteSpace(fullName) ? name : fullName,
+                DefaultRoles = isDefault ? new[] { AudioDeviceRole.Multimedia } : Array.Empty<AudioDeviceRole>()
+            };
             return true;
         }
         finally

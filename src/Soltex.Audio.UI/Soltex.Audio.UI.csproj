@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Soltex.Audio/Soltex.Audio.csproj" />
+    <ProjectReference Include="../Soltex.Audio.Sonar/Soltex.Audio.Sonar.csproj" />
+    <ProjectReference Include="../Soltex.Audio.Engine/Soltex.Audio.Engine.csproj" />
+    <ProjectReference Include="../Soltex.Audio.Host/Soltex.Audio.Host.csproj" />
+    <Page Include="../Soltex.App/Themes/Tokens.xaml" Link="Themes/Tokens.xaml" />
+  </ItemGroup>
+  <ItemGroup><InternalsVisibleTo Include="Soltex.Audio.Independent.UI.Tests" /></ItemGroup>
+  <ItemGroup><Compile Include="..\Shared\AtomicFileReplace.cs" Link="Shared\AtomicFileReplace.cs" /></ItemGroup>
+</Project>

@@ -329,7 +329,7 @@ internal sealed class AuthenticatedJsonStore : IDisposable
                 verifiedEnvelope,
                 cancellationToken).ConfigureAwait(false);
             AuthenticatedStateFileIO.RejectReparsePoint(destination);
-            File.Move(temporary, destination, overwrite: true);
+            Soltex.Shared.AtomicFileReplace.Move(temporary, destination);
         }
         finally
         {

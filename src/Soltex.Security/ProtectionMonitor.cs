@@ -5,6 +5,16 @@ namespace Soltex.Security;
 
 public sealed class ProtectionMonitor : IDisposable, IAsyncDisposable
 {
+    /// <summary>
+    /// Baseline re-check when Windows Security Center change notifications are registered.
+    /// Health changes arrive as events; this interval only catches slow drift such as signature age.
+    /// Each observation may start a short-lived process, so it must stay rare.
+    /// </summary>
+    public static readonly TimeSpan EventBackedInterval = TimeSpan.FromHours(6);
+
+    /// <summary>Re-check interval when change notifications are unavailable.</summary>
+    public static readonly TimeSpan PollingFallbackInterval = TimeSpan.FromMinutes(15);
+
     private readonly IProtectionHealthSource _source;
     private readonly WindowsSecurityChangeMonitor? _changeMonitor;
     private readonly TimeSpan _pollInterval;
@@ -30,7 +40,9 @@ public sealed class ProtectionMonitor : IDisposable, IAsyncDisposable
     {
         _source = source ?? throw new ArgumentNullException(nameof(source));
         _changeMonitor = changeMonitor;
-        _pollInterval = pollInterval ?? TimeSpan.FromMinutes(1);
+        _pollInterval = pollInterval ?? (changeMonitor?.IsRegistered == true
+            ? EventBackedInterval
+            : PollingFallbackInterval);
         _failureRetryInterval = failureRetryInterval ?? TimeSpan.FromSeconds(5);
         _maximumBackoff = maximumBackoff ?? TimeSpan.FromMinutes(5);
 

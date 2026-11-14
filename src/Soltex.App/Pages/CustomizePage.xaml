@@ -1,0 +1,23 @@
+<UserControl x:Class="Soltex.App.Pages.CustomizePage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
+        <Grid Margin="{DynamicResource Shell.PagePadding}">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*" MaxWidth="900" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+        <StackPanel>
+            <TextBlock x:Name="PageTitleText" Style="{StaticResource Shell.PageTitle}" Margin="0,0,0,20" />
+
+            <Border x:Name="RestartBar" Style="{StaticResource Studio.Row}" Visibility="Collapsed" Margin="0,0,0,16">
+                <DockPanel>
+                    <Button x:Name="RestartExplorer" DockPanel.Dock="Right" Content="Restart File Explorer" Click="RestartExplorer_Click"
+                            AutomationProperties.HelpText="The taskbar and File Explorer windows close and reopen; your files are not affected" />
+                    <TextBlock Style="{StaticResource Shell.Body}" VerticalAlignment="Center" Text="Some changes show after File Explorer restarts." />
+                </DockPanel>
+            </Border>
+            <ProgressBar x:Name="Busy" IsIndeterminate="True" Height="3" Margin="0,0,0,8" Visibility="Collapsed" AutomationProperties.Name="Applying changes" />
+
+            <StackPanel x:Name="Groups" />
+        </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</UserControl>

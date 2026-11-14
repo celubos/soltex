@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Soltex.OwnedAudioRouteProbe</AssemblyName>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Soltex.Audio.Transport.Tests\SignalMeasurement.cs" Link="SignalMeasurement.cs" />
+    <Compile Include="..\Soltex.Audio.Transport.Tests\AudioProbe.cs" Link="AudioProbe.cs" />
+    <Compile Include="..\Soltex.Audio.Transport.Tests\LocalOutputFile.cs" Link="LocalOutputFile.cs" />
+    <ProjectReference Include="..\..\src\Soltex.Audio.WindowsRouting\Soltex.Audio.WindowsRouting.csproj" />
+    <ProjectReference Include="..\..\src\Soltex.Audio.Sonar\Soltex.Audio.Sonar.csproj" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.3.0" />
+  </ItemGroup>
+</Project>

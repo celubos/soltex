@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0-windows10.0.19041.0</TargetFramework><SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Soltex.Audio.Host/Soltex.Audio.Host.csproj" /><ProjectReference Include="../Soltex.Audio.Transport/Soltex.Audio.Transport.csproj" /><ProjectReference Include="../Soltex.Audio.Broker/Soltex.Audio.Broker.csproj" /></ItemGroup>
+</Project>

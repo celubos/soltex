@@ -1,0 +1,7 @@
+<Window x:Class="Soltex.Audio.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:audio="clr-namespace:Soltex.Audio.UI;assembly=Soltex.Audio.UI"
+        Title="Soltex Sonar mixer" Width="1240" Height="810" MinWidth="640" MinHeight="420" WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource CanvasBrush}" Foreground="{DynamicResource TextBrush}" UseLayoutRounding="True">
+  <audio:MixerWorkspace x:Name="Workspace"/>
+</Window>

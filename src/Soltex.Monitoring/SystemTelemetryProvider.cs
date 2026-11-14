@@ -20,8 +20,18 @@ public static class SystemTelemetryProvider
     private static readonly TimeSpan MinimumSampleWindow = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan MaximumSampleWindow = TimeSpan.FromSeconds(2);
 
-    public static async Task<SystemTelemetrySnapshot> CaptureAsync(
+    public static Task<SystemTelemetrySnapshot> CaptureAsync(
         TimeSpan? sampleWindow = null,
+        CancellationToken cancellationToken = default) =>
+        CaptureAsync(sampleWindow, includeProcesses: true, cancellationToken);
+
+    /// <summary>
+    /// Captures one bounded sample. Process enumeration is the expensive part of a sample, so callers
+    /// that only show system totals pass <paramref name="includeProcesses"/> = false.
+    /// </summary>
+    public static async Task<SystemTelemetrySnapshot> CaptureAsync(
+        TimeSpan? sampleWindow,
+        bool includeProcesses,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -35,7 +45,8 @@ public static class SystemTelemetryProvider
 
         Stopwatch capture = Stopwatch.StartNew();
         bool hasFirstSystemTimes = NativeTelemetry.TryReadSystemTimes(out SystemTimesSample firstSystemTimes);
-        Dictionary<int, ProcessSeed> firstProcesses = CaptureProcessSeeds(out int firstInaccessibleProcesses);
+        int firstInaccessibleProcesses = 0, secondInaccessibleProcesses = 0;
+        Dictionary<int, ProcessSeed> firstProcesses = includeProcesses ? CaptureProcessSeeds(out firstInaccessibleProcesses) : [];
         Dictionary<string, NetworkSeed> firstNetworks = CaptureNetworkSeeds(out int firstInaccessibleNetworks);
 
         Stopwatch sample = Stopwatch.StartNew();
@@ -43,7 +54,7 @@ public static class SystemTelemetryProvider
         sample.Stop();
 
         bool hasSecondSystemTimes = NativeTelemetry.TryReadSystemTimes(out SystemTimesSample secondSystemTimes);
-        Dictionary<int, ProcessSeed> secondProcesses = CaptureProcessSeeds(out int secondInaccessibleProcesses);
+        Dictionary<int, ProcessSeed> secondProcesses = includeProcesses ? CaptureProcessSeeds(out secondInaccessibleProcesses) : [];
         Dictionary<string, NetworkSeed> secondNetworks = CaptureNetworkSeeds(out int secondInaccessibleNetworks);
         double? cpuPercent = hasFirstSystemTimes && hasSecondSystemTimes
             ? TelemetryMath.CalculateSystemUsage(

@@ -4,20 +4,41 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>Soltex.App</RootNamespace>
     <AssemblyName>Soltex</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Soltex.ico</ApplicationIcon>
+    <!-- WFO0003 asks WinForms apps to set DPI through Application.SetHighDpiMode. This is a WPF app that
+         references WinForms only for the tray icon, so per-monitor DPI must come from app.manifest. -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
+    <!-- Source-generated P/Invoke (LibraryImport) for the utilities needs unsafe stubs. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Soltex.RemoteAssist\Soltex.RemoteAssist.csproj" />
     <ProjectReference Include="..\Soltex.Security\Soltex.Security.csproj" />
+    <ProjectReference Include="..\Soltex.Customize\Soltex.Customize.csproj" />
     <ProjectReference Include="..\Soltex.Update\Soltex.Update.csproj" />
     <ProjectReference Include="..\Soltex.Monitoring\Soltex.Monitoring.csproj" />
     <ProjectReference Include="..\Soltex.DeviceFabric\Soltex.DeviceFabric.csproj" />
     <ProjectReference Include="..\Soltex.Audio\Soltex.Audio.csproj" />
+    <ProjectReference Include="..\Soltex.Audio.UI\Soltex.Audio.UI.csproj" />
+    <ProjectReference Include="..\Soltex.Audio.Sessions\Soltex.Audio.Sessions.csproj" />
+    <ProjectReference Include="..\Soltex.Audio.WindowsRouting\Soltex.Audio.WindowsRouting.csproj" />
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Soltex.App.Tests" />
+  </ItemGroup>
+  <ItemGroup><Compile Include="..\Shared\AtomicFileReplace.cs" Link="Shared\AtomicFileReplace.cs" /></ItemGroup>
+  <!-- Native taskbar helper, built by native/Soltex.TaskbarStyle/build.ps1 into artifacts/native/taskbar. -->
+  <PropertyGroup>
+    <SoltexTaskbarHelper>$(MSBuildThisFileDirectory)..\..\artifacts\native\taskbar\</SoltexTaskbarHelper>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(SoltexTaskbarHelper)x64\SoltexTaskbar.dll" Link="TaskbarHelper\x64\SoltexTaskbar.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('$(SoltexTaskbarHelper)x64\SoltexTaskbar.dll')" />
+    <None Include="$(SoltexTaskbarHelper)arm64\SoltexTaskbar.dll" Link="TaskbarHelper\arm64\SoltexTaskbar.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('$(SoltexTaskbarHelper)arm64\SoltexTaskbar.dll')" />
   </ItemGroup>
 </Project>

@@ -1,0 +1,42 @@
+<UserControl x:Class="Soltex.App.Views.WindowsMixerView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <UserControl.Resources>
+    <!-- The app's 8 px control radius would draw this check box as a circle that reads as a radio button. -->
+    <Style TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
+      <Style.Resources><CornerRadius x:Key="ControlCornerRadius">4</CornerRadius></Style.Resources>
+      <Setter Property="Border.CornerRadius" Value="4"/>
+    </Style>
+  </UserControl.Resources>
+  <!-- The Audio page is the scroll host. The device row and the app rows share one card and one column layout
+       (name, slider, value, mute) so their controls line up. -->
+  <StackPanel Margin="0,0,0,8">
+    <StackPanel Margin="0,0,0,16"><TextBlock Text="App volume" Style="{StaticResource Shell.SectionTitle}" Margin="0"/><TextBlock Text="Volume and output for each app." Style="{StaticResource Shell.Secondary}" Margin="0,4,0,0"/></StackPanel>
+    <StackPanel Margin="0,0,0,16"><TextBlock Text="Playback device" Style="{StaticResource Shell.Body}" Margin="0,0,0,6"/><ComboBox x:Name="DeviceSelector" DisplayMemberPath="Label" SelectedValuePath="Id" SelectionChanged="DeviceChanged" MinHeight="36" AutomationProperties.Name="Playback device to show"/><CheckBox x:Name="ShowVirtual" Content="Include virtual playback devices" Margin="0,8,0,0" Checked="VirtualVisibilityChanged" Unchecked="VirtualVisibilityChanged"/></StackPanel>
+    <Border Style="{StaticResource Shell.Card}">
+      <StackPanel>
+        <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" Padding="0,0,0,12">
+          <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="3*"/><ColumnDefinition Width="70"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+            <TextBlock Text="Device volume" FontWeight="SemiBold" Margin="0,0,18,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+            <Slider x:Name="EndpointLevel" Grid.Column="1" Margin="0,0,16,0" Minimum="0" Maximum="100" SmallChange="1" LargeChange="5" VerticalAlignment="Center" ValueChanged="EndpointLevelChanged" PreviewMouseWheel="IgnoreWheel" AutomationProperties.Name="Playback device volume percent"/>
+            <TextBlock x:Name="EndpointValue" Grid.Column="2" Margin="0,0,12,0" Padding="11,0" VerticalAlignment="Center"/>
+            <Button x:Name="EndpointMute" Grid.Column="3" Content="Mute" Click="EndpointMuteClick" Padding="10,6" HorizontalAlignment="Stretch"/>
+            <ProgressBar x:Name="EndpointPeak" Grid.Row="1" Grid.ColumnSpan="4" Minimum="0" Maximum="1" Height="4" Margin="0,10,0,0" Foreground="{DynamicResource AccentFillColorDefaultBrush}" Background="{DynamicResource SubtleFillColorSecondaryBrush}" IsHitTestVisible="False" AutomationProperties.Name="Playback device level"/>
+          </Grid>
+        </Border>
+        <ItemsControl ItemsSource="{Binding Rows}" Focusable="False"><ItemsControl.ItemTemplate><DataTemplate>
+          <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" Padding="0,12"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="3*"/><ColumnDefinition Width="70"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+            <TextBlock Text="{Binding Name}" ToolTip="{Binding Detail}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="0,0,18,0" VerticalAlignment="Center"/>
+            <Slider Grid.Column="1" Value="{Binding Level,Mode=OneWay}" Minimum="0" Maximum="100" SmallChange="1" LargeChange="5" VerticalAlignment="Center" IsEnabled="{Binding CanControl}" ValueChanged="SessionLevelChanged" PreviewMouseWheel="IgnoreWheel" AutomationProperties.Name="{Binding AccessibleName}" Margin="0,0,16,0"/>
+            <TextBox Grid.Column="2" Text="{Binding LevelText,Mode=OneWay}" IsEnabled="{Binding CanControl}" GotKeyboardFocus="LevelFocus" LostKeyboardFocus="LevelCommit" KeyDown="LevelKey" AutomationProperties.Name="{Binding AccessibleName}" Margin="0,0,12,0" VerticalContentAlignment="Center"/>
+            <Button Grid.Column="3" Content="{Binding MuteLabel}" IsEnabled="{Binding CanControl}" Click="SessionMuteClick" Padding="10,6" HorizontalAlignment="Stretch" AutomationProperties.Name="{Binding MuteAccessibleName}"/>
+            <TextBlock Grid.Row="1" Grid.ColumnSpan="3" Text="{Binding Status}" Style="{StaticResource Shell.Secondary}" FontSize="12" Margin="0,5,12,7"/>
+            <Button Grid.Row="1" Grid.Column="3" Content="Route…" IsEnabled="{Binding CanRoute}" Click="SessionRouteClick" Padding="7,3" Margin="0,4,0,6" HorizontalAlignment="Stretch" AutomationProperties.Name="{Binding RouteAccessibleName}"/>
+            <ProgressBar Grid.Row="2" Grid.ColumnSpan="4" Value="{Binding Peak,Mode=OneWay}" Minimum="0" Maximum="1" Height="4" Foreground="{DynamicResource AccentFillColorDefaultBrush}" Background="{DynamicResource SubtleFillColorSecondaryBrush}" IsHitTestVisible="False" AutomationProperties.Name="{Binding MeterAccessibleName}"/>
+          </Grid></Border>
+        </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+        <TextBlock x:Name="EmptySessions" Text="Play something in an app to see it here." Style="{StaticResource Shell.Secondary}" HorizontalAlignment="Center" Margin="0,16,0,4"/>
+      </StackPanel>
+    </Border>
+    <TextBlock x:Name="Feedback" Text="Choose a playback device." Style="{StaticResource Shell.Secondary}"/>
+    <TextBlock Text="Choosing a device here only changes what is shown. To move an app to another output, use its Route… button. Windows defaults stay as they are." Style="{StaticResource Shell.Secondary}" Margin="0,6,0,0"/>
+  </StackPanel>
+</UserControl>

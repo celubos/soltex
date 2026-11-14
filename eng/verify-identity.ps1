@@ -84,15 +84,17 @@ foreach ($relativePath in $tracked) {
                 continue
             }
 
-            if ($entry.allowAll -eq $true) {
+            if (($entry.PSObject.Properties.Name -contains 'allowAll') -and $entry.allowAll -eq $true) {
                 $allowed = $true
                 break
             }
 
-            foreach ($needle in @($entry.lineContains)) {
-                if ($line.IndexOf([string]$needle, [StringComparison]::Ordinal) -ge 0) {
-                    $allowed = $true
-                    break
+            if ($entry.PSObject.Properties.Name -contains 'lineContains') {
+                foreach ($needle in @($entry.lineContains)) {
+                    if ($line.IndexOf([string]$needle, [StringComparison]::Ordinal) -ge 0) {
+                        $allowed = $true
+                        break
+                    }
                 }
             }
 

@@ -6,8 +6,15 @@ param(
     [string]$Configuration = 'Release',
     [string]$SourceHeadSha,
     [string]$TestedCommitSha,
-    [string]$DotnetPath
+    [string]$DotnetPath,
+    # A render that has not exited by then is stopped and reported, so a stuck render cannot hang CI.
+    [ValidateRange(30, 1800)]
+    [int]$RenderTimeoutSeconds = 180
 )
+
+# Renders every page of the built app in the light and dark themes through its --render-smoke switch,
+# checks each PNG, and writes render-matrix.json with the file hashes. Requires a prior build of
+# src\Soltex.App in the chosen configuration.
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -31,6 +38,16 @@ function Assert-CommitSha {
     if ($Value -notmatch '^[0-9a-fA-F]{40}$') {
         throw "$Name must be a complete 40-character Git commit SHA; received '$Value'."
     }
+}
+
+# Start-Process joins arguments with spaces, so quote any that contain one.
+function ConvertTo-ProcessArgument {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    if ($Value -match '\s') {
+        return '"' + $Value + '"'
+    }
+    return $Value
 }
 
 $checkedOutCommit = & git -C $repoRoot rev-parse HEAD 2>$null
@@ -80,18 +97,19 @@ $validationRoot = Resolve-RepositoryPath -Path $ValidationDirectory
 $manifestPath = Join-Path $validationRoot 'render-matrix.json'
 $projectPath = Join-Path $repoRoot 'src\Soltex.App\Soltex.App.csproj'
 
+# Must match SuiteLaunchOptions.PanelNames in src\Soltex.App\SuiteLaunchOptions.cs.
+$panels = @(
+    'my-pc', 'customize', 'history', 'audio', 'audio-apps', 'tools', 'settings',
+    'search', 'taskbar', 'start', 'explorer', 'appearance', 'multitasking', 'desktop'
+)
+$themes = @('light', 'dark')
+
 $matrix = @(
-    [ordered]@{ id = 'home-default'; panel = 'home'; state = 'default'; file = 'home-current-source.png' },
-    [ordered]@{ id = 'monitoring-default'; panel = 'monitoring'; state = 'default'; file = 'monitoring-current-source.png' },
-    [ordered]@{ id = 'monitoring-details'; panel = 'monitoring-details'; state = 'expanded'; file = 'monitoring-details-current-source.png' },
-    [ordered]@{ id = 'devices-default'; panel = 'devices'; state = 'default'; file = 'devices-current-source.png' },
-    [ordered]@{ id = 'mixer-default'; panel = 'mixer'; state = 'default'; file = 'mixer-current-source.png' },
-    [ordered]@{ id = 'mixer-more'; panel = 'mixer-more'; state = 'expanded'; file = 'mixer-more-current-source.png' },
-    [ordered]@{ id = 'clips-default'; panel = 'clips'; state = 'default'; file = 'clips-current-source.png' },
-    [ordered]@{ id = 'security-default'; panel = 'security'; state = 'default'; file = 'security-current-source.png' },
-    [ordered]@{ id = 'security-activity'; panel = 'security-activity'; state = 'expanded'; file = 'security-activity-current-source.png' },
-    [ordered]@{ id = 'remote-default'; panel = 'remote'; state = 'default'; file = 'remote-assist-current-source.png' },
-    [ordered]@{ id = 'updates-default'; panel = 'update'; state = 'default'; file = 'updates-current-source.png' }
+    foreach ($panel in $panels) {
+        foreach ($theme in $themes) {
+            [ordered]@{ id = "$panel-$theme"; panel = $panel; theme = $theme; file = "$panel-$theme.png" }
+        }
+    }
 )
 
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
@@ -100,14 +118,16 @@ New-Item -ItemType Directory -Force -Path $validationRoot | Out-Null
 $reservedPaths = @($manifestPath)
 foreach ($entry in $matrix) {
     $renderPath = Join-Path $outputRoot $entry.file
+    $logPath = Join-Path $validationRoot ("render-{0}.log" -f $entry.id)
     $reservedPaths += $renderPath
     $reservedPaths += ($renderPath + '.error.txt')
-    $reservedPaths += (Join-Path $validationRoot ("render-{0}.log" -f $entry.id))
+    $reservedPaths += $logPath
+    $reservedPaths += ($logPath + '.stderr')
 }
 
 $stalePaths = @($reservedPaths | Where-Object { Test-Path -LiteralPath $_ })
 if ($stalePaths.Count -gt 0) {
-    throw "Refusing to reuse existing render evidence. Choose fresh output directories or remove these task-owned files first:`n$($stalePaths -join "`n")"
+    throw "Refusing to overwrite existing renders. Choose fresh output directories or remove these files first:`n$($stalePaths -join "`n")"
 }
 
 $artifacts = @()
@@ -117,19 +137,40 @@ foreach ($entry in $matrix) {
     $renderPath = Join-Path $outputRoot $entry.file
     $errorPath = $renderPath + '.error.txt'
     $logPath = Join-Path $validationRoot ("render-{0}.log" -f $entry.id)
+    $stderrPath = $logPath + '.stderr'
 
-    Write-Host "Rendering $($entry.id) from panel '$($entry.panel)'..."
-    & $resolvedDotnet run --project $projectPath --configuration $Configuration --no-build -- --render-smoke $renderPath --panel $entry.panel 2>&1 |
-        Tee-Object -FilePath $logPath
-    $renderExitCode = $LASTEXITCODE
+    Write-Host "Rendering page '$($entry.panel)' in the $($entry.theme) theme..."
+    $arguments = @(
+        'run', '--project', (ConvertTo-ProcessArgument $projectPath), '--configuration', $Configuration, '--no-build', '--',
+        '--render-smoke', (ConvertTo-ProcessArgument $renderPath), '--panel', $entry.panel, '--theme', $entry.theme
+    )
+    $process = Start-Process -FilePath $resolvedDotnet -ArgumentList $arguments -NoNewWindow -PassThru `
+        -RedirectStandardOutput $logPath -RedirectStandardError $stderrPath
+    # Reading Handle keeps the exit code available after the process ends.
+    $null = $process.Handle
+    if (-not $process.WaitForExit($RenderTimeoutSeconds * 1000)) {
+        # dotnet run starts the app as a child process; stop the whole tree.
+        & taskkill.exe /PID $process.Id /T /F | Out-Null
+        throw "Render '$($entry.id)' did not finish within $RenderTimeoutSeconds seconds. See '$logPath'."
+    }
+    $process.WaitForExit()
+    $renderExitCode = $process.ExitCode
+    foreach ($output in @($logPath, $stderrPath)) {
+        if (Test-Path -LiteralPath $output -PathType Leaf) {
+            Get-Content -LiteralPath $output | Write-Host
+        }
+    }
 
     if ($renderExitCode -ne 0) {
+        if (Test-Path -LiteralPath $errorPath -PathType Leaf) {
+            Get-Content -LiteralPath $errorPath | Write-Host
+        }
         throw "Render '$($entry.id)' failed with exit code $renderExitCode. See '$logPath'."
     }
     if (Test-Path -LiteralPath $errorPath -PathType Leaf) {
         Write-Host "Render error file: $errorPath"
-        Get-Content -LiteralPath $errorPath
-        throw "Render '$($entry.id)' produced an error sidecar."
+        Get-Content -LiteralPath $errorPath | Write-Host
+        throw "Render '$($entry.id)' produced an error file."
     }
     if (-not (Test-Path -LiteralPath $renderPath -PathType Leaf)) {
         throw "Render '$($entry.id)' did not create '$renderPath'."
@@ -154,7 +195,7 @@ foreach ($entry in $matrix) {
     $artifacts += [ordered]@{
         id = $entry.id
         panel = $entry.panel
-        state = $entry.state
+        theme = $entry.theme
         file = $entry.file
         bytes = $file.Length
         sha256 = $hash.Hash.ToLowerInvariant()
@@ -162,7 +203,7 @@ foreach ($entry in $matrix) {
 }
 
 [ordered]@{
-    schema_version = 1
+    schema_version = 2
     source_head_sha = $SourceHeadSha
     tested_commit_sha = $TestedCommitSha
     captured_at_utc = (Get-Date).ToUniversalTime().ToString('o')
@@ -179,5 +220,5 @@ foreach ($entry in $matrix) {
     artifacts = $artifacts
 } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $manifestPath
 
-Write-Host "Captured and verified $($artifacts.Count) native UI states."
+Write-Host "Rendered and checked $($artifacts.Count) pages ($($panels.Count) pages x $($themes.Count) themes)."
 Write-Host "Manifest: $manifestPath"
