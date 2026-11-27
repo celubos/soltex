@@ -13,6 +13,9 @@ on:
       - 'eng/soltex.iss'
       - 'eng/installer/**'
       - 'native/Soltex.TaskbarStyle/**'
+      - 'native/Soltex.Rnnoise/**'
+      - 'native/third_party/**'
+      - '.gitattributes'
       - 'src/**'
   pull_request:
     paths:
@@ -26,6 +29,9 @@ on:
       - 'eng/soltex.iss'
       - 'eng/installer/**'
       - 'native/Soltex.TaskbarStyle/**'
+      - 'native/Soltex.Rnnoise/**'
+      - 'native/third_party/**'
+      - '.gitattributes'
       - 'src/**'
   workflow_dispatch:
 

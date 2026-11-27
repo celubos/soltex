@@ -18,4 +18,13 @@
     <PackageReference Include="NAudio.Wasapi" Version="2.3.0" />
     <None Update="THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+  <!-- RNNoise 0.2, built by native/Soltex.Rnnoise/build.ps1 into artifacts/native/rnnoise. It sits next to
+       Soltex.Audio.Engine.Core.dll in every application, host and test that references this project; without it neural
+       noise removal reports itself unavailable and passes audio through. -->
+  <PropertyGroup>
+    <SoltexRnnoise>$(MSBuildThisFileDirectory)..\..\artifacts\native\rnnoise\x64\soltex-rnnoise.dll</SoltexRnnoise>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(SoltexRnnoise)" Link="soltex-rnnoise.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('$(SoltexRnnoise)')" />
+  </ItemGroup>
 </Project>

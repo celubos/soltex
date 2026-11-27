@@ -39,6 +39,20 @@ into its output when they exist, so build the helper before building the app if 
 `eng/verify.ps1`, `eng/publish-release.ps1` and `eng/build-audio.ps1 -Integrated` build the helper themselves and pass
 `-Acquire` through.
 
+## RNNoise library
+
+```powershell
+.\native\Soltex.Rnnoise\build.ps1            # add -Acquire the first time, as for the taskbar helper
+```
+
+Builds `artifacts\native\rnnoise\x64\soltex-rnnoise.dll` (Xiph RNNoise 0.2, used by the audio engine's neural noise
+removal) from the unmodified sources in `native\third_party\rnnoise`, after checking every file against
+`native\Soltex.Rnnoise\source.lock.json`. It uses the same pinned LLVM-MinGW and finds it the same way. The engine
+project copies the DLL next to `Soltex.Audio.Engine.Core.dll` in every output that contains the engine when it exists;
+without it neural noise removal reports itself unavailable and `Soltex.Audio.Engine.Tests` fails. `eng/verify.ps1`,
+`eng/verify-integrated.ps1`, `eng/publish-release.ps1` and `eng/build-audio.ps1` (both modes) build it themselves. See
+`native/Soltex.Rnnoise/README.md`.
+
 ## Tests
 
 Each test project is a console runner that exits non-zero on failure:

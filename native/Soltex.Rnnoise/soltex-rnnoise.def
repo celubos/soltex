@@ -1,0 +1,14 @@
+LIBRARY soltex-rnnoise
+EXPORTS
+    rnnoise_get_size
+    rnnoise_get_frame_size
+    rnnoise_init
+    rnnoise_create
+    rnnoise_destroy
+    rnnoise_process_frame
+    rnnoise_model_from_buffer
+    rnnoise_model_from_file
+    rnnoise_model_from_filename
+    rnnoise_model_free
+    ; Run-time CPU dispatch level the library picked: 0 = SSE2, 1 = SSE4.1, 2 = AVX2 (x86/x86cpu.c).
+    rnn_select_arch

@@ -30,8 +30,9 @@ public static class HostProfileStore
             if (channel.CaptureEndpointId is not null && channel.CaptureEndpointId == channel.RenderEndpointId)
                 throw new ArgumentException("A channel's source and output must be different devices.");
             ArgumentNullException.ThrowIfNull(channel.Dsp);
-            // Validates every DSP value without opening a device. Actual formats are checked on start.
-            _ = new PcmDspProcessor(192000, 2, channel.Dsp);
+            // Validates every DSP value without opening a device. Actual formats are checked on start. Disposed at once so
+            // the native neural noise removal states a valid profile may have created do not wait for finalization.
+            using (new PcmDspProcessor(192000, 2, channel.Dsp)) { }
             string[] priority = CopyIds(channel.OutputPriorityIds, 32), excluded = CopyIds(channel.ExcludedOutputIds, 64);
             channels.Add(channel with { OutputPriorityIds = priority, ExcludedOutputIds = excluded,
                 Dsp = channel.Dsp with { Bands = channel.Dsp.Bands.ToArray() } });

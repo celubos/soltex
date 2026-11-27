@@ -5,7 +5,7 @@ param(
     [switch] $Integrated,
     [switch] $SkipTests,
     [switch] $FrameworkDependent,
-    # Download the pinned LLVM-MinGW toolchain for the native taskbar helper when it is missing.
+    # Download the pinned LLVM-MinGW toolchain for the native parts (taskbar helper, RNNoise) when it is missing.
     [switch] $Acquire,
     # Where the native build keeps that toolchain (passed to its -CacheRoot).
     [string] $ToolchainCacheRoot
@@ -109,6 +109,11 @@ try {
         if ($Integrated) {
             & (Join-Path $repoRoot 'native\Soltex.TaskbarStyle\build.ps1') @nativeArguments *>&1 | Tee-Object -FilePath (Join-Path $logs 'native-taskbar.log') | Out-Host
         }
+        # Every component that carries the audio engine also carries RNNoise (soltex-rnnoise.dll), which the engine project
+        # copies next to Soltex.Audio.Engine.Core.dll when it has been built.
+        & (Join-Path $repoRoot 'native\Soltex.Rnnoise\build.ps1') @nativeArguments *>&1 | Tee-Object -FilePath (Join-Path $logs 'native-rnnoise.log') | Out-Host
+        $rnnoise = Join-Path $repoRoot 'artifacts\native\rnnoise\x64\soltex-rnnoise.dll'
+        if (-not (Test-Path -LiteralPath $rnnoise -PathType Leaf)) { throw 'The RNNoise build produced no soltex-rnnoise.dll.' }
         foreach ($product in @($applicationProject,'Soltex.Audio.Tool','Soltex.Audio.Engine.Cli','Soltex.Audio.Host.Cli','Soltex.Audio.Broker.Cli')) {
             $folder = if ($product -eq 'Soltex.Audio.Engine.Cli') { 'Soltex.Audio.Engine' } elseif ($product -eq 'Soltex.Audio.Host.Cli') { 'Soltex.Audio.Host' } elseif ($product -eq 'Soltex.Audio.Broker.Cli') { 'Soltex.Audio.Broker' } else { $product }
             $destination = if ($product -eq $applicationProject) { $package } else { Join-Path $package $folder }
@@ -157,6 +162,25 @@ try {
             New-Item -ItemType Directory -Path $helperLicenses -Force | Out-Null
             Copy-Item -Path (Join-Path $repoRoot 'artifacts/native/taskbar/licenses/*') -Destination $helperLicenses
         }
+        # soltex-rnnoise.dll must sit, as built, next to every copy of the engine; the engine loads it only from its own folder.
+        $rnnoiseHash = (Get-FileHash -LiteralPath $rnnoise -Algorithm SHA256).Hash
+        $engines = @(Get-ChildItem -LiteralPath $package -Recurse -File -Filter 'Soltex.Audio.Engine.Core.dll')
+        if ($engines.Count -eq 0) { throw 'The package contains no audio engine.' }
+        foreach ($engine in $engines) {
+            $beside = Join-Path $engine.DirectoryName 'soltex-rnnoise.dll'
+            $where = if ($engine.DirectoryName -eq $package) { 'the package root' } else { $engine.DirectoryName.Substring($package.Length + 1) }
+            if (-not (Test-Path -LiteralPath $beside -PathType Leaf)) { throw "soltex-rnnoise.dll is missing next to the audio engine in $where." }
+            if ((Get-FileHash -LiteralPath $beside -Algorithm SHA256).Hash -ne $rnnoiseHash) { throw "soltex-rnnoise.dll in $where is not the one just built." }
+        }
+        # RNNoise's BSD licence and authors, and the notices of the runtime pieces linked into it (licenses/rnnoise,
+        # licenses/llvm-mingw-runtime); THIRD-PARTY-NOTICES.txt beside the engine carries the same BSD text.
+        foreach ($folder in @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'artifacts/native/rnnoise/licenses') -Directory)) {
+            $target = Join-Path $package ('licenses/' + $folder.Name)
+            New-Item -ItemType Directory -Path $target -Force | Out-Null
+            Copy-Item -Path (Join-Path $folder.FullName '*') -Destination $target -Force
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $package 'licenses/rnnoise/COPYING') -PathType Leaf)) { throw 'The RNNoise licence is missing from the package.' }
+        if (-not (Select-String -LiteralPath (Join-Path $package 'THIRD-PARTY-NOTICES.txt') -SimpleMatch 'RNNoise' -Quiet)) { throw 'THIRD-PARTY-NOTICES.txt does not carry the RNNoise notice.' }
         if ($null -ne $verificationReceipt) {
             Copy-Item -LiteralPath $verificationReceipt -Destination (Join-Path $package 'VERIFICATION.json')
             $verification.Receipt = 'VERIFICATION.json'

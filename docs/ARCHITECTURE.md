@@ -97,7 +97,8 @@ The Audio page hosts `Soltex.Audio.UI`. Audio work runs out of the UI thread and
 - `Soltex.Audio.Sessions` lists app sessions and sets per-app volume and mute.
 - `Soltex.Audio.WindowsRouting` sends one app to a chosen output, with a journal and selective undo.
 - `Soltex.Audio.Engine` is the DSP (EQ, gate, compressor, expander, noise suppression with an optional smooth
-  background rule, stereo controls, an optional safety limiter) and the WASAPI bridge, built on NAudio. Every device
+  background rule, optional neural noise removal with Xiph RNNoise 0.2 from `native/Soltex.Rnnoise`, stereo controls,
+  an optional safety limiter) and the WASAPI bridge, built on NAudio. Every device
   path converts sample rates with its own sinc resampler, which also corrects the drift between the capture and render
   device clocks.
 - `Soltex.Audio.Host` plus `Soltex.Audio.Host.Cli` (`Soltex.Audio.Host.Service.exe`) run the five-channel graph and the

@@ -11,7 +11,7 @@ public sealed record StreamMixSendSettings(double GainDb = 0, bool Mute = false)
 public sealed record StreamMixQueueStatus(int BufferedFrames, long DroppedFrames, long SilentFrames);
 
 /// <summary>One producer processes each input exactly once, then publishes identical PCM to two independently bounded consumers.</summary>
-public sealed class StreamMixPcmSource
+public sealed class StreamMixPcmSource : IDisposable
 {
     private readonly BoundedFloatBus personalBus, streamBus;
     private readonly SendProvider personal, stream;
@@ -50,6 +50,9 @@ public sealed class StreamMixPcmSource
     }
 
     private static StreamMixQueueStatus Snapshot(BoundedFloatBus bus) => new(bus.BufferedFrames, bus.DroppedFrames, bus.SilentFrames);
+
+    /// <summary>After the capture that calls <see cref="ProcessAndPublish"/> has stopped: frees the processor's native states.</summary>
+    public void Dispose() => Processor.Dispose();
 
     private sealed class SendProvider : ISampleProvider
     {

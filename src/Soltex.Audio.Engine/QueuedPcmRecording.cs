@@ -121,6 +121,7 @@ public sealed class QueuedPcmRecording : IDisposable
         CompleteInput();
         worker.Join(); // Only the control owner joins; the producer has already stopped.
         available.Dispose();
+        Processor.Dispose(); // the worker that ran it has finished
         disposed = true;
     }
 }

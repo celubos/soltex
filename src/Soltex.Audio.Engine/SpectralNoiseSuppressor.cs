@@ -44,6 +44,13 @@ internal sealed class SpectralNoiseSuppressor
         decisionDirected = settings.SmoothResidual;
     }
 
+    /// <summary>Audio thread: empties the analysis and overlap buffers, as after construction. Allocation free.</summary>
+    internal void Reset()
+    {
+        Array.Clear(input); Array.Clear(output); Array.Clear(previousClean); Array.Fill(gains, 1.0);
+        position = 0; untilTransform = input.Length / 2;
+    }
+
     internal double Process(double sample)
     {
         double result = output[position]; output[position] = 0; input[position] = sample;

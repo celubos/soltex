@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [switch]$RunEicar,
-    # Download the pinned LLVM-MinGW toolchain for the native taskbar helper when it is missing.
+    # Download the pinned LLVM-MinGW toolchain for the native parts (taskbar helper, RNNoise) when it is missing.
     [switch]$Acquire
 )
 
@@ -13,6 +13,8 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $nativeArguments = @{}
 if ($Acquire) { $nativeArguments.Acquire = $true }
 & (Join-Path $repoRoot 'native\Soltex.TaskbarStyle\build.ps1') @nativeArguments
+# The engine build copies RNNoise next to Soltex.Audio.Engine.Core.dll only when it exists.
+& (Join-Path $repoRoot 'native\Soltex.Rnnoise\build.ps1') @nativeArguments
 
 $dotnet = Join-Path $repoRoot '.dotnet\dotnet.exe'
 if (-not (Test-Path $dotnet)) {
