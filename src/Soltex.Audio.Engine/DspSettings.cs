@@ -23,6 +23,17 @@ public sealed record DownwardExpanderSettings(bool Enabled = false, double Thres
 public sealed record SpectralNoiseSuppressionSettings(bool Enabled = false, double NoiseFloorDb = -50, double ReductionDb = 18, bool SmoothResidual = false);
 
 /// <summary>
+/// Learned speech/noise separation with Xiph RNNoise 0.2 (a small recurrent network trained on speech and noise), run
+/// on every channel before the spectral suppressor and the EQ. Off by default. It needs soltex-rnnoise.dll next to the
+/// engine (<see cref="PcmDspProcessor.NeuralNoiseRemovalAvailable"/>); without it the stage passes audio through
+/// unchanged. When on it adds a fixed delay (<see cref="PcmDspProcessor.NeuralNoiseRemovalLatencyFrames"/>, 1439 frames
+/// at 48 kHz). <c>MaximumReductionDb</c> (0 to 100) caps how far anything is pulled down by mixing the
+/// time-aligned dry signal back in at 10^(−MaximumReductionDb/20): 12 dB is a light touch, 100 means no cap (the model's
+/// own output). It is not Sonar's noise cancellation and not echo cancellation.
+/// </summary>
+public sealed record NeuralNoiseRemovalSettings(bool Enabled = false, double MaximumReductionDb = 100);
+
+/// <summary>
 /// Opt-in transparent output limiter at <see cref="DspSettings.OutputCeiling"/>. Off by default: when on it adds a fixed
 /// lookahead delay (about 1.6 ms) and replaces hard clipping above the ceiling with a smooth, channel-linked gain
 /// reduction. TruePeak also limits 4x-interpolated inter-sample peaks. Below the ceiling it changes nothing.
@@ -48,6 +59,8 @@ public sealed record DspSettings
     public CompressorSettings Compressor { get; init; } = new();
     public DownwardExpanderSettings NoiseAttenuation { get; init; } = new();
     public SpectralNoiseSuppressionSettings NoiseSuppression { get; init; } = new();
+    /// <summary>Off unless set; settings saved before this property existed load with it off.</summary>
+    public NeuralNoiseRemovalSettings NeuralNoiseRemoval { get; init; } = new();
     public StereoSettings Stereo { get; init; } = new();
     public SafetyLimiterSettings Limiter { get; init; } = new();
 
@@ -76,11 +89,13 @@ public sealed record DspSettings
         ArgumentNullException.ThrowIfNull(Compressor);
         ArgumentNullException.ThrowIfNull(NoiseAttenuation);
         ArgumentNullException.ThrowIfNull(NoiseSuppression);
+        ArgumentNullException.ThrowIfNull(NeuralNoiseRemoval);
         ArgumentNullException.ThrowIfNull(Stereo);
         ArgumentNullException.ThrowIfNull(Limiter);
         Range(Limiter.ReleaseMs, 5, 2000, nameof(Limiter.ReleaseMs));
         Range(NoiseSuppression.NoiseFloorDb, -90, -20, nameof(NoiseSuppression.NoiseFloorDb));
         Range(NoiseSuppression.ReductionDb, 0, 36, nameof(NoiseSuppression.ReductionDb));
+        Range(NeuralNoiseRemoval.MaximumReductionDb, 0, 100, nameof(NeuralNoiseRemoval.MaximumReductionDb));
         Range(Stereo.Width, 0, 2, nameof(Stereo.Width));
         Range(Stereo.Pan, -1, 1, nameof(Stereo.Pan));
         Range(Stereo.Crossfeed, 0, 1, nameof(Stereo.Crossfeed));

@@ -173,6 +173,8 @@ public sealed class WasapiBridge : IDisposable
         capture.RecordingStopped -= OnStopped;
         render.PlaybackStopped -= OnStopped;
         Attempt(render.Dispose); Attempt(capture.Dispose); Attempt(output.Dispose); Attempt(input.Dispose); Attempt(enumerator.Dispose);
+        // Last: the streams that called the processor are closed, so its native RNNoise states can go.
+        Attempt(Processor.Dispose);
         if (errors.Count != 0) throw new AggregateException("One or more owned audio resources failed to close.", errors);
     }
 }

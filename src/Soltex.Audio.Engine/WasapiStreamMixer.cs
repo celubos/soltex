@@ -194,7 +194,7 @@ public sealed class WasapiStreamMixer : IDisposable
         public void Dispose()
         {
             disposing = true; Input.DataAvailable -= Data; Input.RecordingStopped -= Stopped;
-            try { Input.Dispose(); } finally { device?.Dispose(); }
+            try { Input.Dispose(); } finally { Source.Dispose(); device?.Dispose(); }
         }
     }
 

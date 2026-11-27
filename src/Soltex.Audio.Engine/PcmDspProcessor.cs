@@ -1,14 +1,21 @@
 namespace Soltex.Audio.Engine;
 
-/// <summary>Independent interleaved-float processing. One processing thread per instance; settings may arrive concurrently.</summary>
-public sealed class PcmDspProcessor
+/// <summary>
+/// Independent interleaved-float processing. One processing thread per instance; settings may arrive concurrently.
+/// Dispose (after the processing thread has stopped calling <see cref="Process"/>) frees the native RNNoise states
+/// at once; a disposed processor outputs silence.
+/// </summary>
+public sealed class PcmDspProcessor : IDisposable
 {
-    private sealed class Prepared(DspSettings settings, EqualizerDesign equalizer, SpectralNoiseSuppressor[]? suppressors, SafetyLimiter? limiter)
+    private sealed class Prepared(DspSettings settings, EqualizerDesign equalizer, SpectralNoiseSuppressor[]? suppressors, SafetyLimiter? limiter,
+        NeuralNoiseRemover? neural)
     {
         public DspSettings Settings { get; } = settings;
         public EqualizerDesign Equalizer { get; } = equalizer;
         public SpectralNoiseSuppressor[]? Suppressors { get; set; } = suppressors;
         public SafetyLimiter? Limiter { get; set; } = limiter;
+        /// <summary>The processor's one neural stage while enabled (shared by every snapshot), else null.</summary>
+        public NeuralNoiseRemover? Neural { get; } = neural;
     }
 
     /// <summary>Per-block constants derived from the active settings.</summary>
@@ -24,7 +31,7 @@ public sealed class PcmDspProcessor
     private const double Snap = 1e-15;
     private Prepared current;
     private Prepared? pending;
-    // A change that adds or removes delay (noise suppression, limiter) waits here while the output dips smoothly to zero.
+    // A change that adds or removes delay (neural or spectral noise removal, limiter) waits here while the output dips smoothly to zero.
     private Prepared? staged;
     private readonly EqualizerBank equalizer;
     private readonly int eqRampFrames, transitionFrames;
@@ -42,35 +49,57 @@ public sealed class PcmDspProcessor
     private int holdRemaining;
     private long sanitizedSamples, limitedSamples;
     private readonly StereoImageProcessor stereo;
-    private readonly double[] frame;
+    private readonly double[] frame, neuralFrame;
+    // The RNNoise library this processor uses (the shared one next to the engine unless a test supplies another), and the
+    // one neural stage, created on a control thread the first time settings enable it and kept until Dispose.
+    private readonly RnnoiseLibrary? injectedLibrary;
+    private readonly bool sharedLibrary;
+    private NeuralNoiseRemover? neuralStage;
+    private int disposed;
 
     public int SampleRate { get; }
     public int Channels { get; }
     public long SanitizedSamples => Interlocked.Read(ref sanitizedSamples);
     /// <summary>Samples that reached the output ceiling (clamped, or limited when the safety limiter is on).</summary>
     public long LimitedSamples => Interlocked.Read(ref limitedSamples);
+    /// <summary>
+    /// True when soltex-rnnoise.dll (Xiph RNNoise 0.2) loaded from the engine assembly's directory and passed its checks in
+    /// this process, so <see cref="DspSettings.NeuralNoiseRemoval"/> works at every sample rate and channel count this
+    /// processor accepts. Static: it describes the installation, not one stream, and can be read before any stream
+    /// exists. The first read loads the library (a few milliseconds). When false, enabling the stage changes nothing.
+    /// </summary>
+    public static bool NeuralNoiseRemovalAvailable => RnnoiseLibrary.Shared is not null;
+    /// <summary>Delay of the neural noise removal stage in frames at this rate; zero while it is off or unavailable.</summary>
+    public int NeuralNoiseRemovalLatencyFrames => current.Neural?.LatencyFrames ?? 0;
     /// <summary>Algorithm delay only; device, buffering and sample conversion delays are additional.</summary>
     public int NoiseSuppressionLatencyFrames => current.Suppressors?[0].LatencyFrames ?? 0;
     /// <summary>Lookahead delay of the opt-in safety limiter; zero while it is off.</summary>
     public int LimiterLatencyFrames => current.Limiter?.LatencyFrames ?? 0;
     /// <summary>Total algorithm delay of this processor.</summary>
-    public int LatencyFrames => NoiseSuppressionLatencyFrames + LimiterLatencyFrames;
+    public int LatencyFrames => NeuralNoiseRemovalLatencyFrames + NoiseSuppressionLatencyFrames + LimiterLatencyFrames;
 
-    public PcmDspProcessor(int sampleRate, int channels, DspSettings? settings = null)
+    public PcmDspProcessor(int sampleRate, int channels, DspSettings? settings = null) : this(sampleRate, channels, settings, null, sharedLibrary: true) { }
+
+    /// <summary>Uses <paramref name="library"/> (null: unavailable) instead of the library next to the engine.</summary>
+    internal PcmDspProcessor(int sampleRate, int channels, DspSettings? settings, RnnoiseLibrary? library) : this(sampleRate, channels, settings, library, sharedLibrary: false) { }
+
+    private PcmDspProcessor(int sampleRate, int channels, DspSettings? settings, RnnoiseLibrary? library, bool sharedLibrary)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(sampleRate, 8000);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(sampleRate, 192000);
         ArgumentOutOfRangeException.ThrowIfLessThan(channels, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(channels, 8);
         SampleRate = sampleRate; Channels = channels;
+        injectedLibrary = library; this.sharedLibrary = sharedLibrary;
         stereo = new(sampleRate);
-        frame = new double[channels];
+        frame = new double[channels]; neuralFrame = new double[channels];
         eqRampFrames = Math.Max(1, sampleRate / 50);       // 20 ms coefficient glide
         transitionFrames = Math.Max(1, sampleRate / 100);  // 10 ms raised-cosine dip each way
         parameterCoefficient = Coefficient(15);
         settings ??= new DspSettings { Bands = DspSettings.FlatBands().Select(b =>
             b with { FrequencyHz = Math.Min(b.FrequencyHz, sampleRate * 0.45) }).ToArray() };
         current = Prepare(settings);
+        current.Neural?.Reset(current.Settings.NeuralNoiseRemoval, current.Settings.InputChannel is not null);
         equalizer = new EqualizerBank(channels, current.Equalizer);
         gain = TargetGain(current.Settings);
         var compressor = current.Settings.Compressor;
@@ -89,12 +118,25 @@ public sealed class PcmDspProcessor
     {
         if (interleaved.Length % Channels != 0)
             throw new ArgumentException("Input must contain whole interleaved frames.", nameof(interleaved));
+        if (Volatile.Read(ref disposed) != 0) { interleaved.Clear(); return; }
         var next = Interlocked.Exchange(ref pending, null);
-        if (next is not null)
+        // Hold the neural stage's native states for the whole block (it is the same object in every snapshot that has it).
+        var neural = current.Neural ?? next?.Neural ?? staged?.Neural;
+        if (neural is not null && !neural.TryEnter()) { interleaved.Clear(); return; }
+        try
         {
-            if (ChangesDelay(next)) staged = next;
-            else { staged = null; Apply(next); }
+            if (next is not null)
+            {
+                if (ChangesDelay(next)) staged = next;
+                else { staged = null; Apply(next); }
+            }
+            ProcessFrames(interleaved);
         }
+        finally { neural?.Exit(); }
+    }
+
+    private void ProcessFrames(Span<float> interleaved)
+    {
         var p = Parameters(current.Settings);
         for (int offset = 0; offset < interleaved.Length; offset += Channels)
         {
@@ -110,9 +152,12 @@ public sealed class PcmDspProcessor
                 if (transitionPhase <= 0 && transitionFlush == 0)
                 {
                     int before = LatencyFrames;
-                    Apply(staged); staged = null; p = Parameters(current.Settings);
-                    // A new suppressor/limiter starts empty: its output is silence for its delay, then the signal at full level.
+                    bool restarted = Apply(staged); staged = null; p = Parameters(current.Settings);
+                    // A new delay stage starts empty: its output is silence for its delay, then the signal at full level. A
+                    // restarted one (the suppressor when the neural stage before it toggles) is empty too, so everything
+                    // before the dip counts in full.
                     transitionHold = Math.Max(0, LatencyFrames - before);
+                    if (restarted) transitionHold = Math.Max(transitionHold, NeuralNoiseRemovalLatencyFrames + NoiseSuppressionLatencyFrames);
                 }
             }
             else if (transitionHold > 0) transitionHold--;
@@ -123,13 +168,19 @@ public sealed class PcmDspProcessor
                 float sample = interleaved[offset + selected];
                 for (int channel = 0; channel < Channels; channel++) interleaved[offset + channel] = sample;
             }
-            double peak = 0;
             for (int channel = 0; channel < Channels; channel++)
             {
                 double input = interleaved[offset + channel];
                 if (!double.IsFinite(input)) { input = 0; Interlocked.Increment(ref sanitizedSamples); }
                 // Extremely large finite upstream data must not poison recursive filter history.
                 if (Math.Abs(input) > 8) { input = Math.Clamp(input, -8, 8); Interlocked.Increment(ref sanitizedSamples); }
+                neuralFrame[channel] = input;
+            }
+            current.Neural?.Process(neuralFrame);
+            double peak = 0;
+            for (int channel = 0; channel < Channels; channel++)
+            {
+                double input = neuralFrame[channel];
                 if (current.Suppressors is not null) input = current.Suppressors[channel].Process(input);
                 double filtered = equalizer.Process(channel, input);
                 interleaved[offset + channel] = (float)filtered;
@@ -175,17 +226,44 @@ public sealed class PcmDspProcessor
         }
     }
 
-    private bool ChangesDelay(Prepared next) =>
-        next.Suppressors is null != current.Suppressors is null || next.Limiter is null != current.Limiter is null;
+    /// <summary>
+    /// Control thread, once the processing thread no longer calls <see cref="Process"/>: frees the native RNNoise states.
+    /// A block still running holds them until it ends; later blocks output silence.
+    /// </summary>
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+        Interlocked.Exchange(ref neuralStage, null)?.Dispose();
+        GC.SuppressFinalize(this);
+    }
 
-    /// <summary>Audio thread. Keeps EQ history (coefficients glide), suppressor buffers and limiter state where both sides use them.</summary>
-    private void Apply(Prepared next)
+    private bool ChangesDelay(Prepared next) =>
+        next.Suppressors is null != current.Suppressors is null || next.Limiter is null != current.Limiter is null || next.Neural is null != current.Neural is null;
+
+    /// <summary>
+    /// Audio thread. Keeps EQ history (coefficients glide), suppressor buffers, the neural stage and limiter state where both
+    /// sides use them. Returns true when it emptied a suppressor because the neural stage before it was switched on or off
+    /// (its buffers would otherwise splice two differently delayed signals).
+    /// </summary>
+    private bool Apply(Prepared next)
     {
         equalizer.Retarget(next.Equalizer, eqRampFrames);
+        bool neuralToggles = next.Neural is null != current.Neural is null, restarted = false;
         if (next.Suppressors is not null && current.Suppressors is not null)
         {
             next.Suppressors = current.Suppressors;
-            foreach (var suppressor in next.Suppressors) suppressor.Configure(next.Settings.NoiseSuppression);
+            foreach (var suppressor in next.Suppressors)
+            {
+                suppressor.Configure(next.Settings.NoiseSuppression);
+                if (neuralToggles) { suppressor.Reset(); restarted = true; }
+            }
+        }
+        if (next.Neural is not null)
+        {
+            bool sharedInput = next.Settings.InputChannel is not null;
+            // Switched on: start from a fresh state rather than audio from before it was last switched off.
+            if (current.Neural is null) next.Neural.Reset(next.Settings.NeuralNoiseRemoval, sharedInput);
+            else next.Neural.Configure(next.Settings.NeuralNoiseRemoval, sharedInput);
         }
         if (next.Limiter is not null && current.Limiter is not null)
         {
@@ -193,6 +271,7 @@ public sealed class PcmDspProcessor
             next.Limiter.Configure(next.Settings);
         }
         current = next;
+        return restarted;
     }
 
     private BlockParameters Parameters(DspSettings s) => new()
@@ -221,8 +300,28 @@ public sealed class PcmDspProcessor
             for (int i = 0; i < Channels; i++) suppressors[i] = new(SampleRate, copy.NoiseSuppression);
         }
         var limiter = copy.Limiter.Enabled ? new SafetyLimiter(SampleRate, Channels, copy) : null;
-        return new(copy, EqualizerBank.Design(copy, SampleRate), suppressors, limiter);
+        var neural = copy.NeuralNoiseRemoval.Enabled ? NeuralStage() : null;
+        return new(copy, EqualizerBank.Design(copy, SampleRate), suppressors, limiter, neural);
     }
+
+    /// <summary>
+    /// Control thread: the processor's neural stage, created (native states, buffers, converter kernels) the first time it
+    /// is needed. Null when the library is unavailable or out of memory: the stage then passes audio through unchanged.
+    /// </summary>
+    private NeuralNoiseRemover? NeuralStage()
+    {
+        var stage = Volatile.Read(ref neuralStage);
+        if (stage is not null || Volatile.Read(ref disposed) != 0) return stage;
+        var library = sharedLibrary ? RnnoiseLibrary.Shared : injectedLibrary;
+        if (library is null) return null;
+        var created = NeuralNoiseRemover.TryCreate(library, SampleRate, Channels);
+        if (created is null) return null;
+        var raced = Interlocked.CompareExchange(ref neuralStage, created, null);
+        if (raced is not null) { created.Dispose(); return raced; }
+        if (Volatile.Read(ref disposed) != 0) { Interlocked.Exchange(ref neuralStage, null)?.Dispose(); return null; }
+        return created;
+    }
+
     private double Coefficient(double milliseconds) => Math.Exp(-1 / (milliseconds * 0.001 * SampleRate));
     private static double TargetGain(DspSettings s) => s.Mute ? 0 : Linear(s.GainDb + s.HeadroomDb);
     private static double Linear(double db) => Math.Pow(10, db / 20);

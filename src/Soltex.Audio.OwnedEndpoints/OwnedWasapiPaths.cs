@@ -67,7 +67,7 @@ internal sealed class OwnedRenderPath : IHostAudioPath
         if (started && failure is null && render.PlaybackState == PlaybackState.Playing) head.FadeOutAndWait(40);
         disposed = true; started = false;
         render.PlaybackStopped -= OnStopped;
-        ResourceCleanup.Run(null, () => subscription?.Dispose(), render.Stop, render.Dispose, output.Dispose, enumerator.Dispose);
+        ResourceCleanup.Run(null, () => subscription?.Dispose(), render.Stop, render.Dispose, output.Dispose, enumerator.Dispose, processor.Dispose);
     }
 }
 
@@ -145,7 +145,7 @@ internal sealed class OwnedMicrophonePath : IHostAudioPath
         if (started && failure is null && router.Failure is null && injection is not null) head.FadeOutAndWait(20);
         disposed = true; started = false;
         capture.DataAvailable -= OnData; capture.RecordingStopped -= OnStopped;
-        ResourceCleanup.Run(null, () => injection?.Dispose(), capture.StopRecording, capture.Dispose, input.Dispose, enumerator.Dispose);
+        ResourceCleanup.Run(null, () => injection?.Dispose(), capture.StopRecording, capture.Dispose, input.Dispose, enumerator.Dispose, processor.Dispose);
     }
 }
 
