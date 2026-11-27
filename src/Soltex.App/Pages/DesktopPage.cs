@@ -7,6 +7,7 @@ using Soltex.App.Desktop;
 using Soltex.App.Personalize;
 using Soltex.App.Settings;
 using Soltex.App.Shell;
+using Soltex.Audio.UI;
 
 namespace Soltex.App.Pages;
 
@@ -33,7 +34,7 @@ public sealed class DesktopPage : UserControl, IShellPage
     private readonly PageAnchors anchors = new();
     private readonly StackPanel groupRows = new();
     private readonly List<GroupRowParts> rows = [];
-    private readonly TextBlock groupsEmpty = new() { Text = "Show a folder's files, or your own shortcuts, in a box on the desktop.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(2, 0, 0, 8) };
+    private readonly TextBlock groupsEmpty = new() { Text = "Show a folder's files, or your own shortcuts, in a box on the desktop.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) };
     private readonly Dictionary<DesktopWidgetKind, CheckBox> widgetSwitches = [];
     private readonly CheckBox arrangeSwitch, iconsSwitch;
     private readonly TextBlock wallpaperNote = new();
@@ -52,19 +53,25 @@ public sealed class DesktopPage : UserControl, IShellPage
         anchors.Add("top", title);
 
         page.Children.Add(Section("Groups", "Inspired by Fences", first: true));
-        groupsEmpty.Style = (Style)FindResource("Shell.Secondary");
-        page.Children.Add(groupsEmpty);
         page.Children.Add(groupRows);
-        WrapPanel add = new() { Margin = new Thickness(0, 4, 0, 0) };
-        Button addFolder = new() { Content = "Show a folder…", Style = (Style)FindResource("Studio.PrimaryButton"), Margin = new Thickness(0, 0, 8, 0) };
+        // Adding a group is a row like the page's other rows: what a group is (until there is one) and the two ways to add
+        // one, which move below the text when the page is narrow.
+        ResponsiveRow add = new() { MinPrimaryWidth = 200, Spacing = 8 };
+        StackPanel addText = new() { VerticalAlignment = VerticalAlignment.Center };
+        addText.Children.Add(new TextBlock { Text = "Add a group", Style = (Style)FindResource("Shell.Body") });
+        groupsEmpty.Style = (Style)FindResource("Shell.Secondary");
+        groupsEmpty.FontSize = 12;
+        addText.Children.Add(groupsEmpty);
+        add.Children.Add(addText);
+        Button addFolder = new() { Content = "Show a folder…", Style = (Style)FindResource("Studio.PrimaryButton"), VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetHelpText(addFolder, "Shows a folder's files on the desktop and keeps them up to date");
         addFolder.Click += (_, _) => AddFolderGroup();
-        Button addList = new() { Content = "New empty group", Margin = new Thickness(0, 0, 8, 0) };
+        Button addList = new() { Content = "New empty group", VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetHelpText(addList, "An empty group; drop files, folders or shortcuts on it");
         addList.Click += (_, _) => AddGroup(null, "New group");
         add.Children.Add(addFolder);
         add.Children.Add(addList);
-        page.Children.Add(add);
+        page.Children.Add(new Border { Style = (Style)FindResource("Studio.Row"), Child = add });
         anchors.Add("groups", addFolder);
 
         page.Children.Add(Section("Widgets", "Inspired by Rainmeter"));
@@ -91,7 +98,7 @@ public sealed class DesktopPage : UserControl, IShellPage
         anchors.Add("icons", iconsSwitch);
 
         page.Children.Add(Section("Live wallpaper", "Inspired by DeskScapes"));
-        Button chooseVideo = new() { Content = "Choose video" };
+        Button chooseVideo = new() { Content = "Choose video…" };
         AutomationProperties.SetName(chooseVideo, "Choose a video wallpaper");
         chooseVideo.Click += (_, _) => ChooseVideo();
         AutomationProperties.SetName(removeWallpaper, "Remove the video wallpaper");
@@ -116,12 +123,19 @@ public sealed class DesktopPage : UserControl, IShellPage
         page.Children.Add(new Border { Style = (Style)FindResource("Studio.Row"), Child = wallpaperGrid });
         anchors.Add("wallpaper", chooseVideo);
 
-        Grid frame = new() { Margin = (Thickness)FindResource("Shell.PagePadding") };
-        frame.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MaxWidth = 900 });
+        Grid frame = new();
+        // Followed like the XAML pages' {DynamicResource}: the window narrows the padding on a small page and density changes it.
+        frame.SetResourceReference(MarginProperty, "Shell.PagePadding");
+        // The same content column as every other page (Shell.PageMaxWidth), so pages start and end in the same place.
+        ColumnDefinition column = new() { Width = new GridLength(1, GridUnitType.Star) };
+        column.SetResourceReference(ColumnDefinition.MaxWidthProperty, "Shell.PageMaxWidth");
+        frame.ColumnDefinitions.Add(column);
         frame.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         frame.Children.Add(page);
         Content = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false, Content = frame };
         context.Services.Settings.Changed += _ => Dispatcher.InvokeAsync(Refresh);
+        // Moves, roll-ups and drops on the desktop save through the desktop service; say so when that fails.
+        context.Services.Desktop.SaveFailed += message => Dispatcher.InvokeAsync(() => context.ShowNotice(NoticeSeverity.Caution, message));
         context.Services.Wallpaper.StatusChanged += status => Dispatcher.InvokeAsync(() =>
         {
             Refresh();
@@ -277,10 +291,11 @@ public sealed class DesktopPage : UserControl, IShellPage
         if (!DesktopService.SetDesktopIconsHidden(!show)) context.ShowNotice(NoticeSeverity.Caution, "The desktop was not found, so the icons were not changed.");
     }
 
+    /// <summary>Saves a change; when the settings file can't be written, says so and shows the saved state again.</summary>
     private void Update(Func<AppSettings, AppSettings> change)
     {
         if (loading) return;
-        context.Services.Settings.Update(change);
+        if (!PageSettings.TrySave(context, change)) Refresh();
     }
 
     private StackPanel Section(string title, string? credit, bool first = false)

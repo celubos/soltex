@@ -1,10 +1,10 @@
-<UserControl x:Class="Soltex.App.Pages.SettingsPage"
+﻿<UserControl x:Class="Soltex.App.Pages.SettingsPage"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:audio="clr-namespace:Soltex.Audio.UI;assembly=Soltex.Audio.UI">
     <ScrollViewer x:Name="Scroller" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
         <Grid Margin="{DynamicResource Shell.PagePadding}">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="*" MaxWidth="900" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" MaxWidth="{DynamicResource Shell.PageMaxWidth}" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
             <StackPanel>
                 <TextBlock Style="{StaticResource Shell.PageTitle}" Text="Settings" />
                 <TextBlock x:Name="Intro" Style="{StaticResource Shell.PageSubtitle}" />

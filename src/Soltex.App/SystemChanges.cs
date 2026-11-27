@@ -14,13 +14,26 @@ internal sealed record SystemRequest(string Action, string[] Items);
 internal sealed record SystemResponse(SystemResult[] Results, string? Error);
 
 /// <summary>
-/// The elevated side (Soltex.exe --system &lt;request&gt;). It runs only <see cref="SystemCatalog"/> entries named by id,
-/// and writes only its journal and result next to the request, inside the user's own app-data folder.
+/// The elevated side (Soltex.exe --system &lt;request&gt;). It runs only <see cref="SystemCatalog"/> entries named by id.
+/// Its journal lives in <see cref="StateDirectory"/>, a folder only administrators can change. In the user's own folder it
+/// only reads the request and writes the result, both through handles checked to be plain files at exactly that place
+/// under <see cref="DataRoot"/>, so a program without administrator rights cannot redirect the helper's reads or writes
+/// with links.
 /// </summary>
 internal static class SystemRunner
 {
     public const string Argument = "--system";
     public const string RequestName = "system-request.json", ResultName = "system-result.json", JournalName = "system-journal-v1.jsonl";
+
+    /// <summary>ProgramData (owned by Windows), the base of the helper's state folder.</summary>
+    internal static string StateBase => Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+
+    /// <summary>%ProgramData%\Soltex\System: the helper's journal, readable by everyone, changeable only by administrators.</summary>
+    internal static string StateDirectory => Path.Combine(StateBase, ProductIdentity.DataFolderName, "System");
+
+    /// <summary>This app's own data folder in local app data (not all of local app data, which also holds the temp folder).</summary>
+    internal static string DataRoot =>
+        Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), ProductIdentity.DataFolderName));
 
     public static int Run(string requestPath)
     {
@@ -29,15 +42,14 @@ internal static class SystemRunner
         try
         {
             directory = TrustedDirectory(requestPath);
-            SystemRequest request = JsonSerializer.Deserialize<SystemRequest>(File.ReadAllText(requestPath)) ?? throw new InvalidDataException("Empty request.");
-            SystemItem[] items = request.Items.Select(id => SystemCatalog.All.FirstOrDefault(i => i.Id == id) ?? throw new InvalidDataException("Unknown change: " + id)).ToArray();
-            SystemEngine engine = new(new WindowsSystemHost(), new ChangeJournal(Path.Combine(directory, JournalName)));
-            IReadOnlyList<SystemResult> results = request.Action switch
-            {
-                "apply" => engine.Apply(items),
-                "undo" => engine.Undo(items),
-                _ => throw new InvalidDataException("Unknown action.")
-            };
+            SystemRequest request = JsonSerializer.Deserialize<SystemRequest>(VerifiedFile.ReadAllText(DataRoot, Path.Combine(directory, RequestName)))
+                ?? throw new InvalidDataException("Empty request.");
+            SystemItem[] items = (request.Items ?? []).Select(id => SystemCatalog.All.FirstOrDefault(i => i.Id == id) ?? throw new InvalidDataException("Unknown change: " + id)).ToArray();
+            if (request.Action is not ("apply" or "undo")) throw new InvalidDataException("Unknown action.");
+            SystemEngine engine = new(new WindowsSystemHost(), OpenJournal(Path.Combine(directory, JournalName)));
+            // Changes a crash interrupted last time are settled from what is on this PC before anything else changes.
+            engine.Reconcile();
+            IReadOnlyList<SystemResult> results = request.Action == "apply" ? engine.Apply(items) : engine.Undo(items);
             response = new([.. results], null);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ArgumentException)
@@ -51,10 +63,26 @@ internal static class SystemRunner
         }
         if (directory is not null)
         {
-            try { File.WriteAllText(Path.Combine(directory, ResultName), JsonSerializer.Serialize(response)); }
+            try { VerifiedFile.WriteNew(DataRoot, Path.Combine(directory, ResultName), JsonSerializer.Serialize(response)); }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return 2; }
         }
         return response.Error is null ? 0 : 1;
+    }
+
+    /// <summary>
+    /// The journal in the administrator-only state folder (created, or checked, first). The first time, the journal
+    /// earlier versions kept next to the request is carried over, so their changes stay undoable; it is left in place.
+    /// </summary>
+    private static ChangeJournal OpenJournal(string earlierPath)
+    {
+        string folder = AdministratorFolder.Ensure(StateBase, StateDirectory);
+        ChangeJournal journal = new(Path.Combine(folder, JournalName));
+        if (journal.Records.Count == 0 && !File.Exists(journal.Path) && File.Exists(earlierPath))
+        {
+            using StreamReader earlier = VerifiedFile.OpenText(DataRoot, earlierPath);
+            journal.Import(earlier);
+        }
+        return journal;
     }
 
     /// <summary>The request must sit, under its fixed name, in a real (non-redirected) folder inside this app's data folder.</summary>
@@ -63,8 +91,7 @@ internal static class SystemRunner
         string full = Path.GetFullPath(requestPath);
         if (!string.Equals(Path.GetFileName(full), RequestName, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Unexpected request file.");
         string directory = Path.GetDirectoryName(full)!;
-        // Only this app's own data folder (not all of local app data, which also holds the temp folder).
-        string root = Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), ProductIdentity.DataFolderName));
+        string root = DataRoot;
         if (!directory.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
             throw new UnauthorizedAccessException("The request is outside this app's data folder.");
         for (DirectoryInfo? d = new(directory); d is not null && d.FullName.Length > root.Length; d = d.Parent)
@@ -84,7 +111,18 @@ internal sealed class SystemChanges(string dataRoot, bool explicitProfile = fals
     private readonly string directory = Path.Combine(dataRoot, "System");
 
     /// <summary>Read-only view of the system state and of what this app changed (no administrator rights needed).</summary>
-    public SystemEngine Inspector() => new(new WindowsSystemHost(), new ChangeJournal(Path.Combine(directory, SystemRunner.JournalName)));
+    public SystemEngine Inspector() => new(new WindowsSystemHost(), new ChangeJournal(JournalPath()));
+
+    /// <summary>
+    /// The helper's journal in the administrator-only state folder once the helper has used it; before that, the one
+    /// earlier versions kept in this app's data folder (the helper carries it over on its next run). A separate profile
+    /// folder only ever reads its own.
+    /// </summary>
+    private string JournalPath()
+    {
+        string state = Path.Combine(SystemRunner.StateDirectory, SystemRunner.JournalName);
+        return !explicitProfile && File.Exists(state) ? state : Path.Combine(directory, SystemRunner.JournalName);
+    }
 
     /// <summary>Why changes cannot be made from this session, or null when they can.</summary>
     public string? UnavailableReason => explicitProfile

@@ -17,6 +17,9 @@ param(
     [ValidateSet('win-x64')]
     [string] $Runtime = 'win-x64',
     [switch] $SkipInstaller,
+    # ISCC.exe to compile the installer with (CI passes the pinned one from eng/installer/get-inno-setup.ps1).
+    # Without it the script looks in the usual Inno Setup 6 folders and on PATH.
+    [string] $Iscc,
     # Download the pinned LLVM-MinGW toolchain for the native taskbar helper when it is missing.
     [switch] $Acquire,
     # Where the native build keeps that toolchain (passed to its -CacheRoot).
@@ -170,20 +173,26 @@ if ($SkipInstaller) {
     return
 }
 
-$iscc = Resolve-Tool -Name 'ISCC' -Candidates @(
-    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
-    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
-)
-if (-not $iscc) {
-    throw 'Unable to locate ISCC.exe. Install Inno Setup 6 or pass -SkipInstaller.'
+if ($Iscc) {
+    if (-not (Test-Path -LiteralPath $Iscc -PathType Leaf)) { throw "ISCC.exe not found: $Iscc" }
+    $isccPath = $Iscc
+}
+else {
+    $isccPath = Resolve-Tool -Name 'ISCC' -Candidates @(
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+    )
+}
+if (-not $isccPath) {
+    throw 'Unable to locate ISCC.exe. Install Inno Setup 6, pass -Iscc <path>, or pass -SkipInstaller.'
 }
 
-Write-Host "Using Inno Setup: $iscc"
+Write-Host "Using Inno Setup: $isccPath"
 
 $setup = Join-Path $installerDir "Soltex-$Version-$Runtime-setup.exe"
 
-& $iscc `
+& $isccPath `
     "/DPublishDir=$publishDir" `
     "/DAppVersion=$Version" `
     "/DNumericVersion=$numericVersion" `

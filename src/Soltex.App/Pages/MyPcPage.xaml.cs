@@ -124,13 +124,15 @@ public partial class MyPcPage : UserControl, IShellPage, IDisposable
             cpuHistory.Enqueue(cpu);
             while (cpuHistory.Count > HistoryLength) cpuHistory.Dequeue();
             CpuHistory.Values = cpuHistory.ToArray();
+            // One sample would draw a flat line; the chart appears with the second (its space is kept, so nothing jumps).
+            CpuHistoryFrame.Visibility = cpuHistory.Count >= 2 ? Visibility.Visible : Visibility.Hidden;
         }
         else CpuValue.Text = "Unavailable";
 
         if (snapshot.Memory is { } memory)
         {
             MemoryValue.Text = memory.UsedPercent.ToString("0", CultureInfo.CurrentCulture) + "%";
-            MemoryDetail.Text = Plain.Bytes(memory.UsedBytes) + " of " + Plain.Bytes(memory.TotalBytes) + " in use";
+            MemoryDetail.Text = Unbroken(Plain.Bytes(memory.UsedBytes)) + " of " + Unbroken(Plain.Bytes(memory.TotalBytes)) + " in use";
             FillFacts(memory);
         }
         else { MemoryValue.Text = "Unavailable"; MemoryDetail.Text = ""; }
@@ -142,14 +144,14 @@ public partial class MyPcPage : UserControl, IShellPage, IDisposable
         {
             StorageLabel.Text = "Storage (" + system.Name.TrimEnd('\\') + ")";
             StorageValue.Text = system.UsedPercent.ToString("0", CultureInfo.CurrentCulture) + "%";
-            StorageDetail.Text = Plain.Bytes(system.AvailableBytes) + " free of " + Plain.Bytes(system.TotalBytes);
+            StorageDetail.Text = Unbroken(Plain.Bytes(system.AvailableBytes)) + " free of " + Unbroken(Plain.Bytes(system.TotalBytes));
         }
         else { StorageValue.Text = "Unavailable"; StorageDetail.Text = ""; }
 
         if (snapshot.Network is { } network)
         {
-            NetworkValue.Text = Plain.Rate(network.TotalBytesPerSecond);
-            NetworkDetail.Text = "Down " + Plain.Rate(network.ReceiveBytesPerSecond) + " · Up " + Plain.Rate(network.SendBytesPerSecond);
+            NetworkValue.Text = Unbroken(Plain.Rate(network.TotalBytesPerSecond));
+            NetworkDetail.Text = NetworkLine(network.ReceiveBytesPerSecond, network.SendBytesPerSecond);
         }
         else { NetworkValue.Text = "No connection"; NetworkDetail.Text = ""; }
 
@@ -167,6 +169,38 @@ public partial class MyPcPage : UserControl, IShellPage, IDisposable
                 ? "Some system apps are hidden because Windows does not share their details with standard users."
                 : "";
             ProcessesHint.Visibility = ProcessesHint.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        }
+    }
+
+    /// <summary>
+    /// A reading that never breaks across lines: a no-break space between number and unit, and word joiners around the
+    /// slash of a rate, so a narrow column wraps between readings instead of leaving "13 KB/" on one line and "s" on the next.
+    /// </summary>
+    internal static string Unbroken(string reading) => reading.Replace(' ', ' ').Replace("/", "⁠/⁠", StringComparison.Ordinal);
+
+    /// <summary>"Down 13 KB/s · Up 2 KB/s", breakable only around the dot.</summary>
+    internal static string NetworkLine(double down, double up) =>
+        "Down " + Unbroken(Plain.Rate(down)) + " · Up " + Unbroken(Plain.Rate(up));
+
+    /// <summary>The narrowest the readings grid may be for four columns; below it the readings sit two by two.</summary>
+    internal const double FourColumnWidth = 680;
+
+    private void Metrics_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.WidthChanged) LayoutMetrics(e.NewSize.Width);
+    }
+
+    /// <summary>Four readings in a row with room to spare; two by two when narrow (small window, large text).</summary>
+    internal void LayoutMetrics(double width)
+    {
+        int columns = width >= FourColumnWidth ? 4 : 2;
+        if (Metrics.Columns == columns) return;
+        Metrics.Columns = columns;
+        for (int i = 0; i < Metrics.Children.Count; i++)
+        {
+            if (Metrics.Children[i] is not FrameworkElement cell) continue;
+            bool lastInRow = (i + 1) % columns == 0, firstRow = i < columns;
+            cell.Margin = new Thickness(0, 0, lastInRow ? 0 : 16, columns == 2 && firstRow ? 16 : 0);
         }
     }
 
@@ -262,6 +296,7 @@ public partial class MyPcPage : UserControl, IShellPage, IDisposable
         issues.AddRange(policies);
         ProtectionHeadline.Text = headline;
         ProtectionDetail.Text = detail;
+        ProtectionDetail.Visibility = detail.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         ProtectionGlyph.Text = issues.Count > 0 && glyph == "" ? "" : glyph;
         // The tile's colour carries the verdict at a glance: green when nothing needs attention, amber otherwise.
         bool healthy = issues.Count == 0 && h.StatusQuerySucceeded;

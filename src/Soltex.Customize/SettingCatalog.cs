@@ -8,7 +8,14 @@ public enum TakesEffect { Immediately, NextStartOpen, ExplorerRestart, AppRestar
 /// One registry value a setting controls: the value the De-Windows profile wants, the value that restores Windows'
 /// default, and (when known) what Windows assumes while the value does not exist.
 /// </summary>
-public sealed record RegistryTarget(string Path, string Name, RegistryValue Calm, RegistryValue WindowsDefault, RegistryValue? Implied = null);
+/// <param name="Mask">
+/// Non-zero when the setting owns only these bits of a number (for example one flag of Windows' accessibility
+/// "Flags", stored as decimal text). Then <paramref name="Calm"/>, <paramref name="WindowsDefault"/> and the options'
+/// values are those bits (a DWORD of 0 or <paramref name="Mask"/>), <paramref name="Implied"/> is the whole stored
+/// value Windows assumes while none exists, and a change rewrites only those bits, keeping the value's other bits and
+/// its type. The journal still records the whole value, so undo puts back exactly what was there.
+/// </param>
+public sealed record RegistryTarget(string Path, string Name, RegistryValue Calm, RegistryValue WindowsDefault, RegistryValue? Implied = null, int Mask = 0);
 
 /// <summary>One selectable option of a setting: a value for each target, in target order. Absent removes the value.</summary>
 public sealed record SettingChoice(string Label, IReadOnlyList<RegistryValue> Values);
@@ -20,6 +27,7 @@ public sealed record SettingChoice(string Label, IReadOnlyList<RegistryValue> Va
 public sealed record PolicyHint(RegistryHive2 Hive, string Path, string Name, string Feature);
 
 /// <summary>A user-facing Windows setting backed by per-user registry values the Windows Settings app reads.</summary>
+/// <param name="Note">A fixed remark shown with the setting (for example which version of a Windows feature uses it).</param>
 public sealed record SettingDefinition(
     string Id,
     SettingGroup Group,
@@ -33,7 +41,8 @@ public sealed record SettingDefinition(
     int MinimumBuild = 0,
     string Source = "",
     IReadOnlyList<SettingChoice>? Choices = null,
-    bool IsSwitch = false)
+    bool IsSwitch = false,
+    string? Note = null)
 {
     /// <summary>
     /// The options shown to the user. Settings defined only by calm/default values get two implicit options.

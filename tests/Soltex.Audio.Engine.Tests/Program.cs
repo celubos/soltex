@@ -65,7 +65,11 @@ internal static class Program
             ("Sinc resampler passband, THD+N, alias rejection and bit-exact 1:1 delay", AudioQualityChecks.ResamplerQuality),
             ("Resampler, render head, limiter and smooth residual allocate nothing per callback", AudioQualityChecks.ResamplerAllocationFree),
             ("Clock drift loop holds latency with no drops, underruns or clicks; stalls are concealed", AudioQualityChecks.DriftCompensationHoldsLatencyWithoutGlitches),
-            ("MMCSS registration is per thread, cached and never throws", AudioQualityChecks.RealtimeRegistrationIsSafe)
+            ("MMCSS registration is per thread, released when a stream stops and bounded across start/stop cycles", AudioQualityChecks.RealtimeRegistrationIsSafe),
+            ("Router pacing waits 10 ms on a high-resolution timer without spinning and stops at once", AudioQualityChecks.RouterPacingIsHighResolutionAndIdle),
+            ("Converter holds one read plus one packet and a small margin on real device periods", ConverterLatencyChecks.SteadyLatencyFollowsDevicePeriods),
+            ("A paused source (silent or sending empty packets) never grows latency or restart delay", ConverterLatencyChecks.PausedSourceKeepsItsLatency),
+            ("A source that runs dry fades over the full fade length at every stop position", ConverterLatencyChecks.RunningDryAlwaysFades)
         ];
         int failed = 0;
         foreach (var (name, test) in tests)

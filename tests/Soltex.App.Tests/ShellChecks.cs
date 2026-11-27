@@ -183,7 +183,8 @@ internal static class ShellChecks
         (Destination Page, string[] Headings)[] expected =
         [
             (Destination.Taskbar, ["Look", "Details", "Behavior"]),
-            (Destination.Start, []),
+            // Start's own rows get a heading because the Start11 folders follow them under theirs.
+            (Destination.Start, ["Start and search"]),
             (Destination.Explorer, []),
             (Destination.Appearance, ["Desktop icons"]),
             (Destination.Multitasking, ["Keyboard, mouse and clipboard", "Gaming"]),
@@ -218,9 +219,9 @@ internal static class ShellChecks
                 }
             }
 
+            // Every page links to Windows Settings (File Explorer to System › Advanced, where its options live).
             string? uri = CustomizePage.SettingsUriFor(destination);
-            Program.True(destination == Destination.Explorer ? uri is null && page.SettingsLinkText.Visibility == Visibility.Collapsed
-                    : uri is not null && uri.StartsWith("ms-settings:", StringComparison.Ordinal) && page.SettingsLinkText.IsVisible,
+            Program.True(uri is not null && uri.StartsWith("ms-settings:", StringComparison.Ordinal) && page.SettingsLinkText.IsVisible,
                 $"{destination}: the Windows Settings link is wrong ({uri}).");
             string linkName = System.Windows.Automation.AutomationProperties.GetName(page.SettingsLink);
             string linkText = string.Concat(page.SettingsLink.Inlines.OfType<System.Windows.Documents.Run>().Select(r => r.Text));
@@ -229,7 +230,8 @@ internal static class ShellChecks
         }
         Program.True(CustomizePage.SettingsUriFor(Destination.Taskbar) == "ms-settings:taskbar" && CustomizePage.SettingsUriFor(Destination.Start) == "ms-settings:personalization-start"
             && CustomizePage.SettingsUriFor(Destination.Appearance) == "ms-settings:personalization-colors" && CustomizePage.SettingsUriFor(Destination.Multitasking) == "ms-settings:multitasking"
-            && CustomizePage.SettingsUriFor(Destination.Customize) == "ms-settings:privacy-general", "A page links to the wrong Windows Settings page.");
+            && CustomizePage.SettingsUriFor(Destination.Customize) == "ms-settings:privacy-general" && CustomizePage.SettingsUriFor(Destination.Explorer) == "ms-settings:developers",
+            "A page links to the wrong Windows Settings page.");
 
         // Automatically hide the taskbar: first row of Behavior, named, searchable.
         shell.Window.Navigate(Destination.Taskbar);
@@ -735,12 +737,394 @@ internal static class ShellChecks
             && local.NonLocalPaths().Count == 0, "Removing network locations must keep the local ones.");
     }
 
+    // ---------- customization reliability ----------
+
+    /// <summary>Settings that failed to load are copied before any automatic save, shown as a caution and never treated as a first run.</summary>
+    public static void UnreadableSettingsAreKeptAndShown()
+    {
+        string settingsPath = "";
+        string CopyOf(string path) => Path.ChangeExtension(path, null) + "." + ShellServices.UnreadableCopySuffix + ".json";
+        void Corrupt(string root)
+        {
+            settingsPath = AppSettingsStore.DefaultPath(root);
+            Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
+            File.WriteAllText(settingsPath, "{ not json");
+        }
+
+        using (TestShell shell = new(prepareRoot: Corrupt))
+        {
+            ShellWindow window = shell.Window;
+            string copy = CopyOf(settingsPath);
+            Program.True(shell.Services.SettingsProblem is { CopyPath: { } kept } && kept == copy && File.ReadAllText(copy) == "{ not json",
+                "The settings file that failed to load must be copied before anything can save: " + shell.Services.SettingsProblem);
+            Program.True(window.NoticeBar.IsVisible && window.NoticeBar.Tag as string == nameof(NoticeSeverity.Caution)
+                && window.NoticeText.Text.Contains(copy, StringComparison.Ordinal) && window.NoticeAction.IsVisible,
+                "The problem must be shown as a caution that names the copy: " + window.NoticeText.Text);
+            Program.True(shell.Services.Notices.Count(n => n.Area == "Settings" && n.Message.Contains(copy, StringComparison.Ordinal)) == 1,
+                "The problem must be recorded once in Recent events.");
+            window.ShowWelcomeOnFirstRun();
+            Program.True(window.NoticeText.Text.Contains(copy, StringComparison.Ordinal) && !shell.Services.Settings.Current.WelcomeShown
+                && File.ReadAllText(settingsPath) == "{ not json", "Settings that failed to load must not get the first-run welcome, nor be saved over by it.");
+            Program.True(shell.Services.TryUpdateSettingsAutomatically(s => s with { CloseToTrayNoticeShown = true }) && File.ReadAllText(copy) == "{ not json",
+                "With the copy kept, automatic saves may replace the file; the copy stays as it was.");
+        }
+
+        // The copy cannot be written (a folder stands in its place): nothing is saved automatically until the user changes something.
+        using TestShell blocked = new(prepareRoot: root =>
+        {
+            Corrupt(root);
+            Directory.CreateDirectory(CopyOf(settingsPath));
+        });
+        Program.True(blocked.Services.SettingsProblem is { CopyPath: null } && blocked.Window.NoticeText.Text.Contains("could not be kept", StringComparison.Ordinal),
+            "A copy that could not be kept must be said: " + blocked.Window.NoticeText.Text);
+        Program.True(!blocked.Services.TryUpdateSettingsAutomatically(s => s with { ReportedDrift = "taskbar.widgets" }) && File.ReadAllText(settingsPath) == "{ not json",
+            "Without a copy, automatic saves must not replace settings that failed to load.");
+        blocked.Services.Settings.Update(s => s with { ConfirmQuitWhileAudioRuns = false });
+        Program.True(blocked.Services.TryUpdateSettingsAutomatically(s => s with { CloseToTrayNoticeShown = true })
+            && blocked.Services.Settings.Current is { ConfirmQuitWhileAudioRuns: false, CloseToTrayNoticeShown: true },
+            "After the user's own change the file is theirs, and automatic saves work again.");
+    }
+
+    /// <summary>Notices and search status are live regions: Narrator reads them when they appear, once each.</summary>
+    public static void NoticesAndStatusAreAnnounced()
+    {
+        List<UIElement> announced = [];
+        void Record(UIElement element) => announced.Add(element);
+        Soltex.App.Controls.LiveRegion.Announced += Record;
+        try
+        {
+            using TestShell shell = new();
+            ShellWindow window = shell.Window;
+            int Count(UIElement element) => announced.Count(e => ReferenceEquals(e, element));
+            string SpokenName(UIElement element) => UIElementAutomationPeer.CreatePeerForElement(element).GetName();
+            Pump();
+            announced.Clear();
+
+            window.ShowNotice(NoticeSeverity.Information, "Saved.", null, null);
+            Pump();
+            Program.True(Count(window.NoticeText) == 1, $"A notice must be read once (read {Count(window.NoticeText)} times).");
+            Program.True(AutomationProperties.GetLiveSetting(window.NoticeText) == AutomationLiveSetting.Polite && SpokenName(window.NoticeText) == "Saved.",
+                "A notice is a polite live region named by its text.");
+            window.ShowNotice(NoticeSeverity.Information, "Saved.", null, null);
+            Pump();
+            Program.True(Count(window.NoticeText) == 2, "The same notice shown again must be read again.");
+            window.ShowNotice(NoticeSeverity.Caution, "Not saved.", null, null);
+            Pump();
+            Program.True(SpokenName(window.NoticeText) == "Warning: Not saved.", "A caution must say it is a warning: " + SpokenName(window.NoticeText));
+            window.ShowNotice(NoticeSeverity.Critical, "Audio stopped.", null, null);
+            Pump();
+            Program.True(AutomationProperties.GetLiveSetting(window.NoticeText) == AutomationLiveSetting.Assertive && SpokenName(window.NoticeText) == "Problem: Audio stopped.",
+                "A critical notice must be read at once and say it is a problem.");
+
+            // Nothing is read from a hidden notice bar.
+            Click(window.NoticeClose);
+            int before = Count(window.NoticeText);
+            Soltex.App.Controls.LiveRegion.Notify(window.NoticeText);
+            Pump();
+            Program.True(Count(window.NoticeText) == before, "A hidden notice must not be read.");
+
+            // Search status: "No matches" is read; typing on with still nothing found is not read again.
+            window.OpenSearchForCapture("zzzz");
+            Pump();
+            Program.True(Count(window.SearchHint) == 1 && window.SearchHint.Text.StartsWith("No matches", StringComparison.Ordinal), "No matches must be read.");
+            window.SearchBox.Text = "zzzzz";
+            Pump();
+            Program.True(Count(window.SearchHint) == 1, "A status that did not change must not be read again.");
+
+            // Turning the helper off stops it and removes the live setting.
+            Soltex.App.Controls.LiveRegion.SetIsLive(window.SearchHint, false);
+            window.SearchBox.Text = "";
+            Pump();
+            Program.True(Count(window.SearchHint) == 1 && AutomationProperties.GetLiveSetting(window.SearchHint) == AutomationLiveSetting.Off,
+                "A text that is no longer live must not be read.");
+            window.SearchOverlay.Visibility = Visibility.Collapsed;
+        }
+        finally { Soltex.App.Controls.LiveRegion.Announced -= Record; }
+    }
+
+    /// <summary>In high contrast the selected rail item draws its label, icon and pill in HighlightText on the Highlight fill.</summary>
+    public static void HighContrastSelectionUsesHighlightText()
+    {
+        using TestShell shell = new();
+        ShellWindow window = shell.Window;
+        window.Navigate(Destination.Tools);
+        Pump();
+        List<string> problems = [];
+        void Inspect(string mode, Color fillColor, Color textColor, Color pillColor)
+        {
+            foreach (ListBox nav in new[] { window.PrimaryNav, window.FooterNav })
+            {
+                if (nav.SelectedItem is null) continue;
+                ListBoxItem item = (ListBoxItem)nav.ItemContainerGenerator.ContainerFromItem(nav.SelectedItem);
+                Border fill = (Border)item.Template.FindName("Fill", item), pill = (Border)item.Template.FindName("Pill", item);
+                TextBlock[] texts = [.. Descendants(item).OfType<TextBlock>()];
+                if (ColorOf(fill.Background) != fillColor) problems.Add($"{mode}: the selection fill is {ColorOf(fill.Background)}, expected {fillColor}");
+                if (texts.Length == 0 || texts.Any(t => ColorOf(t.Foreground) != textColor))
+                    problems.Add($"{mode}: label or icon is {string.Join(", ", texts.Select(t => ColorOf(t.Foreground).ToString(System.Globalization.CultureInfo.InvariantCulture)))}, expected {textColor}");
+                if (ColorOf(pill.Background) != pillColor) problems.Add($"{mode}: the pill is {ColorOf(pill.Background)}, expected {pillColor}");
+            }
+        }
+        Inspect("palette", ColorOf(window.FindResource("Studio.SelectedBrush")), ColorOf(window.FindResource("Studio.SelectedTextBrush")),
+            ColorOf(window.FindResource("Studio.SelectedPillBrush")));
+
+        // The window takes the high-contrast palette the way ThemeService applies it when Windows is in high contrast.
+        ResourceDictionary contrast = new() { Source = new Uri("/Soltex;component/Themes/Studio.HighContrast.xaml", UriKind.Relative) };
+        window.Resources.MergedDictionaries.Add(contrast);
+        try
+        {
+            Pump();
+            Inspect("high contrast", SystemColors.HighlightColor, SystemColors.HighlightTextColor, SystemColors.HighlightTextColor);
+            // The icon rail (narrow window, large text) follows the same rule.
+            ThemeService.ApplyScale(window.ScaleRoot, new AppSettings { ScalePercent = 200 });
+            RenderSmokeCapture.ConfigureWindow(window, 760, 860);
+            window.UpdateLayout();
+            Pump();
+            Program.True(window.IsRailCompact, "Setup: the icon rail did not appear.");
+            Inspect("high contrast icon rail", SystemColors.HighlightColor, SystemColors.HighlightTextColor, SystemColors.HighlightTextColor);
+        }
+        finally { window.Resources.MergedDictionaries.Remove(contrast); }
+        Program.True(problems.Count == 0, "Selected rail items: " + string.Join("; ", problems));
+    }
+
+    /// <summary>Search keeps Tab inside, highlights like the rail with room for the scroll bar, and a page result focuses the page.</summary>
+    public static void SearchCyclesFocusAndHighlightsLikeTheRail()
+    {
+        using TestShell shell = new();
+        ShellWindow window = shell.Window;
+        Program.True(KeyboardNavigation.GetTabNavigation(window.SearchCard) == KeyboardNavigationMode.Cycle
+            && KeyboardNavigation.GetControlTabNavigation(window.SearchCard) == KeyboardNavigationMode.Cycle,
+            "Tab and Ctrl+Tab must cycle inside the search overlay.");
+
+        window.OpenSearchForCapture("e");
+        window.UpdateLayout();
+        Pump();
+        Program.True(window.SearchResults.Items.Count > 0 && window.SearchResults.SelectedIndex == 0, "Setup: search found nothing.");
+        ListBoxItem first = (ListBoxItem)window.SearchResults.ItemContainerGenerator.ContainerFromIndex(0);
+        Border firstFill = (Border)first.Template.FindName("Fill", first);
+        Program.True(ReferenceEquals(first.Style, window.FindResource("Shell.SearchResultItem"))
+            && ColorOf(firstFill.Background) == ColorOf(window.FindResource("Studio.SelectedBrush")),
+            "The selected result must use the rail's violet selection, not a plain grey.");
+        ScrollBar? bar = Descendants(window.SearchResults).OfType<ScrollBar>().FirstOrDefault(b => b.Orientation == Orientation.Vertical && b.IsVisible);
+        foreach (ListBoxItem item in Descendants(window.SearchResults).OfType<ListBoxItem>().Where(i => i.IsVisible))
+        {
+            Border fill = (Border)item.Template.FindName("Fill", item);
+            Rect row = fill.TransformToAncestor(window).TransformBounds(new Rect(fill.RenderSize));
+            Program.True(item.Margin.Right >= 12, "A result row leaves no lane for the scroll bar.");
+            if (bar is not null)
+            {
+                Rect lane = bar.TransformToAncestor(window).TransformBounds(new Rect(bar.RenderSize));
+                Program.True(row.Right <= lane.Left + 0.5, $"A result row ({row.Right:0}) runs under the scroll bar ({lane.Left:0}).");
+            }
+        }
+
+        // A page result (no single setting to focus) lands on the page's first control or its rail item, never nowhere.
+        window.SearchBox.Text = "Tools";
+        Pump();
+        SearchEntry page = window.SearchResults.Items.Cast<SearchEntry>().First(e => e.Destination == Destination.Tools && e.Anchor == "top");
+        window.SearchResults.SelectedItem = page;
+        window.OpenSelectedResult();
+        Pump();
+        DependencyObject? focused = FocusManager.GetFocusedElement(window) as DependencyObject;
+        bool inPage = focused is not null && IsWithin(focused, window.Page(Destination.Tools).View);
+        bool onRail = focused is ListBoxItem { DataContext: NavItem { Destination: Destination.Tools } };
+        Program.True(!window.SearchOverlay.IsVisible && (inPage || onRail), "Opening a page result must focus the page: focus is on " + focused);
+    }
+
+    private static bool IsWithin(DependencyObject node, DependencyObject root)
+    {
+        for (DependencyObject? at = node; at is not null; at = (at is Visual ? VisualTreeHelper.GetParent(at) : null) ?? LogicalTreeHelper.GetParent(at))
+            if (ReferenceEquals(at, root)) return true;
+        return false;
+    }
+
+    /// <summary>Check boxes, radio buttons, slider thumbs and progress bars use the Studio violet, not the Windows accent.</summary>
+    public static void FluentControlsUseTheStudioAccent()
+    {
+        Application app = Application.Current;
+        string[] keys = ["CheckBoxCheckBackgroundFillChecked", "CheckBoxCheckBackgroundStrokeChecked", "RadioButtonOuterEllipseCheckedFill",
+            "SliderThumbBackground", "ProgressBarForeground", "ComboBoxItemPillFillBrush"];
+        try
+        {
+            foreach (ThemePreference theme in new[] { ThemePreference.Dark, ThemePreference.Light })
+            {
+                ThemeService.Apply(app, new AppSettings { Theme = theme });
+                Color accent = ColorOf(app.TryFindResource("Studio.AccentBrush"));
+                foreach (string key in keys)
+                    Program.True(ColorOf(app.TryFindResource(key)) == accent, $"{theme}: {key} is {ColorOf(app.TryFindResource(key))}, not the Studio accent {accent}.");
+                // Drawn for real: a checked box, a slider and a progress bar on the page background show violet.
+                StackPanel panel = new() { Width = 240, Background = (Brush)app.TryFindResource("SolidBackgroundFillColorBaseBrush") };
+                panel.Children.Add(new CheckBox { IsChecked = true, Content = "On" });
+                panel.Children.Add(new Slider { Minimum = 0, Maximum = 100, Value = 50, Width = 200, HorizontalAlignment = HorizontalAlignment.Left });
+                panel.Children.Add(new ProgressBar { Minimum = 0, Maximum = 100, Value = 60, Height = 4, Width = 200, HorizontalAlignment = HorizontalAlignment.Left });
+                panel.Measure(new Size(240, 140));
+                panel.Arrange(new Rect(0, 0, 240, 140));
+                panel.UpdateLayout();
+                RenderTargetBitmap bitmap = new(240, 140, 96, 96, PixelFormats.Pbgra32);
+                bitmap.Render(panel);
+                byte[] pixels = new byte[240 * 140 * 4];
+                bitmap.CopyPixels(pixels, 240 * 4, 0);
+                int violet = 0;
+                for (int i = 0; i < pixels.Length; i += 4)
+                    if (Math.Abs(pixels[i + 2] - accent.R) + Math.Abs(pixels[i + 1] - accent.G) + Math.Abs(pixels[i] - accent.B) < 40) violet++;
+                Program.True(violet > 120, $"{theme}: the check box, slider and progress bar drew {violet} accent pixels.");
+            }
+        }
+        finally { ThemeService.Apply(app, new AppSettings()); }
+    }
+
+    /// <summary>Text colours reach 4.5:1: tertiary and caption text, light-theme channel names, and text on a selected row.</summary>
+    public static void TextColorsMeetContrast()
+    {
+        Application app = Application.Current;
+        List<string> problems = [];
+        try
+        {
+            foreach (ThemePreference theme in new[] { ThemePreference.Dark, ThemePreference.Light })
+            {
+                ThemeService.Apply(app, new AppSettings { Theme = theme });
+                Color Of(string key) => ColorOf(app.TryFindResource(key));
+                void Check(string what, Color foreground, Color background)
+                {
+                    double ratio = Contrast(foreground, background);
+                    if (ratio < 4.5) problems.Add($"{theme} {what}: {ratio:F2}:1");
+                }
+                (string Name, Color Color)[] surfaces = [("card", Of("CardBackgroundFillColorDefaultBrush")), ("base", Of("SolidBackgroundFillColorBaseBrush")),
+                    ("rail", Of("Studio.RailBrush")), ("raised", Of("Studio.RaisedBrush"))];
+                TextBlock eyebrow = new() { Style = (Style)app.FindResource("Studio.Eyebrow"), Text = "CAPTION" };
+                foreach ((string name, Color surface) in surfaces)
+                {
+                    foreach (string key in new[] { "TextFillColorSecondaryBrush", "TextFillColorTertiaryBrush", "Studio.TextTertiaryBrush" })
+                        Check(key + " on " + name, Of(key), surface);
+                    Check("caption (Studio.Eyebrow) on " + name, ColorOf(eyebrow.Foreground), surface);
+                }
+                foreach (string channel in new[] { "Microphone", "Game", "Chat", "Media", "Aux", "Master" })
+                    foreach ((string name, Color surface) in surfaces.Take(2))
+                        Check($"{channel} channel name on {name}", Of("Studio.Channel." + channel), surface);
+                // The selected search result sits on the search card (the base colour) under the violet tint.
+                Color selected = Over(Of("Studio.SelectedBrush"), Of("SolidBackgroundFillColorBaseBrush"));
+                Check("selected result title", Of("Studio.SelectedTextBrush"), selected);
+                Check("selected result location", Of("Studio.SelectedSecondaryTextBrush"), selected);
+                Color listSelected = Over(Of("ListBoxItemSelectedBackgroundThemeBrush"), Of("CardBackgroundFillColorDefaultBrush"));
+                Check("selected list row", Of("ListBoxItemSelectedForegroundThemeBrush"), listSelected);
+            }
+        }
+        finally { ThemeService.Apply(app, new AppSettings()); }
+        Program.True(problems.Count == 0, "Contrast below 4.5:1: " + string.Join("; ", problems));
+    }
+
+    /// <summary>A switch that is on but unavailable still reads as on: muted violet track and a solid, readable knob.</summary>
+    public static void DisabledSwitchStillReadsOn()
+    {
+        Application app = Application.Current;
+        try
+        {
+            foreach (ThemePreference theme in new[] { ThemePreference.Dark, ThemePreference.Light })
+            {
+                ThemeService.Apply(app, new AppSettings { Theme = theme });
+                Style style = (Style)app.FindResource("Studio.Switch");
+                CheckBox on = new() { Style = style, IsChecked = true, IsEnabled = false, Content = "On" };
+                CheckBox off = new() { Style = style, IsChecked = false, IsEnabled = false, Content = "Off" };
+                foreach (CheckBox box in new[] { on, off })
+                {
+                    box.Measure(new Size(200, 40));
+                    box.Arrange(new Rect(0, 0, 200, 40));
+                }
+                FrameworkElement Part(CheckBox box, string name) => (FrameworkElement)box.Template.FindName(name, box);
+                Color track = ColorOf(((Border)Part(on, "Track")).Background), knob = ColorOf(((Border)Part(on, "Knob")).Background);
+                Color card = ColorOf(app.TryFindResource("CardBackgroundFillColorDefaultBrush"));
+                Program.True(on.Opacity == 1 && Part(on, "SwitchBox").Opacity == 1, $"{theme}: an unavailable switch that is on must not fade into grey.");
+                Program.True(track == ColorOf(app.TryFindResource("Studio.SwitchOnDisabledBrush")) && Contrast(knob, track) >= 3,
+                    $"{theme}: the knob ({knob}) must stand out on the muted track ({track}): {Contrast(knob, track):F2}:1.");
+                Program.True(Math.Max(Contrast(track, card), Contrast(knob, card)) >= 3, $"{theme}: an unavailable switch that is on must still show on the card.");
+                Program.True(Part(off, "SwitchBox").Opacity < 1 && Part(off, "Label").Opacity < 1, $"{theme}: an unavailable switch that is off fades.");
+            }
+        }
+        finally { ThemeService.Apply(app, new AppSettings()); }
+    }
+
+    /// <summary>Put back stays on offer until answered: a newer notice covers it, closing that brings it back, closing it remembers.</summary>
+    public static void DriftOfferStaysUntilAnswered()
+    {
+        MemoryRegistry registry = new();
+        using TestShell shell = new(calmFactory: journal => new ChangeEngine(registry, new ChangeJournal(journal), 26300));
+        ShellWindow window = shell.Window;
+        SettingDefinition widgets = CalmCatalog.All.Single(d => d.Id == "taskbar.widgets");
+        RegistryTarget target = widgets.Targets[0];
+        Program.True(shell.Services.Calm.ApplyChoice(widgets, 0).Outcome == ChangeOutcome.Applied, "Setup: the change did not apply.");
+        RegistryValue set = registry.Read(RegistryHive2.CurrentUser, target.Path, target.Name);
+        registry.Write(target.Path, target.Name, set == RegistryValue.Dword(1) ? RegistryValue.Dword(0) : RegistryValue.Dword(1)); // Windows changed it back
+
+        DriftReport found = Wait(shell.Services.Drift.CheckAsync()) ?? throw new InvalidOperationException("The drift check failed.");
+        Pump();
+        Program.True(found is { Count: 1 } && window.PendingDrift is not null && window.NoticeText.Text == found.Summary
+            && window.NoticeAction.IsVisible && (string)window.NoticeAction.Content == "Put back", "The difference must be offered with Put back.");
+        Program.True(shell.Services.Settings.Current.ReportedDrift is null, "An offer nobody answered must not be remembered yet.");
+
+        window.ShowNotice(NoticeSeverity.Information, "Something else happened.", null, null);
+        Program.True(window.NoticeText.Text == "Something else happened.", "Setup: the newer notice did not show.");
+        Click(window.NoticeClose);
+        Pump();
+        Program.True(window.NoticeBar.IsVisible && window.NoticeText.Text == found.Summary && window.NoticeAction.IsVisible,
+            "Closing the newer notice must bring the Put back offer back.");
+        Program.True(shell.Services.Notices.Count(n => n.Message == found.Summary) == 1, "Bringing the offer back must not add it to Recent events again.");
+
+        // Unanswered, it is offered again by the next check (the twice-a-day check or the next start).
+        window.ShowNotice(NoticeSeverity.Information, "Covering the offer again.", null, null);
+        Wait(shell.Services.Drift.CheckAsync());
+        Pump();
+        Program.True(window.NoticeText.Text == found.Summary && window.PendingDrift is not null && shell.Services.Settings.Current.ReportedDrift is null,
+            "The next check must offer an unanswered difference again.");
+
+        Click(window.NoticeClose); // the answer: leave it as it is
+        Pump();
+        Program.True(window.PendingDrift is null && !window.NoticeBar.IsVisible
+            && AppSettings.NormalizeIdList(shell.Services.Settings.Current.ReportedDrift) == AppSettings.NormalizeIdList(widgets.Id),
+            "Closing the offer itself must remember the answer.");
+        Wait(shell.Services.Drift.CheckAsync());
+        Pump();
+        Program.True(!window.NoticeBar.IsVisible && window.PendingDrift is null, "An answered difference must not be offered again.");
+    }
+
+    /// <summary>Tray "Open audio" (and --audio) shows Audio selected in the rail even when Audio is hidden in Settings.</summary>
+    public static void HiddenPageOpensSelected()
+    {
+        bool preview = AudioPreview.Enabled, sonar = AudioPage.SonarInstalled;
+        AudioPreview.Enabled = true;
+        AudioPage.SonarInstalled = true;
+        try
+        {
+            using TestShell shell = new(s => s with { HiddenDestinations = [Destination.Audio] });
+            ShellWindow window = shell.Window;
+            ListBox nav = window.PrimaryNav;
+            Program.True(nav.Items.Cast<NavItem>().All(i => i.Destination != Destination.Audio), "Setup: Audio is not hidden.");
+            window.Navigate(Destination.Audio); // what OpenAudio does after showing the window
+            Pump();
+            Program.True(nav.SelectedItem is NavItem { Destination: Destination.Audio } && window.Title.StartsWith("Audio", StringComparison.Ordinal),
+                "A hidden page that is opened must show selected in the rail.");
+            ListBoxItem? row = nav.ItemContainerGenerator.ContainerFromItem(nav.SelectedItem) as ListBoxItem;
+            Program.True(row is { IsVisible: true, IsSelected: true }, "The opened hidden page has no visible, selected rail item.");
+            shell.Services.Settings.Update(s => s with { StartPage = Destination.Tools });
+            Pump();
+            Program.True(nav.SelectedItem is NavItem { Destination: Destination.Audio }, "An unrelated settings change must not close the open hidden page.");
+            window.Navigate(Destination.MyPc);
+            Pump();
+            Program.True(nav.Items.Cast<NavItem>().All(i => i.Destination != Destination.Audio) && nav.SelectedItem is NavItem { Destination: Destination.MyPc },
+                "Once left, the hidden page leaves the rail again.");
+        }
+        finally
+        {
+            AudioPreview.Enabled = preview;
+            AudioPage.SonarInstalled = sonar;
+        }
+    }
+
     // ---------- helpers ----------
     private sealed class TestShell : IDisposable
     {
-        public TestShell(Func<AppSettings, AppSettings>? configure = null, Func<string, ChangeEngine>? calmFactory = null)
+        public TestShell(Func<AppSettings, AppSettings>? configure = null, Func<string, ChangeEngine>? calmFactory = null, Action<string>? prepareRoot = null)
         {
             string root = NewRoot();
+            prepareRoot?.Invoke(root);
             AppSettingsStore store = new(AppSettingsStore.DefaultPath(root));
             if (configure is not null) store.Update(configure);
             // Tests never use the real registry engine: a fake is the default.
@@ -778,6 +1162,47 @@ internal static class ShellChecks
     }
 
     private static SearchEntry? First(IReadOnlyList<SearchEntry> found) => found.Count > 0 ? found[0] : null;
+
+    private static void Click(ButtonBase button) => button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent, button));
+
+    private static T Wait<T>(Task<T> task)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!task.IsCompleted && DateTime.UtcNow < deadline)
+        {
+            Pump();
+            Thread.Sleep(5);
+        }
+        Program.True(task.IsCompleted, "A background task did not finish.");
+        return task.GetAwaiter().GetResult();
+    }
+
+    private static Color ColorOf(object? brush) => brush is SolidColorBrush { Color: var c } ? c : throw new InvalidOperationException("Not a solid brush: " + brush);
+
+    /// <summary>WCAG contrast of two colours; a translucent foreground is laid over the background first.</summary>
+    internal static double Contrast(Color foreground, Color background)
+    {
+        Color over = Over(foreground, background);
+        double a = RelativeLuminance(over), b = RelativeLuminance(background);
+        return (Math.Max(a, b) + 0.05) / (Math.Min(a, b) + 0.05);
+    }
+
+    internal static Color Over(Color top, Color bottom)
+    {
+        double alpha = top.A / 255d;
+        byte Mix(byte t, byte u) => (byte)Math.Round(t * alpha + u * (1 - alpha));
+        return Color.FromRgb(Mix(top.R, bottom.R), Mix(top.G, bottom.G), Mix(top.B, bottom.B));
+    }
+
+    private static double RelativeLuminance(Color c)
+    {
+        static double Channel(byte v)
+        {
+            double s = v / 255d;
+            return s <= 0.03928 ? s / 12.92 : Math.Pow((s + 0.055) / 1.055, 2.4);
+        }
+        return 0.2126 * Channel(c.R) + 0.7152 * Channel(c.G) + 0.0722 * Channel(c.B);
+    }
 
     private static string NewRoot()
     {

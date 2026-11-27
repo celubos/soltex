@@ -10,7 +10,6 @@ internal sealed record SavedOutputDevice(string Id, string Name);
 
 internal sealed class LinkedOutputPolicySettings
 {
-    private string FileName = "";
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
     public int Version { get; set; } = 1;
     public bool Enabled { get; set; }
@@ -30,47 +29,46 @@ internal sealed class LinkedOutputPolicySettings
         Version = Version, Enabled = Enabled, ReturnToPreferred = ReturnToPreferred, ManualEndpointId = ManualEndpointId,
         LastObservedEndpointId = LastObservedEndpointId, ExternalSelectionHold = ExternalSelectionHold,
         KnownDevices = [.. KnownDevices], PriorityEndpointIds = [.. PriorityEndpointIds], ExcludedEndpointIds = [.. ExcludedEndpointIds],
-        IndependentBusEndpointIds = new(IndependentBusEndpointIds, StringComparer.Ordinal), PersistenceError = PersistenceError, FileName = FileName
+        IndependentBusEndpointIds = new(IndependentBusEndpointIds, StringComparer.Ordinal), PersistenceError = PersistenceError
     };
 
     public static LinkedOutputPolicySettings Load(string path)
     {
         try
         {
-            if (!File.Exists(path)) return new() { FileName = path };
+            if (!File.Exists(path)) return new();
             var settings = JsonSerializer.Deserialize<LinkedOutputPolicySettings>(File.ReadAllText(path)) ?? throw new JsonException("Empty device preferences.");
             if (settings.Version != 1 || settings.KnownDevices is null || settings.PriorityEndpointIds is null || settings.ExcludedEndpointIds is null || settings.IndependentBusEndpointIds is null ||
                 settings.KnownDevices.Any(d => d is null || string.IsNullOrWhiteSpace(d.Id) || string.IsNullOrWhiteSpace(d.Name)) ||
                 settings.PriorityEndpointIds.Any(string.IsNullOrWhiteSpace) || settings.ExcludedEndpointIds.Any(string.IsNullOrWhiteSpace))
                 throw new JsonException("Unsupported or incomplete device preferences.");
-            settings.FileName = path; return settings;
+            return settings;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or System.Security.SecurityException)
-        { return new() { FileName = path, PersistenceError = "Saved device preferences could not be read and have been preserved: " + exception.Message }; }
+        { return new() { PersistenceError = "Saved device preferences could not be read and have been preserved: " + exception.Message }; }
     }
 
-    public void Save()
+    /// <summary>The file's content now, on the caller's thread; <see cref="SettingsFile"/> writes it off the UI thread.</summary>
+    public byte[] Serialize()
     {
         if (PersistenceError is not null) throw new IOException(PersistenceError);
-        Directory.CreateDirectory(Path.GetDirectoryName(FileName)!);
-        string temporary = FileName + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        try
-        {
-            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
-            { JsonSerializer.Serialize(stream, this, Json); stream.Flush(flushToDisk: true); }
-            Soltex.Shared.AtomicFileReplace.Move(temporary, FileName);
-        }
-        finally { try { if (File.Exists(temporary)) File.Delete(temporary); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        return JsonSerializer.SerializeToUtf8Bytes(this, Json);
     }
 }
 
-internal sealed class PolicyDeviceRow(SavedOutputDevice device, bool available, bool included, bool excluded) : ObservableModel
+/// <summary>One device in the priority list; repeated names are numbered by the window, like the rest of the app.</summary>
+internal sealed class PolicyDeviceRow(SavedOutputDevice device, bool available, bool included, bool excluded, string nameSuffix = "") : ObservableModel
 {
     private bool _included = included, _excluded = excluded;
     public string Id => device.Id;
-    public string Label => device.Name + (available ? "" : " · unavailable") + " · " + device.Id[Math.Max(0, device.Id.Length - 9)..];
+    public string Name => device.Name + nameSuffix;
+    public string Label => Name + (available ? "" : " · unavailable");
     public bool Included { get => _included; set => Set(ref _included, value); }
     public bool Excluded { get => _excluded; set => Set(ref _excluded, value); }
+    /// <summary>Each row's check boxes name their device, so a screen reader doesn't hear a list of identical "Use" boxes.</summary>
+    public string UseAccessibleName => "Use " + Name;
+    public string ExcludeAccessibleName => "Exclude " + Name;
+    public override string ToString() => Label;
 }
 
 internal sealed class DevicePolicyWindow : Window
@@ -104,15 +102,17 @@ internal sealed class DevicePolicyWindow : Window
         buttons.Children.Add(up); buttons.Children.Add(down); buttons.Children.Add(apply);
         var list = new ListBox { ItemsSource = _rows, HorizontalContentAlignment = HorizontalAlignment.Stretch };
         var factory = new FrameworkElementFactory(typeof(DockPanel));
-        var use = new FrameworkElementFactory(typeof(CheckBox)); use.SetValue(ContentControl.ContentProperty, "Use"); use.SetValue(FrameworkElement.WidthProperty, 55d); use.SetBinding(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, new System.Windows.Data.Binding(nameof(PolicyDeviceRow.Included)) { Mode = System.Windows.Data.BindingMode.TwoWay }); factory.AppendChild(use);
-        var exclude = new FrameworkElementFactory(typeof(CheckBox)); exclude.SetValue(ContentControl.ContentProperty, "Exclude"); exclude.SetValue(FrameworkElement.WidthProperty, 80d); exclude.SetBinding(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, new System.Windows.Data.Binding(nameof(PolicyDeviceRow.Excluded)) { Mode = System.Windows.Data.BindingMode.TwoWay }); factory.AppendChild(exclude);
+        var use = new FrameworkElementFactory(typeof(CheckBox)); use.SetValue(ContentControl.ContentProperty, "Use"); use.SetValue(FrameworkElement.WidthProperty, 55d); use.SetBinding(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, new System.Windows.Data.Binding(nameof(PolicyDeviceRow.Included)) { Mode = System.Windows.Data.BindingMode.TwoWay });
+        use.SetBinding(System.Windows.Automation.AutomationProperties.NameProperty, new System.Windows.Data.Binding(nameof(PolicyDeviceRow.UseAccessibleName))); factory.AppendChild(use);
+        var exclude = new FrameworkElementFactory(typeof(CheckBox)); exclude.SetValue(ContentControl.ContentProperty, "Exclude"); exclude.SetValue(FrameworkElement.WidthProperty, 80d); exclude.SetBinding(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, new System.Windows.Data.Binding(nameof(PolicyDeviceRow.Excluded)) { Mode = System.Windows.Data.BindingMode.TwoWay });
+        exclude.SetBinding(System.Windows.Automation.AutomationProperties.NameProperty, new System.Windows.Data.Binding(nameof(PolicyDeviceRow.ExcludeAccessibleName))); factory.AppendChild(exclude);
         var label = new FrameworkElementFactory(typeof(TextBlock)); label.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(PolicyDeviceRow.Label))); label.SetValue(TextBlock.TextWrappingProperty, TextWrapping.Wrap); factory.AppendChild(label);
         list.ItemTemplate = new DataTemplate { VisualTree = factory }; panel.Children.Add(list);
-        foreach (string id in draft.PriorityEndpointIds.Concat(draft.KnownDevices.Select(d => d.Id)).Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            var device = draft.KnownDevices.FirstOrDefault(d => string.Equals(d.Id, id, StringComparison.OrdinalIgnoreCase)) ?? new(id, "Saved device");
-            _rows.Add(new(device, available.Contains(id), draft.PriorityEndpointIds.Contains(id, StringComparer.OrdinalIgnoreCase), draft.ExcludedEndpointIds.Contains(id, StringComparer.OrdinalIgnoreCase)));
-        }
+        SavedOutputDevice[] devices = draft.PriorityEndpointIds.Concat(draft.KnownDevices.Select(d => d.Id)).Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(id => draft.KnownDevices.FirstOrDefault(d => string.Equals(d.Id, id, StringComparison.OrdinalIgnoreCase)) ?? new(id, "Saved device")).ToArray();
+        foreach (var device in devices)
+            _rows.Add(new(device, available.Contains(device.Id), draft.PriorityEndpointIds.Contains(device.Id, StringComparer.OrdinalIgnoreCase),
+                draft.ExcludedEndpointIds.Contains(device.Id, StringComparer.OrdinalIgnoreCase), DeviceNames.DuplicateSuffix(devices, device, d => d.Name)));
         up.Click += (_, _) => { int i = list.SelectedIndex; if (i > 0) { _rows.Move(i, i - 1); list.SelectedIndex = i - 1; } };
         down.Click += (_, _) => { int i = list.SelectedIndex; if (i >= 0 && i + 1 < _rows.Count) { _rows.Move(i, i + 1); list.SelectedIndex = i + 1; } };
         apply.Click += async (_, _) =>

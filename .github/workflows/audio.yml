@@ -8,6 +8,8 @@ on:
       - 'native/Soltex.TaskbarStyle/**'
       - 'docs/audio/**'
       - 'eng/build-audio.ps1'
+      - 'eng/make-release.ps1'
+      - 'eng/package/**'
       - 'eng/verify-integrated.ps1'
       - 'eng/verify-design-tokens.ps1'
       - 'eng/verify-identity.ps1'
@@ -44,13 +46,24 @@ jobs:
           $lock = Get-Content -Raw ./native/Soltex.TaskbarStyle/toolchain.lock.json | ConvertFrom-Json
           "SOLTEX_LLVM_MINGW=$(Join-Path $cacheRoot $lock.packages[0].folder)" |
             Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
-      - name: Verify suite and publish integrated development application
+      # Self-contained, as a release is built, so the next step can make the release zip from it.
+      - name: Verify suite and publish integrated application
         shell: pwsh
-        run: ./eng/build-audio.ps1 -Integrated -FrameworkDependent -ArtifactRoot "${{ runner.temp }}/soltex-integrated"
+        run: ./eng/build-audio.ps1 -Integrated -ArtifactRoot "${{ runner.temp }}/soltex-integrated"
+      # The same zip and SHA256SUMS.txt a release ships, so eng/make-release.ps1 runs before release day.
+      - name: Build the release zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'soltex-integrated') -Directory -Filter 'package-*')
+          if ($package.Count -ne 1) { throw "Expected one integrated package; found $($package.Count)." }
+          ./eng/make-release.ps1 -PackageDirectory $package[0].FullName -OutputDirectory (Join-Path $env:RUNNER_TEMP 'soltex-release')
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: soltex-integrated-development-win-x64
-          path: '${{ runner.temp }}/soltex-integrated/package-*'
+          name: soltex-release-zip-win-x64
+          path: |
+            ${{ runner.temp }}/soltex-release/Soltex-*-win-x64.zip
+            ${{ runner.temp }}/soltex-release/SHA256SUMS.txt
           if-no-files-found: error
       - name: Retain verification and publish logs
         if: always()

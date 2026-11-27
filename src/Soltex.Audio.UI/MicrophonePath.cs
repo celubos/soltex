@@ -89,7 +89,8 @@ public static class MicrophonePath
             return (MicrophonePathState.Starting, "Waiting", status.Reason);
         if (channel.Mute || channel.Dsp.Mute || channel.GainDb <= -80)
             return (MicrophonePathState.Muted, "Muted", "The path is open but muted, so apps receive silence." + apps);
-        return (MicrophonePathState.Running, "On", "Your processed voice is being sent now." + apps);
+        // "Running", like the playback channels and the Mixer's badge.
+        return (MicrophonePathState.Running, "Running", "Your processed voice is being sent now." + apps);
     }
 
     public static IReadOnlyList<string> DescribeProcessing(HostChannelProfile channel)
@@ -146,6 +147,20 @@ public static class MicrophonePath
 
     public static string Decibels(double value) =>
         (value > 0 ? "+" : value < 0 ? "−" : "") + Math.Abs(value).ToString("0.#", CultureInfo.InvariantCulture) + " dB";
+
+    /// <summary>How long a microphone test listens. Every test (the suite's card, the setup window) uses this one value.</summary>
+    public static readonly TimeSpan TestDuration = TimeSpan.FromSeconds(10);
+
+    /// <summary><see cref="TestDuration"/> in words for a label ("10 seconds").</summary>
+    public static string TestDurationText => TestDuration.TotalSeconds.ToString("0", CultureInfo.CurrentCulture) + " seconds";
+
+    /// <summary>A dBFS number with a true minus sign ("−9"), never "-0".</summary>
+    public static string Dbfs(double value, string format = "0")
+    {
+        string text = Math.Abs(value).ToString(format, CultureInfo.InvariantCulture);
+        bool zero = double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out double shown) && shown == 0;
+        return (value < 0 && !zero ? "−" : "") + text;
+    }
 
     /// <summary>Peak in dBFS, floored at −90 for silence.</summary>
     public static double PeakDbfs(float peak) => peak <= 0.0000316f ? -90 : 20 * Math.Log10(peak);

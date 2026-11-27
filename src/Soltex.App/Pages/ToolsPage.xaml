@@ -1,9 +1,10 @@
-<UserControl x:Class="Soltex.App.Pages.ToolsPage"
+﻿<UserControl x:Class="Soltex.App.Pages.ToolsPage"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:Soltex.App.Controls">
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
         <Grid Margin="{DynamicResource Shell.PagePadding}">
-        <Grid.ColumnDefinitions><ColumnDefinition Width="*" MaxWidth="900" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*" MaxWidth="{DynamicResource Shell.PageMaxWidth}" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
         <StackPanel>
             <TextBlock x:Name="Intro" Style="{StaticResource Shell.PageTitle}" Text="Tools" Margin="0,0,0,20" />
 
@@ -50,7 +51,7 @@
                     <DockPanel>
                         <TextBlock x:Name="RemoteGlyph" DockPanel.Dock="Left" Style="{StaticResource Shell.Glyph}" Text="&#xE8AF;" Margin="0,0,12,0" />
                         <StackPanel>
-                            <TextBlock x:Name="RemoteState" Style="{StaticResource Shell.Body}" FontWeight="SemiBold" AutomationProperties.LiveSetting="Polite" />
+                            <TextBlock x:Name="RemoteState" Style="{StaticResource Shell.Body}" FontWeight="SemiBold" controls:LiveRegion.IsLive="True" />
                             <TextBlock x:Name="RemoteDetail" Style="{StaticResource Shell.Secondary}" />
                         </StackPanel>
                     </DockPanel>
@@ -86,10 +87,10 @@
                                 AutomationProperties.HelpText="Stops waiting for the result. A scan Windows already started may keep running." />
                     </WrapPanel>
                     <ProgressBar x:Name="ScanProgress" IsIndeterminate="True" Height="4" Margin="0,4,0,8" Visibility="Collapsed" AutomationProperties.Name="Scan in progress" />
-                    <TextBlock x:Name="ScanResult" Style="{StaticResource Shell.Body}" AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock x:Name="ScanResult" Style="{StaticResource Shell.Body}" controls:LiveRegion.IsLive="True" />
                     <Expander x:Name="EventsExpander" Header="Recent Microsoft Defender events" Margin="0,10,0,0" Expanded="EventsExpander_Expanded">
                         <StackPanel Margin="0,6,0,0">
-                            <TextBlock x:Name="EventsHint" Style="{StaticResource Shell.Secondary}" />
+                            <TextBlock x:Name="EventsHint" Style="{StaticResource Shell.Secondary}" controls:LiveRegion.IsLive="True" />
                             <ItemsControl x:Name="EventsList" Focusable="False" AutomationProperties.Name="Recent Microsoft Defender events">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
@@ -114,9 +115,10 @@
                     <WrapPanel Margin="0,12,0,0">
                         <Button x:Name="OpenImports" Content="Open protected imports folder" Margin="0,0,8,8" Click="OpenImports_Click" />
                     </WrapPanel>
-                    <TextBlock x:Name="QuarantineSummary" Style="{StaticResource Shell.Body}" FontWeight="SemiBold" Margin="0,8,0,4" />
+                    <TextBlock x:Name="QuarantineSummary" Style="{StaticResource Shell.Body}" FontWeight="SemiBold" Margin="0,8,0,4" controls:LiveRegion.IsLive="True" />
+                    <!-- Shown once quarantine has been read and holds something. -->
                     <ListBox x:Name="QuarantineList" MaxHeight="220" AutomationProperties.Name="Quarantined files" SelectionChanged="QuarantineList_SelectionChanged"
-                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
                                 <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />

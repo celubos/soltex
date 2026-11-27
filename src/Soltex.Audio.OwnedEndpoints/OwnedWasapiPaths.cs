@@ -43,7 +43,7 @@ internal sealed class OwnedRenderPath : IHostAudioPath
             guard = new(resampler, settings.OutputCeiling);
             head = new RenderHeadSampleProvider(guard);
             opened = new(acquired, AudioClientShareMode.Shared, true, 40); opened.Init(head.ToWaveProvider());
-            output = acquired; render = opened; render.PlaybackStopped += OnStopped;
+            output = acquired; render = opened; render.PlaybackStopped += OnStopped; AudioThreadScheduling.ReleaseOnStop(render);
         }
         catch (Exception error) { ResourceCleanup.Run(error, () => opened?.Dispose(), () => acquired?.Dispose(), enumerator.Dispose); throw; }
     }
@@ -111,7 +111,7 @@ internal sealed class OwnedMicrophonePath : IHostAudioPath
             guard = new(resampler, settings.OutputCeiling);
             head = new RenderHeadSampleProvider(guard);
             input = acquired; capture = opened;
-            capture.DataAvailable += OnData; capture.RecordingStopped += OnStopped;
+            capture.DataAvailable += OnData; capture.RecordingStopped += OnStopped; AudioThreadScheduling.ReleaseOnStop(capture);
         }
         catch (Exception error) { ResourceCleanup.Run(error, () => opened?.Dispose(), () => acquired?.Dispose(), enumerator.Dispose); throw; }
     }

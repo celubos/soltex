@@ -8,6 +8,9 @@ namespace Soltex.Audio.UI;
 
 public sealed record IndependentEndpointChoice(string Id, string Label)
 {
+    /// <summary>The shorter name a narrow box shows when it is closed (the device without its hardware); null keeps the label.</summary>
+    public string? CompactLabel { get; init; }
+    public string Compact => CompactLabel ?? Label;
     /// <summary>What a screen reader announces for the list item.</summary>
     public override string ToString() => Label;
     internal static string Describe(HostEndpoint endpoint, string nameSuffix = "") => endpoint.Name + nameSuffix +

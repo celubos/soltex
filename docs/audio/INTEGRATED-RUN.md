@@ -10,7 +10,8 @@ the Audio page.
 - **Mixer:** Soltex channels (Game, Chat, Media, Aux, Microphone) with per-channel processing, output priorities and a
   separate stream mix. Nothing plays until you apply routing and choose **Start audio**. See
   [INDEPENDENT-HOST.md](INDEPENDENT-HOST.md).
-- **Microphone:** guided setup, a 15-second input test, and processing for your voice.
+- **Microphone:** guided setup, a 10-second input test, and processing for your voice, with an optional smooth
+  background setting and safety limiter.
 - **Apps:** Windows app sessions for a playback device, with per-app volume and mute (read back from Windows) and
   **Route…** to send an app to another output. Windows default devices are never changed. System sounds and apps
   Windows restricts are read-only. An app appears once it has opened an audio session.
@@ -24,7 +25,9 @@ installed. Use headphones when sending a microphone to speakers to avoid feedbac
 
 - Closing the window hides Soltex. Reopen it from the tray icon or by launching `Soltex.exe` again.
 - `Ctrl+Q`, **Quit Soltex** in the tray menu, or `Soltex.exe --quit` exits Soltex and stops the audio it started.
-  An installed Sonar keeps running.
+  An installed Sonar keeps running. `--quit` shows nothing itself and waits up to 20 seconds for Soltex to exit; its
+  exit code is 0 when Soltex quit, 1 when it was not running, 2 when quitting was cancelled in Soltex and 3 when it
+  did not quit in time.
 - `--tray` starts hidden. `--profile-dir <absolute path>` keeps all settings in a separate folder, for testing.
 - Start at sign-in and starting audio after sign-in are off until you turn them on in Settings.
 - Settings live in `%LOCALAPPDATA%\Soltex`; audio profiles and presets are in its `Audio` folder.

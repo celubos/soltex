@@ -27,7 +27,9 @@ public partial class SystemPanel : UserControl
     private ShellContext? context;
     private IReadOnlyList<SystemItemStatus> states = [];
     private DateTimeOffset readAt;
-    private bool busy, shown, stale = true, refreshing, refreshAgain, updatesChecked;
+    /// <summary>Where the keyboard was when Apply or Undo was pressed; put back again once the new state has been read.</summary>
+    private (FocusSnapshot Focus, UIElement?[] Fallbacks)? focusAfterRead;
+    private bool busy, shown, stale = true, refreshing, refreshAgain, updatesChecked, checkingUpdates;
 
     public SystemPanel() => InitializeComponent();
 
@@ -114,6 +116,11 @@ public partial class SystemPanel : UserControl
         }
         UpdateButtons();
         if (PlanPanel.Visibility == Visibility.Visible) BuildList();
+        if (focusAfterRead is { } pending)
+        {
+            focusAfterRead = null;
+            pending.Focus.Restore(this, pending.Fallbacks);
+        }
     }
 
     /// <summary>
@@ -132,13 +139,17 @@ public partial class SystemPanel : UserControl
 
     private void Review_Click(object sender, RoutedEventArgs e)
     {
-        if (!ShowAvailability()) return;
+        if (busy || !ShowAvailability()) return;
         BuildList();
         PlanPanel.Visibility = Visibility.Visible;
         ResultText.Visibility = Visibility.Collapsed;
     }
 
-    private void Cancel_Click(object sender, RoutedEventArgs e) => PlanPanel.Visibility = Visibility.Collapsed;
+    private void Cancel_Click(object sender, RoutedEventArgs e)
+    {
+        PlanPanel.Visibility = Visibility.Collapsed;
+        ReviewButton.Focus();
+    }
 
     private void BuildList()
     {
@@ -206,36 +217,46 @@ public partial class SystemPanel : UserControl
     {
         int count = boxes.Values.Count(b => b.IsChecked == true);
         ApplyButton.Content = count == 1 ? "Apply 1 change" : "Apply " + count.ToString(CultureInfo.CurrentCulture) + " changes";
-        ApplyButton.IsEnabled = !busy && count > 0 && Changes.UnavailableReason is null;
+        ApplyButton.IsEnabled = count > 0 && Changes.UnavailableReason is null;
     }
 
+    /// <summary>
+    /// Enables what can be done now. Not tied to a running change: the handlers refuse a second run, so the pressed button
+    /// keeps focus while the administrator helper works.
+    /// </summary>
     private void UpdateButtons()
     {
         if (!ShowAvailability()) return;
-        UndoButton.IsEnabled = !busy && states.Any(s => s.CanUndo);
-        ReviewButton.IsEnabled = !busy;
+        UndoButton.IsEnabled = states.Any(s => s.CanUndo);
+        ReviewButton.IsEnabled = true;
         if (boxes.Count > 0) UpdateApply();
     }
 
-    private void Apply_Click(object sender, RoutedEventArgs e) => Dispatcher.Handle(() => RunAsync("apply", boxes.Where(b => b.Value.IsChecked == true).Select(b => b.Key).ToArray()));
+    private void Apply_Click(object sender, RoutedEventArgs e)
+    {
+        if (busy) return;
+        string[] chosen = boxes.Where(b => b.Value.IsChecked == true).Select(b => b.Key).ToArray();
+        Dispatcher.Handle(() => RunAsync("apply", chosen, ApplyButton, CancelButton, ReviewButton, ResultText));
+    }
 
     private void Undo_Click(object sender, RoutedEventArgs e)
     {
+        if (busy) return;
         string[] undoable = states.Where(s => s.CanUndo).Select(s => s.Item.Id).ToArray();
         if (undoable.Length == 0) return;
         string question = undoable.Length == 1
-            ? "Undo 1 system change? Removed apps are not reinstalled."
-            : "Undo " + undoable.Length.ToString(CultureInfo.CurrentCulture) + " system changes? Removed apps are not reinstalled.";
-        if (MessageBox.Show(context!.Owner, question, "Undo system changes", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
-        Dispatcher.Handle(() => RunAsync("undo", undoable));
+            ? "Undo 1 Full De-Windows change? Removed apps are not reinstalled."
+            : "Undo " + undoable.Length.ToString(CultureInfo.CurrentCulture) + " Full De-Windows changes? Removed apps are not reinstalled.";
+        if (MessageBox.Show(context!.Owner, question, "Undo Full De-Windows", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
+        Dispatcher.Handle(() => RunAsync("undo", undoable, UndoButton, ReviewButton, ResultText));
     }
 
-    private async Task RunAsync(string action, string[] ids)
+    private async Task RunAsync(string action, string[] ids, UIElement origin, params UIElement?[] fallbacks)
     {
-        if (context is null || ids.Length == 0) return;
+        if (context is null || busy || ids.Length == 0) return;
+        FocusSnapshot focus = FocusSnapshot.Take(origin);
         busy = true;
         Busy.Visibility = Visibility.Visible;
-        ApplyButton.IsEnabled = UndoButton.IsEnabled = ReviewButton.IsEnabled = false;
         try
         {
             SystemResponse response = await Changes.RunAsync(action, ids);
@@ -246,8 +267,11 @@ public partial class SystemPanel : UserControl
         {
             busy = false;
             Busy.Visibility = Visibility.Collapsed;
-            // When the helper ran, the shell raises SystemChanged and the state is read again from there.
+            // When the helper ran, the shell raises SystemChanged and the state is read again from there; the keyboard is
+            // put back now and once more after that read (it rebuilds the list and may leave nothing to apply or undo).
             UpdateButtons();
+            focus.Restore(this, fallbacks);
+            focusAfterRead = (focus, fallbacks);
         }
     }
 
@@ -274,13 +298,18 @@ public partial class SystemPanel : UserControl
 
     private async Task CheckUpdatesAsync()
     {
-        CheckUpdatesButton.IsEnabled = false;
+        // The button stays enabled (and focused) while Windows Update answers; a second press waits for the first.
+        if (checkingUpdates) return;
+        checkingUpdates = true;
         UpdateText.Text = "Checking for updates…";
-        UpdateCheck result = await UpdateWatcher.CheckAsync();
-        UpdateText.Text = result.Error ?? (result.Titles.Count == 0
-            ? "Up to date"
-            : result.Titles.Count.ToString(CultureInfo.CurrentCulture) + (result.Titles.Count == 1 ? " update available: " : " updates available: ") + string.Join(", ", result.Titles.Take(3)));
-        CheckUpdatesButton.IsEnabled = true;
+        try
+        {
+            UpdateCheck result = await UpdateWatcher.CheckAsync();
+            UpdateText.Text = result.Error ?? (result.Titles.Count == 0
+                ? "Up to date"
+                : result.Titles.Count.ToString(CultureInfo.CurrentCulture) + (result.Titles.Count == 1 ? " update available: " : " updates available: ") + string.Join(", ", result.Titles.Take(3)));
+        }
+        finally { checkingUpdates = false; }
     }
 
     private void OpenWindowsUpdate_Click(object sender, RoutedEventArgs e)

@@ -9,19 +9,25 @@ that Soltex starts when needed; it starts stopped.
 
 ## Set up and test a microphone
 
-1. Open **Microphone** (or **Set up microphone** in the Mixer). Pick a **capture** device: the recording side of your
-   interface or microphone, not its speakers.
-2. **Test input for 15 seconds** captures only, shows the measured peak and RMS for each input, and stops by itself. It
-   saves no audio and plays nothing back. Stop audio first if that device is already in use by a channel.
-3. If your microphone is on one socket of a stereo interface, choose **Input 1 → centered voice** or **Input 2 →
-   centered voice** to send that input to both sides. The test suggests the input that had signal but does not change
-   your choice.
-4. Pick a return device for other apps to listen to. With VB-CABLE, for example, Soltex plays into `CABLE Input` and
-   your voice or recording app selects `CABLE Output` as its microphone. **Use microphone route** saves only the
-   microphone channel. If audio is stopped, choose **Start audio**; if it is running, the new route applies at once.
+The **Microphone** tab shows your microphone as four steps: the microphone, its processing, where Soltex sends it, and
+the name other apps choose.
 
-You can test a microphone without setting up the other channels. Sending processed voice to another app needs a real
-return device.
+1. Choose **Set up my microphone** (later **Change setup**). Under **Microphone**, pick the recording side of your
+   microphone or interface, not its speakers or headphones.
+2. If you know it, choose which input the microphone is plugged into. If you are not sure, leave it and run the test
+   after saving.
+3. Under **Send my voice to**, pick a virtual cable. With VB-CABLE, for example, Soltex plays into `CABLE Input` and
+   your voice or recording app selects `CABLE Output` as its microphone; the card shows that name with **Copy name**.
+   Without a virtual cable, other apps cannot receive your processed voice.
+4. Pick a **Sound** and choose **Save**. Nothing changes before that, and saving never starts audio by itself; if audio
+   is already on, the new setup is used at once. This saves only the microphone channel.
+5. **Test my microphone** listens for 10 seconds while you speak and then says what it heard, with the loudest level.
+   When audio is off it opens only the microphone; it never saves audio or plays anything back. If your voice arrives
+   on one input of a stereo interface, the result offers **Use input 1 only** (or 2), which sends that input to both
+   sides.
+6. Choose **Start audio**. **Adjust sound…** opens the microphone's processing.
+
+You can test a microphone without setting up the other channels.
 
 ## Channels and processing
 
@@ -30,6 +36,9 @@ into a virtual cable's playback side; Soltex captures its recording side. Choose
 audio**. The view shows both what you asked for and what is actually running. Missing devices stay marked as
 unavailable.
 
+Every path converts between the two devices' sample rates with a high-quality resampler that also follows the drift
+between their clocks, so a path left running does not slowly gain delay or drop out.
+
 Faders and mutes act on running paths. Master leaves the microphone alone. **Game / Chat balance** affects only those
 two channels. **Switch** changes the playback device of the enabled channels and keeps the microphone. **Devices** sets
 priorities, exclusions, a pinned device and whether to return to the preferred device; apply routing to commit them.
@@ -37,7 +46,10 @@ priorities, exclusions, a pinned device and whether to return to the preferred d
 **Processing** on each channel edits that channel's DSP: ten-band EQ with a response graph, headroom, gain, output
 ceiling, gate, compressor, downward expander, noise suppression and stereo width/pan/crossfeed/swap/mono. Noise
 suppression uses a noise floor you set; it is not machine-learning voice isolation, and turning it on adds about
-20–40 ms of delay. Stereo controls have no effect on mono sources. **Record / replay test** is a separate window with
+20–40 ms of delay. **Smooth background** changes how it treats what is left: a steadier, slightly quieter background
+instead of a faint warble. The **Safety limiter** catches peaks above the output ceiling, including peaks between
+samples, instead of clipping them, and adds about 1.5 ms of delay. Both are off by default. Stereo controls have no
+effect on mono sources. **Record / replay test** is a separate window with
 its own single path; it does not change channel processing.
 
 ## Stream mix

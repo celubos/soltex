@@ -3,7 +3,8 @@ using System.Runtime.InteropServices;
 using Soltex.Customize;
 
 // All checks use an in-memory registry and fake system host. No Windows setting is changed by this suite; two checks
-// only read the real state (per-user catalogue keys, and the full De-Windows items without administrator rights).
+// only read the real state (per-user catalogue keys, and the full De-Windows items without administrator rights), and
+// the helper-files check reads the Windows folder's permissions and makes files and links in a temporary folder.
 List<(string Name, Action Test)> tests =
 [
     ("Catalogue is well formed and never targets protected areas", CatalogueIsSafe),
@@ -41,7 +42,18 @@ List<(string Name, Action Test)> tests =
     ("System undo of a task that no longer exists stops being undoable", SystemUndoOfMissingTarget),
     ("System drift ignores failed parts and a kept reinstall", SystemDriftIsPerValue),
     ("Firewall rules from earlier versions are recognised and undone", LegacyFirewallRulesAreRecognised),
-    ("System history lists changes and removals", SystemHistoryIsListed)
+    ("System history lists changes and removals", SystemHistoryIsListed),
+    ("Accessibility shortcuts change only their bit of Flags and undo puts the text back", AccessibilityShortcutsChangeOneBit),
+    ("Drift and undo count a missing value as the value Windows assumes", DriftAndUndoUseImpliedValues),
+    ("Registry values keep their type through a change and its undo", RegistryValuesKeepTheirType),
+    ("Compaction keeps each value's newest records and unfinished intents", CompactionKeepsWhatUndoNeeds),
+    ("The journal shares its file with readers and waits out a brief lock", JournalSharesItsFile),
+    ("A journal that moved is carried over once", JournalIsCarriedOver),
+    ("The administrator helper settles interrupted changes before changing anything", SystemReconcilesInterruptedChanges),
+    ("Undoing the telemetry services starts DiagTrack again", SystemUndoStartsAutomaticServices),
+    ("A policy stored as another kind of value is left alone", SystemLeavesOtherTypedPolicies),
+    ("Review fixes: Game Bar, OneDrive, Start layout, Windows mode and update wording", CatalogueReviewFixes),
+    ("Helper files: the state folder is administrator-only and links are refused", HelperFilesAreChecked)
 ];
 
 int failed = 0;
@@ -734,6 +746,374 @@ static void SystemHistoryIsListed()
         "System history is wrong: " + string.Join(", ", history.Select(h => h.Summary)));
 }
 
+static void AccessibilityShortcutsChangeOneBit()
+{
+    (ChangeEngine engine, MemoryRegistry registry, ChangeJournal journal, ManualClock clock) = New();
+    SettingDefinition sticky = Find("input.stickykeys");
+    RegistryTarget flags = sticky.Targets.Single();
+    Check(flags.Mask == 0x4 && sticky.Title.Contains("shortcut", StringComparison.Ordinal), "Sticky Keys must own only the shortcut bit.");
+
+    // Nothing stored: Windows assumes 510, so the shortcut is on; off writes 506 as text.
+    Check(engine.Inspect(sticky).Choice == 1, "With no value the shortcut is on.");
+    Check(engine.ApplyChoice(sticky, 0).Outcome == ChangeOutcome.Applied && registry.Get(flags) == RegistryValue.FromText("506"), "Off from nothing must write \"506\".");
+    clock.Advance();
+    Check(engine.Undo(sticky).Outcome == UndoOutcome.Restored && !registry.Get(flags).Exists, "Undo must remove the value again.");
+
+    // Sticky Keys itself on (bit 0): off keeps it on.
+    registry.Set(flags, RegistryValue.FromText("511"));
+    Check(engine.Inspect(sticky).Choice == 1, "511 has the shortcut on.");
+    Check(engine.ApplyChoice(sticky, 0).Outcome == ChangeOutcome.Applied && registry.Get(flags) == RegistryValue.FromText("507"), "511 off must be 507, not 506.");
+    Check(engine.Inspect(sticky).Choice == 0, "507 has the shortcut off.");
+    clock.Advance();
+    Check(engine.ApplyChoice(sticky, 1).Outcome == ChangeOutcome.Applied && registry.Get(flags) == RegistryValue.FromText("511"), "507 on must be 511.");
+    clock.Advance();
+    Check(engine.Undo(sticky).Outcome == UndoOutcome.Restored && registry.Get(flags) == RegistryValue.FromText("507"), "Undo must put back the exact earlier text.");
+    clock.Advance();
+    Check(engine.Undo(sticky).Outcome == UndoOutcome.NothingToUndo, "The earlier change was replaced by the undone one.");
+
+    // 506 (shortcut off) on is 510.
+    registry.Set(flags, RegistryValue.FromText("506"));
+    Check(engine.Inspect(sticky).Choice == 0 && engine.ApplyChoice(sticky, 1).Outcome == ChangeOutcome.Applied && registry.Get(flags) == RegistryValue.FromText("510"),
+        "506 on must be 510.");
+    clock.Advance();
+
+    // Another bit changing since is not drift, and undo keeps it while putting this bit back.
+    registry.Set(flags, RegistryValue.FromText("511")); // the user turned Sticky Keys on
+    Check(engine.Drifted(CalmCatalog.All).Count == 0, "Another bit changing is not this setting drifting.");
+    Check(engine.Undo(sticky).Outcome == UndoOutcome.Restored && registry.Get(flags) == RegistryValue.FromText("507"),
+        "Undo must clear only the shortcut bit and keep Sticky Keys on: " + registry.Get(flags));
+    clock.Advance();
+
+    // The bit itself changed back: drift, and undo keeps the newer value.
+    Check(engine.ApplyChoice(sticky, 1).Outcome == ChangeOutcome.Applied && registry.Get(flags) == RegistryValue.FromText("511"), "Setup: shortcut on.");
+    registry.Set(flags, RegistryValue.FromText("507"));
+    Check(engine.Drifted(CalmCatalog.All) is [{ Id: "input.stickykeys" }], "The shortcut bit turned back off must be drift.");
+    Check(engine.Reapply(sticky).Outcome == ChangeOutcome.Applied && registry.Get(flags) == RegistryValue.FromText("511"), "Putting it back sets only the bit.");
+    registry.Set(flags, RegistryValue.FromText("507"));
+    Check(engine.Undo(sticky).Outcome == UndoOutcome.ChangedSince && registry.Get(flags) == RegistryValue.FromText("507"), "Undo must keep a newer value of its own bit.");
+
+    // A DWORD copy of the flags keeps its type; unreadable text is never changed.
+    registry.Set(flags, RegistryValue.Dword(510));
+    Check(engine.ApplyChoice(sticky, 0).Outcome == ChangeOutcome.Applied && registry.Get(flags) == RegistryValue.Dword(506), "A DWORD must stay a DWORD.");
+    registry.Set(flags, RegistryValue.FromText("not a number"));
+    int records = journal.Records.Count;
+    ChangeResult refused = engine.ApplyChoice(sticky, 1);
+    Check(refused.Outcome == ChangeOutcome.Refused && registry.Get(flags) == RegistryValue.FromText("not a number") && journal.Records.Count == records,
+        "Flags that are not a number must be left alone: " + refused.Message);
+
+    // Filter Keys and Toggle Keys: the same bit of their own defaults.
+    SettingDefinition filter = Find("input.filterkeys"), toggle = Find("input.togglekeys");
+    Check(engine.ApplyChoice(filter, 0).Outcome == ChangeOutcome.Applied && registry.Get(filter.Targets[0]) == RegistryValue.FromText("122"), "Filter Keys off is 122.");
+    Check(engine.ApplyChoice(toggle, 0).Outcome == ChangeOutcome.Applied && registry.Get(toggle.Targets[0]) == RegistryValue.FromText("58"), "Toggle Keys off is 58.");
+    registry.Set(toggle.Targets[0], RegistryValue.FromText("63"));
+    Check(engine.ApplyChoice(toggle, 0).Outcome == ChangeOutcome.Applied && registry.Get(toggle.Targets[0]) == RegistryValue.FromText("59"), "Toggle Keys itself must stay on.");
+}
+
+static void DriftAndUndoUseImpliedValues()
+{
+    (ChangeEngine engine, MemoryRegistry registry, _, ManualClock clock) = New();
+    SettingDefinition taskView = Find("taskbar.taskview"); // Windows assumes 1 (shown)
+    RegistryTarget target = taskView.Targets[0];
+    registry.Set(target, RegistryValue.Dword(0));
+    Check(engine.ApplyChoice(taskView, 1).Outcome == ChangeOutcome.Applied && registry.Get(target) == RegistryValue.Dword(1), "Setup: On writes 1.");
+    registry.Set(target, RegistryValue.Absent); // something removed the value: still on as far as Windows is concerned
+    Check(engine.Drifted(CalmCatalog.All).Count == 0, "A missing value that Windows reads as 1 is not drift from 1.");
+    clock.Advance();
+    Check(engine.Undo(taskView).Outcome == UndoOutcome.Restored && registry.Get(target) == RegistryValue.Dword(0), "Undo must treat the missing value as 1 and restore 0.");
+
+    // The other way round: this app handed the value back to Windows (removed it), the Settings app then wrote 1.
+    SettingDefinition ads = Find("privacy.advertisingid");
+    Check(engine.ApplyChoice(ads, 0).Outcome == ChangeOutcome.Applied, "Setup: advertising ID off.");
+    clock.Advance();
+    Check(engine.ApplyChoice(ads, 1).Outcome == ChangeOutcome.Applied && !registry.Get(ads.Targets[0]).Exists, "Setup: On removes the value.");
+    registry.Set(ads.Targets[0], RegistryValue.Dword(1));
+    Check(engine.Drifted(CalmCatalog.All).Count == 0, "An explicit 1 equals the missing value Windows reads as 1.");
+    registry.Set(ads.Targets[0], RegistryValue.Dword(0));
+    Check(engine.Drifted(CalmCatalog.All) is [{ Id: "privacy.advertisingid" }], "A real change back is still drift.");
+    registry.Set(ads.Targets[0], RegistryValue.Dword(1));
+    clock.Advance();
+    Check(engine.Undo(ads).Outcome == UndoOutcome.Restored && registry.Get(ads.Targets[0]) == RegistryValue.Dword(0), "Undo must restore the earlier 0.");
+}
+
+static void RegistryValuesKeepTheirType()
+{
+    string path = TempJournal();
+    MemoryRegistry registry = new();
+    SettingDefinition taskView = Find("taskbar.taskview"), badges = Find("taskbar.badges"), seconds = Find("taskbar.seconds");
+    ChangeEngine engine = new(registry, new ChangeJournal(path), 26300);
+    RegistryValue qword = RegistryValue.Qword(1), binary = RegistryValue.Binary([1, 0, 0, 0]);
+    registry.Set(taskView.Targets[0], qword);
+    registry.Set(badges.Targets[0], binary);
+    Check(engine.Inspect(taskView).Choice == -1, "A QWORD is not the DWORD option.");
+    Check(engine.ApplyChoice(taskView, 0).Outcome == ChangeOutcome.Applied && engine.ApplyChoice(badges, 0).Outcome == ChangeOutcome.Applied, "Changes over typed values failed.");
+    // Undo after a restart reads the journal back from disk.
+    ChangeEngine restarted = new(registry, new ChangeJournal(path), 26300);
+    Check(restarted.Undo(taskView).Outcome == UndoOutcome.Restored && registry.Get(taskView.Targets[0]) == qword, "Undo must restore the QWORD: " + registry.Get(taskView.Targets[0]));
+    Check(restarted.Undo(badges).Outcome == UndoOutcome.Restored && registry.Get(badges.Targets[0]) == binary, "Undo must restore the binary value.");
+
+    RegistryValue unknown = new(true, ValueKind.Unsupported, "AAAA");
+    registry.Set(seconds.Targets[0], unknown);
+    Check(restarted.ApplyChoice(seconds, 1).Outcome == ChangeOutcome.Refused && registry.Get(seconds.Targets[0]) == unknown, "A value of an unsupported type must not be changed.");
+
+    // The codec: every type round-trips, and what cannot be written is refused.
+    static bool Encodes(RegistryValue value, out object data, out Microsoft.Win32.RegistryValueKind kind) => RegistryData.TryEncode(value, out data, out kind, out _);
+    string[] parts = ["a", "", "b"];
+    byte[] nine = [9], one = [1];
+    RegistryValue multi = RegistryData.From(Microsoft.Win32.RegistryValueKind.MultiString, parts);
+    Check(multi.Kind == ValueKind.MultiText && multi.Strings() is ["a", "", "b"] && Encodes(multi, out object strings, out _) && strings is string[] { Length: 3 },
+        "A multi-string must keep its empty entry.");
+    Check(RegistryValue.MultiText([]) != RegistryValue.MultiText([""]) && RegistryValue.MultiText([""]).Strings() is [""] && RegistryValue.MultiText([]).Strings() is [],
+        "No strings and one empty string are different multi-strings.");
+    RegistryValue big = RegistryData.From(Microsoft.Win32.RegistryValueKind.QWord, long.MaxValue);
+    Check(Encodes(big, out object number, out var bigKind) && number is long.MaxValue && bigKind == Microsoft.Win32.RegistryValueKind.QWord, "QWORD must round-trip.");
+    RegistryValue expand = RegistryData.From(Microsoft.Win32.RegistryValueKind.ExpandString, @"%SystemRoot%\x");
+    Check(expand == RegistryValue.ExpandText(@"%SystemRoot%\x") && Encodes(expand, out _, out var expandKind) && expandKind == Microsoft.Win32.RegistryValueKind.ExpandString,
+        "Expandable text must stay unexpanded and expandable.");
+    RegistryValue none = RegistryData.From(Microsoft.Win32.RegistryValueKind.None, nine);
+    Check(none.Kind == ValueKind.Untyped && Encodes(none, out object raw, out var noneKind) && raw is byte[] rawBytes && rawBytes.SequenceEqual(nine) && noneKind == Microsoft.Win32.RegistryValueKind.None,
+        "REG_NONE data must round-trip.");
+    Check(!Encodes(RegistryData.From(Microsoft.Win32.RegistryValueKind.Unknown, one), out _, out _), "An unknown type must never be written.");
+    Check(!Encodes(new RegistryValue(true, ValueKind.DWord, "x"), out _, out _) && !Encodes(new RegistryValue(true, ValueKind.Binary, "%%"), out _, out _),
+        "Malformed data must be refused, not written.");
+}
+
+static void CompactionKeepsWhatUndoNeeds()
+{
+    string path = TempJournal();
+    MemoryRegistry registry = new();
+    ChangeJournal journal = new(path);
+    ChangeEngine engine = new(registry, journal, 26300);
+    SettingDefinition oldest = Find("privacy.typinginsights");
+    Check(engine.Apply(oldest, calm: true).Outcome == ChangeOutcome.Applied, "Setup: change applied.");
+    // A later attempt on the same value fails, so the value's newest record is a failure, not the change.
+    registry.Ignore.Add(oldest.Targets[0].Name);
+    Check(engine.Apply(oldest, calm: false).Outcome == ChangeOutcome.Failed, "Setup: the later attempt fails.");
+    registry.Ignore.Clear();
+    // An intent a crash left open.
+    SettingDefinition open = Find("taskbar.seconds");
+    journal.Append(new(JournalKind.Intent, Guid.NewGuid(), open.Id, open.Targets[0].Path, open.Targets[0].Name, RegistryValue.Absent, RegistryValue.Dword(1), DateTimeOffset.UtcNow));
+    // Later history on another setting, written in one go, then one more record to start compaction.
+    SettingDefinition churn = Find("taskbar.widgets");
+    System.Text.Json.JsonSerializerOptions json = new() { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
+    File.AppendAllLines(path, Enumerable.Range(0, ChangeJournal.CompactAbove).Select(i => System.Text.Json.JsonSerializer.Serialize(
+        new JournalRecord(i % 2 == 0 ? JournalKind.Intent : JournalKind.Applied, new Guid(i / 2, 0, 0, new byte[8]), churn.Id, churn.Targets[0].Path, churn.Targets[0].Name,
+            RegistryValue.Absent, RegistryValue.Dword(0), DateTimeOffset.UtcNow), json)));
+    journal = new ChangeJournal(path);
+    Check(journal.Records.Count > ChangeJournal.CompactAbove, "Setup: the journal is over its bound.");
+    journal.Append(new(JournalKind.Undone, Guid.NewGuid(), churn.Id, churn.Targets[0].Path, churn.Targets[0].Name, RegistryValue.Dword(0), RegistryValue.Absent, DateTimeOffset.UtcNow));
+    Check(journal.Records.Count <= ChangeJournal.CompactAbove, "The journal must stay bounded.");
+    ChangeJournal reloaded = new(path);
+    Check(reloaded.Records.Count == journal.Records.Count, "Compaction must have reached the disk.");
+    Check(reloaded.Records.Any(r => r.Kind == JournalKind.Failed && r.SettingId == oldest.Id), "The newest failure is kept too.");
+    Check(new ChangeEngine(registry, reloaded, 26300).Inspect(oldest).CanUndo, "Compaction dropped the change behind a later failure.");
+    Check(new ChangeJournal(path).Records.Any(r => r.Kind == JournalKind.Abandoned && r.SettingId == open.Id), "The open intent must survive to be reconciled.");
+}
+
+static void JournalSharesItsFile()
+{
+    string path = TempJournal();
+    ChangeJournal journal = new(path);
+    JournalRecord Record(string id) => new(JournalKind.Applied, Guid.NewGuid(), id, "p", "n", RegistryValue.Absent, RegistryValue.Dword(1), DateTimeOffset.UtcNow);
+    journal.Append(Record("first"));
+    // The app reading while the helper appends, and the reverse.
+    using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        journal.Append(Record("while read"));
+    using (new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+        Check(new ChangeJournal(path).Records.Count == 2, "Reading must work while the file is open for writing.");
+    // Another program holding the file without sharing it for a moment.
+    FileStream exclusive = new(path, FileMode.Open, FileAccess.Read, FileShare.None);
+    Task release = Task.Run(() => { Thread.Sleep(150); exclusive.Dispose(); });
+    journal.Append(Record("after lock"));
+    release.Wait();
+    Check(new ChangeJournal(path).Records.Select(r => r.SettingId).SequenceEqual(["first", "while read", "after lock"]), "The append after a brief lock is missing.");
+}
+
+static void JournalIsCarriedOver()
+{
+    string earlierPath = TempJournal(), path = TempJournal();
+    ChangeJournal earlier = new(earlierPath);
+    SystemItem services = Item("system.telemetry.services");
+    earlier.Append(new(JournalKind.Applied, Guid.NewGuid(), services.Id, "service:DiagTrack", "Start", RegistryValue.Dword(2), RegistryValue.Dword(4), DateTimeOffset.UtcNow));
+    File.AppendAllText(earlierPath, "torn");
+    ChangeJournal journal = new(path);
+    using (StreamReader reader = new(earlierPath)) Check(journal.Import(reader) == 1, "The earlier record must be carried over.");
+    using (StreamReader reader = new(earlierPath)) Check(journal.Import(reader) == 0, "A journal with records is never overwritten.");
+    FakeSystemHost host = new();
+    host.Services["DiagTrack"] = 4;
+    Check(new SystemEngine(host, new ChangeJournal(path)).Inspect(services).CanUndo, "A carried-over change must stay undoable.");
+}
+
+static void SystemReconcilesInterruptedChanges()
+{
+    const string proxy = @"\Microsoft\Windows\Autochk\Proxy";
+    FakeSystemHost host = new();
+    host.Services["DiagTrack"] = 4; // the write happened before the helper stopped
+    host.Services["dmwappushservice"] = 3; // this one did not
+    host.Tasks[proxy] = false;
+    host.UnreadableTasks.Add(proxy);
+    ChangeJournal journal = new(SystemJournal());
+    SystemItem services = Item("system.telemetry.services"), tasks = Item("system.telemetry.tasks");
+    DateTimeOffset now = DateTimeOffset.UtcNow;
+    Guid operation = Guid.NewGuid();
+    journal.Append(new(JournalKind.Intent, operation, services.Id, "service:DiagTrack", "Start", RegistryValue.Dword(2), RegistryValue.Dword(4), now));
+    journal.Append(new(JournalKind.Intent, operation, services.Id, "service:dmwappushservice", "Start", RegistryValue.Dword(3), RegistryValue.Dword(4), now));
+    journal.Append(new(JournalKind.Intent, operation, tasks.Id, "task:" + proxy, "Enabled", RegistryValue.Dword(1), RegistryValue.Dword(0), now));
+    SystemEngine engine = new(host, journal);
+    Check(!engine.Inspect(services).CanUndo, "Nothing is undoable before the intents are settled.");
+    Check(engine.Reconcile() == 2, "Both services must be settled; the unreadable task waits.");
+    Check(journal.Records.Count(r => r.Kind == JournalKind.Recovered) == 1 && journal.Records.Count(r => r.Kind == JournalKind.Abandoned) == 1, "One took effect, one did not.");
+    Check(engine.Inspect(services).CanUndo, "The change that took effect must be undoable.");
+    Check(engine.Reconcile() == 0, "Settled intents are not settled again.");
+    host.UnreadableTasks.Clear();
+    Check(engine.Reconcile() == 1 && engine.Inspect(tasks).CanUndo, "The task is settled once it can be read.");
+    Check(engine.Undo([services]).Single().Ok && host.Services["DiagTrack"] == 2 && host.Services["dmwappushservice"] == 3, "Undo restores only what took effect.");
+}
+
+static void SystemUndoStartsAutomaticServices()
+{
+    FakeSystemHost host = new();
+    host.Services["DiagTrack"] = 2; host.Services["dmwappushservice"] = 3;
+    SystemEngine engine = new(host, new ChangeJournal(SystemJournal()));
+    SystemItem services = Item("system.telemetry.services");
+    Check(engine.Apply([services]).Single().Ok, "Setup: services disabled.");
+    SystemResult undo = engine.Undo([services]).Single();
+    Check(undo.Ok && undo.Message == SystemEngine.UndoneMessage && host.Started.SequenceEqual(["DiagTrack"]),
+        "Only the automatic service is started again: " + string.Join(",", host.Started) + " / " + undo.Message);
+    host.FailStart.Add("DiagTrack");
+    Check(engine.Apply([services]).Single().Ok, "Setup: disabled again.");
+    undo = engine.Undo([services]).Single();
+    Check(undo.Ok && host.Services["DiagTrack"] == 2 && undo.Message.Contains("DiagTrack service starts again after a restart", StringComparison.Ordinal),
+        "A service that cannot start now must say it starts after a restart: " + undo.Message);
+}
+
+static void SystemLeavesOtherTypedPolicies()
+{
+    const string dataCollection = @"SOFTWARE\Policies\Microsoft\Windows\DataCollection";
+    FakeSystemHost host = new();
+    host.Write(RegistryHive2.LocalMachine, dataCollection, "AllowTelemetry", RegistryValue.FromText("1"));
+    SystemEngine engine = new(host, new ChangeJournal(SystemJournal()));
+    SystemResult result = engine.Apply([Item("system.telemetry.policy")]).Single();
+    Check(!result.Ok && result.Message.StartsWith("AllowTelemetry: stored as another kind of value", StringComparison.Ordinal), "The text policy must be reported: " + result.Message);
+    Check(host.Read(RegistryHive2.LocalMachine, dataCollection, "AllowTelemetry") == RegistryValue.FromText("1"), "The text policy must be left as it is.");
+    Check(host.Read(RegistryHive2.LocalMachine, dataCollection, "MaxTelemetryAllowed") == RegistryValue.Dword(0), "The item's other values still apply.");
+}
+
+static void CatalogueReviewFixes()
+{
+    SettingDefinition gameBar = Find("gaming.gamebar");
+    Check(!gameBar.Title.Contains("Win+G", StringComparison.Ordinal) && gameBar.Title.Contains("Xbox button", StringComparison.Ordinal), "Game Bar row: " + gameBar.Title);
+
+    (ChangeEngine engine, MemoryRegistry registry, _, ManualClock clock) = New();
+    SettingDefinition oneDrive = Find("explorer.onedrive");
+    RegistryTarget pin = oneDrive.Targets[0];
+    Check(engine.Inspect(oneDrive).Choice == 0, "Without the value OneDrive is not in the navigation pane.");
+    Check(engine.ApplyChoice(oneDrive, 1).Outcome == ChangeOutcome.Applied && registry.Get(pin) == RegistryValue.Dword(1), "On must write 1, not remove the value.");
+    clock.Advance();
+    Check(engine.Undo(oneDrive).Outcome == UndoOutcome.Restored && !registry.Get(pin).Exists, "Undo must remove the value again.");
+    registry.Set(pin, RegistryValue.Dword(1)); // as OneDrive registers itself
+    Check(engine.Inspect(oneDrive).Choice == 1 && engine.ApplyChoice(oneDrive, 0).Outcome == ChangeOutcome.Applied && registry.Get(pin) == RegistryValue.Dword(0), "Off must write 0.");
+    clock.Advance();
+    Check(engine.Undo(oneDrive).Outcome == UndoOutcome.Restored && registry.Get(pin) == RegistryValue.Dword(1), "Undo must restore OneDrive's 1.");
+
+    SettingDefinition layout = Find("start.layout");
+    SettingState layoutState = engine.Inspect(layout);
+    Check(!layout.InCalmProfile && layoutState.PolicyNotes is [{ } note] && note.Contains("classic Start", StringComparison.Ordinal),
+        "Start layout must leave the profile and say it is for the classic Start only.");
+
+    SettingDefinition windowsMode = Find("appearance.windows");
+    Check(windowsMode.Options[engine.Inspect(windowsMode).Choice].Label == "Dark", "With no value Windows mode is dark.");
+    Check(Find("appearance.apps").Options[engine.Inspect(Find("appearance.apps")).Choice].Label == "Light", "With no value app mode is light.");
+
+    const string AutoUpdate = @"SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU";
+    Check(Item("system.updates.notify").Actions.OfType<PolicyAction>().Any(p => p.Name == "AUOptions" && p.Value == RegistryValue.Dword(2))
+          && !SystemCatalog.WeakensUpdates(AutoUpdate, "AUOptions", RegistryValue.Dword(2)), "Notify before download stays the chosen, allowed mode.");
+}
+
+static void HelperFilesAreChecked()
+{
+    // The state folder's security: only administrators and Windows can change it; a folder anyone else can change is refused.
+    Check(AdministratorFolder.IsAdministratorsOnly(AdministratorFolder.Security()), "The helper's own folder security must count as administrator-only.");
+    System.Security.AccessControl.DirectorySecurity loose = AdministratorFolder.Security();
+    loose.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(new System.Security.Principal.SecurityIdentifier("S-1-5-32-545"),
+        System.Security.AccessControl.FileSystemRights.CreateFiles, System.Security.AccessControl.AccessControlType.Allow));
+    Check(!AdministratorFolder.IsAdministratorsOnly(loose), "Users able to create files must be refused.");
+    System.Security.AccessControl.DirectorySecurity creator = AdministratorFolder.Security();
+    creator.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(new System.Security.Principal.SecurityIdentifier("S-1-3-0"),
+        System.Security.AccessControl.FileSystemRights.FullControl, System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit,
+        System.Security.AccessControl.PropagationFlags.InheritOnly, System.Security.AccessControl.AccessControlType.Allow));
+    Check(!AdministratorFolder.IsAdministratorsOnly(creator), "A CREATOR OWNER entry for what is created inside must be refused.");
+    // What Windows reports for its own folder (generic rights for CREATOR OWNER) counts as changeable by others too.
+    Check(!AdministratorFolder.IsAdministratorsOnly(new DirectoryInfo(Environment.GetFolderPath(Environment.SpecialFolder.Windows))
+        .GetAccessControl(System.Security.AccessControl.AccessControlSections.Owner | System.Security.AccessControl.AccessControlSections.Access)),
+        "The Windows folder's CREATOR OWNER entry must count.");
+    string root = Path.Combine(Path.GetTempPath(), "soltex-helper-files-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    try
+    {
+        try { AdministratorFolder.Check(root); Check(false, "A folder this user owns must be refused."); }
+        catch (UnauthorizedAccessException) { }
+        try { AdministratorFolder.Ensure(root, Path.Combine(Path.GetTempPath(), "elsewhere")); Check(false, "A folder outside the base must be refused."); }
+        catch (ArgumentException) { }
+
+        // Plain files are read and written in place.
+        string request = Path.Combine(root, "request.json"), result = Path.Combine(root, "result.json");
+        File.WriteAllText(request, "{\"a\":1}");
+        Check(VerifiedFile.ReadAllText(root, request) == "{\"a\":1}", "A plain file must be read.");
+        VerifiedFile.WriteNew(root, result, "one");
+        VerifiedFile.WriteNew(root, result, "two");
+        Check(File.ReadAllText(result) == "two", "A result must replace the previous one.");
+
+        // A second hard link is refused for reading, and writing replaces the link without touching its target.
+        string protectedFile = Path.Combine(root, "protected.txt"), link = Path.Combine(root, "link.json");
+        File.WriteAllText(protectedFile, "keep");
+        Mklink("/H", link, protectedFile);
+        try { VerifiedFile.ReadAllText(root, link); Check(false, "A hard link must not be read."); }
+        catch (UnauthorizedAccessException) { }
+        VerifiedFile.WriteNew(root, link, "new");
+        Check(File.ReadAllText(protectedFile) == "keep" && File.ReadAllText(link) == "new", "Writing over a hard link must not write through it.");
+
+        // A folder swapped for a junction is detected on the opened handle.
+        string target = Path.Combine(root, "target"), junction = Path.Combine(root, "junction");
+        Directory.CreateDirectory(target);
+        File.WriteAllText(Path.Combine(target, "request.json"), "{}");
+        Mklink("/J", junction, target);
+        try { VerifiedFile.ReadAllText(root, Path.Combine(junction, "request.json")); Check(false, "A file behind a junction must not be read."); }
+        catch (UnauthorizedAccessException) { }
+        try { VerifiedFile.WriteNew(root, Path.Combine(junction, "result.json"), "x"); Check(false, "A file behind a junction must not be written."); }
+        catch (UnauthorizedAccessException) { }
+        Check(!File.Exists(Path.Combine(target, "result.json")), "Nothing may be left behind the junction.");
+        try { VerifiedFile.WriteNew(root, Path.Combine(junction, "request.json"), "x"); Check(false, "A file behind a junction must not be removed."); }
+        catch (UnauthorizedAccessException) { }
+        Check(File.ReadAllText(Path.Combine(target, "request.json")) == "{}", "The file behind the junction must be untouched.");
+        try { VerifiedFile.ReadAllText(junction, Path.Combine(junction, "request.json")); Check(false, "A root that is itself a link must be refused."); }
+        catch (UnauthorizedAccessException) { }
+        try { VerifiedFile.ReadAllText(target, request); Check(false, "A file outside the root must be refused."); }
+        catch (ArgumentException) { }
+        // Above the root Windows may redirect (as it does for a packaged parent app); where the root really is counts.
+        Directory.CreateDirectory(Path.Combine(target, "inner"));
+        File.WriteAllText(Path.Combine(target, "inner", "request.json"), "inner");
+        string redirectedRoot = Path.Combine(junction, "inner");
+        Check(VerifiedFile.ReadAllText(redirectedRoot, Path.Combine(redirectedRoot, "request.json")) == "inner", "A real root reached through a redirected parent must work.");
+    }
+    finally
+    {
+        string junction = Path.Combine(root, "junction");
+        if (Directory.Exists(junction)) Directory.Delete(junction); // the link only
+        Directory.Delete(root, recursive: true);
+    }
+}
+
+/// <summary>Makes a hard link (/H) or a directory junction (/J) the way any user can, with cmd's mklink.</summary>
+static void Mklink(string kind, string link, string target)
+{
+    ProcessStartInfo start = new(Path.Combine(Environment.SystemDirectory, "cmd.exe")) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+    foreach (string argument in new[] { "/d", "/c", "mklink", kind, link, target }) start.ArgumentList.Add(argument);
+    using Process process = Process.Start(start) ?? throw new InvalidOperationException("cmd did not start.");
+    string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+    process.WaitForExit();
+    Check(process.ExitCode == 0, "mklink " + kind + " failed: " + output.Trim());
+}
+
 internal sealed class ManualClock
 {
     private DateTimeOffset now = new(2026, 11, 13, 12, 0, 0, TimeSpan.Zero);
@@ -794,6 +1174,14 @@ internal sealed class FakeSystemHost : ISystemHost
     {
         if (FailServices.Contains(service)) throw new InvalidOperationException("sc.exe failed (5): Access is denied.");
         Services[service] = startType;
+    }
+    /// <summary>Services started (in order), and services whose start fails.</summary>
+    public List<string> Started { get; } = [];
+    public HashSet<string> FailStart { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public void StartService(string service)
+    {
+        if (FailStart.Contains(service)) throw new InvalidOperationException("sc.exe failed (1058): The service cannot be started.");
+        Started.Add(service);
     }
     public bool? TaskEnabled(string taskPath) =>
         UnreadableTasks.Contains(taskPath) ? throw new TimeoutException("schtasks.exe did not finish.") : Tasks.TryGetValue(taskPath, out bool e) ? e : null;

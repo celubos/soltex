@@ -21,6 +21,12 @@
     <SolidColorBrush x:Key="Studio.TextTertiaryBrush" Color="{StaticResource StudioLightTextTertiary}" />
     <SolidColorBrush x:Key="Studio.HoverBrush" Color="{StaticResource StudioLightHover}" />
     <SolidColorBrush x:Key="Studio.SelectedBrush" Color="{StaticResource StudioLightSelected}" />
+    <!-- Text, secondary text and the pill on a selected row (high contrast swaps them for HighlightText). -->
+    <SolidColorBrush x:Key="Studio.SelectedTextBrush" Color="{StaticResource StudioLightText}" />
+    <SolidColorBrush x:Key="Studio.SelectedSecondaryTextBrush" Color="{StaticResource StudioLightTextSecondary}" />
+    <SolidColorBrush x:Key="Studio.SelectedPillBrush" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="Studio.SwitchOnDisabledBrush" Color="{StaticResource StudioLightSwitchOnDisabled}" />
+    <SolidColorBrush x:Key="Studio.SwitchKnobOnDisabledBrush" Color="{StaticResource StudioOnAccent}" />
     <SolidColorBrush x:Key="Studio.AccentBrush" Color="{StaticResource StudioAccentDeep}" />
     <SolidColorBrush x:Key="Studio.AccentTextBrush" Color="{StaticResource StudioAccentDeep}" />
     <SolidColorBrush x:Key="Studio.CyanBrush" Color="{StaticResource StudioAccentCyanDeep}" />
@@ -34,11 +40,12 @@
     <SolidColorBrush x:Key="Studio.InfoSurfaceBrush" Color="{StaticResource StudioLightInfoSurface}" />
     <SolidColorBrush x:Key="Studio.FaderCapBrush" Color="{StaticResource StudioLightRaised}" />
     <SolidColorBrush x:Key="Studio.SwitchOffBrush" Color="{StaticResource StudioLightTrack}" />
-    <SolidColorBrush x:Key="Studio.Channel.Microphone" Color="{StaticResource StudioChannelMic}" />
-    <SolidColorBrush x:Key="Studio.Channel.Game" Color="{StaticResource StudioChannelGame}" />
-    <SolidColorBrush x:Key="Studio.Channel.Chat" Color="{StaticResource StudioChannelChat}" />
-    <SolidColorBrush x:Key="Studio.Channel.Media" Color="{StaticResource StudioChannelMedia}" />
-    <SolidColorBrush x:Key="Studio.Channel.Aux" Color="{StaticResource StudioChannelAux}" />
+    <!-- Deep variants: channel names are text, so they need 4.5:1 on white. -->
+    <SolidColorBrush x:Key="Studio.Channel.Microphone" Color="{StaticResource StudioChannelMicDeep}" />
+    <SolidColorBrush x:Key="Studio.Channel.Game" Color="{StaticResource StudioChannelGameDeep}" />
+    <SolidColorBrush x:Key="Studio.Channel.Chat" Color="{StaticResource StudioChannelChatDeep}" />
+    <SolidColorBrush x:Key="Studio.Channel.Media" Color="{StaticResource StudioChannelMediaDeep}" />
+    <SolidColorBrush x:Key="Studio.Channel.Aux" Color="{StaticResource StudioChannelAuxDeep}" />
     <SolidColorBrush x:Key="Studio.Channel.Master" Color="{StaticResource StudioLightText}" />
 
     <LinearGradientBrush x:Key="Studio.CardBrush" StartPoint="0,0" EndPoint="0,1">
@@ -96,6 +103,49 @@
     <SolidColorBrush x:Key="SystemFillColorCautionBackgroundBrush" Color="{StaticResource StudioLightCautionSurface}" />
     <SolidColorBrush x:Key="SystemFillColorCriticalBackgroundBrush" Color="{StaticResource StudioLightCriticalSurface}" />
     <SolidColorBrush x:Key="SystemFillColorAttentionBackgroundBrush" Color="{StaticResource StudioLightInfoSurface}" />
+
+    <!-- Fluent controls that otherwise take Windows' accent colour (grey or any colour the user picked): check boxes,
+         radio buttons, slider thumbs, progress bars, list selection, focused fields and links use the Studio violet.
+         High contrast does not load this file, so Windows' contrast colours stay. -->
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillChecked" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPointerOver" Color="{StaticResource StudioAccent}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPressed" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeChecked" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeCheckedPointerOver" Color="{StaticResource StudioAccent}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeCheckedPressed" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillIndeterminate" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillIndeterminatePointerOver" Color="{StaticResource StudioAccent}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillIndeterminatePressed" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeIndeterminate" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeIndeterminatePointerOver" Color="{StaticResource StudioAccent}" />
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeIndeterminatePressed" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="CheckBoxCheckGlyphForeground" Color="{StaticResource StudioOnAccent}" />
+    <SolidColorBrush x:Key="CheckBoxCheckGlyphForegroundPressed" Color="{StaticResource StudioOnAccentPressed}" />
+    <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedFill" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="RadioButtonCheckOuterEllipseCheckedFillPointerOver" Color="{StaticResource StudioAccent}" />
+    <SolidColorBrush x:Key="RadioButtonCheckOuterEllipseCheckedFillPressed" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedStroke" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="RadioButtonOuterEllipseCheckedStrokePointerOver" Color="{StaticResource StudioAccent}" />
+    <SolidColorBrush x:Key="RadioButtonCheckOuterEllipseCheckedStrokePressed" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="RadioButtonCheckGlyphFill" Color="{StaticResource StudioOnAccent}" />
+    <SolidColorBrush x:Key="SliderThumbBackground" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="SliderThumbBackgroundPointerOver" Color="{StaticResource StudioAccent}" />
+    <SolidColorBrush x:Key="ProgressBarForeground" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="ListBoxItemSelectedBackgroundThemeBrush" Color="{StaticResource StudioLightSelectedStrong}" />
+    <SolidColorBrush x:Key="ListBoxItemSelectedBackgroundPointerOverThemeBrush" Color="{StaticResource StudioLightSelectedStrongHover}" />
+    <SolidColorBrush x:Key="ListBoxItemSelectedBackgroundPressedThemeBrush" Color="{StaticResource StudioLightSelectedStrongHover}" />
+    <SolidColorBrush x:Key="ListBoxItemBackgroundSelectedPressedThemeBrush" Color="{StaticResource StudioLightSelectedStrongHover}" />
+    <SolidColorBrush x:Key="ListBoxItemSelectedForegroundThemeBrush" Color="{StaticResource StudioLightText}" />
+    <SolidColorBrush x:Key="ComboBoxItemPillFillBrush" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="ListViewItemPillFillBrush" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="TextControlFocusedBorderBrush" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="ComboBoxBorderBrushFocused" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="TextControlSelectionHighlightColor" Color="{StaticResource StudioAccent}" />
+    <SolidColorBrush x:Key="HyperlinkForeground" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="HyperlinkForegroundPointerOver" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="HyperlinkButtonForeground" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="HyperlinkButtonForegroundPointerOver" Color="{StaticResource StudioAccentDeep}" />
+    <SolidColorBrush x:Key="HyperlinkButtonForegroundPressed" Color="{StaticResource StudioAccent}" />
     <CornerRadius x:Key="ControlCornerRadius">8</CornerRadius>
     <CornerRadius x:Key="OverlayCornerRadius">12</CornerRadius>
 </ResourceDictionary>

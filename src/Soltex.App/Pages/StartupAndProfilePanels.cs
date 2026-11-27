@@ -12,9 +12,15 @@ namespace Soltex.App.Pages;
 /// <summary>Startup apps on the Tools page: one row per app with Task Manager's on/off switch.</summary>
 public sealed class StartupAppsPanel : UserControl
 {
+    internal const string OnlyYou = "Only for you";
+    internal const string EveryUser = "For every user · change it in Task Manager";
+
     private readonly StartupApps apps;
     private readonly StackPanel rows = new();
     private readonly ShellContext context;
+    /// <summary>The apps shown, with their switches, in list order.</summary>
+    private readonly List<(StartupApp App, CheckBox Toggle)> shown = [];
+    private bool loading;
 
     internal StartupAppsPanel(ShellContext context, StartupApps? source = null)
     {
@@ -27,43 +33,69 @@ public sealed class StartupAppsPanel : UserControl
         Refresh();
     }
 
+    /// <summary>The switch shown for an app, or null when it is not listed.</summary>
+    internal CheckBox? SwitchFor(string name) => shown.FirstOrDefault(s => s.App.Name == name).Toggle;
+
+    /// <summary>
+    /// Reads the list again (apps change in Task Manager, installers and Settings). When the same apps are listed, only
+    /// their switches change, so a focused switch keeps focus; the rows are rebuilt only when apps came or went.
+    /// </summary>
     internal void Refresh()
     {
-        rows.Children.Clear();
         IReadOnlyList<StartupApp> list;
         try { list = apps.List(); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException) { list = []; }
-        if (list.Count == 0)
+        loading = true;
+        try
         {
-            rows.Children.Add(new TextBlock { Text = "No apps start at sign-in.", Style = (Style)FindResource("Shell.Secondary"), Margin = new Thickness(2, 0, 0, 8) });
-            return;
-        }
-        foreach (StartupApp app in list)
-        {
-            CheckBox toggle = new() { Style = (Style)FindResource("Studio.Switch"), IsChecked = app.Enabled, IsEnabled = app.CanChange, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) };
-            AutomationProperties.SetName(toggle, "Start " + app.Name + " at sign-in");
-            toggle.Checked += (_, _) => Set(app, true);
-            toggle.Unchecked += (_, _) => Set(app, false);
-            Grid grid = new();
-            grid.ColumnDefinitions.Add(new ColumnDefinition());
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            StackPanel text = new() { VerticalAlignment = VerticalAlignment.Center };
-            text.Children.Add(new TextBlock { Text = app.Name, Style = (Style)FindResource("Shell.Body") });
-            string where = app.Source switch
+            if (list.Count > 0 && list.Select(Key).SequenceEqual(shown.Select(s => Key(s.App))))
             {
-                StartupSource.UserRun or StartupSource.UserFolder => "For you",
-                _ => "For every user · change it in Task Manager"
-            };
-            text.Children.Add(new TextBlock { Text = where, Style = (Style)FindResource("Shell.Secondary"), FontSize = 12, Margin = new Thickness(0, 2, 0, 0) });
-            grid.Children.Add(text);
-            Grid.SetColumn(toggle, 1);
-            grid.Children.Add(toggle);
-            rows.Children.Add(new Border { Style = (Style)FindResource("Studio.Row"), Child = grid, ToolTip = app.Command });
+                for (int i = 0; i < list.Count; i++)
+                {
+                    shown[i] = (list[i], shown[i].Toggle);
+                    shown[i].Toggle.IsChecked = list[i].Enabled;
+                    shown[i].Toggle.IsEnabled = list[i].CanChange;
+                }
+                return;
+            }
+            rows.Children.Clear();
+            shown.Clear();
+            if (list.Count == 0)
+            {
+                rows.Children.Add(new TextBlock { Text = "No apps start at sign-in.", Style = (Style)FindResource("Shell.Secondary"), Margin = new Thickness(2, 0, 0, 8) });
+                return;
+            }
+            foreach (StartupApp app in list) rows.Children.Add(BuildRow(app));
         }
+        finally { loading = false; }
     }
 
-    private void Set(StartupApp app, bool enabled)
+    private static string Key(StartupApp app) => app.Source + "|" + app.Name + "|" + app.Command;
+
+    private Border BuildRow(StartupApp app)
     {
+        CheckBox toggle = new() { Style = (Style)FindResource("Studio.Switch"), IsChecked = app.Enabled, IsEnabled = app.CanChange, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) };
+        AutomationProperties.SetName(toggle, "Start " + app.Name + " at sign-in");
+        int index = shown.Count;
+        shown.Add((app, toggle));
+        toggle.Checked += (_, _) => Set(index, true);
+        toggle.Unchecked += (_, _) => Set(index, false);
+        Grid grid = new();
+        grid.ColumnDefinitions.Add(new ColumnDefinition());
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        StackPanel text = new() { VerticalAlignment = VerticalAlignment.Center };
+        text.Children.Add(new TextBlock { Text = app.Name, Style = (Style)FindResource("Shell.Body") });
+        text.Children.Add(new TextBlock { Text = app.CanChange ? OnlyYou : EveryUser, Style = (Style)FindResource("Shell.Secondary"), FontSize = 12, Margin = new Thickness(0, 2, 0, 0) });
+        grid.Children.Add(text);
+        Grid.SetColumn(toggle, 1);
+        grid.Children.Add(toggle);
+        return new Border { Style = (Style)FindResource("Studio.Row"), Child = grid, ToolTip = app.Command };
+    }
+
+    private void Set(int index, bool enabled)
+    {
+        if (loading || index >= shown.Count) return;
+        StartupApp app = shown[index].App;
         try { apps.SetEnabled(app, enabled); }
         catch (Exception error) when (error is UnauthorizedAccessException or IOException or System.Security.SecurityException)
         {
@@ -101,10 +133,12 @@ public sealed class ProfilePanel : UserControl
         });
         row.Children.Add(text);
         StackPanel buttons = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        Button export = new() { Content = "Export", Margin = new Thickness(0, 0, 8, 0) };
+        // Both ask for a file first, so they end with "…" like the other buttons that open a dialog.
+        Button export = new() { Content = "Export…", Margin = new Thickness(0, 0, 8, 0) };
+        ExportButton = export;
         AutomationProperties.SetHelpText(export, "Saves this app's settings and the Windows options it set to a file");
         export.Click += (_, _) => Dispatcher.Handle(ExportAsync);
-        Button import = new() { Content = "Import" };
+        Button import = new() { Content = "Import…" };
         AutomationProperties.SetHelpText(import, "Restores a saved setup on this PC");
         import.Click += (_, _) => Dispatcher.Handle(ImportAsync);
         buttons.Children.Add(export);
@@ -116,15 +150,21 @@ public sealed class ProfilePanel : UserControl
         status.Style = (Style)FindResource("Shell.Secondary");
         status.Margin = new Thickness(2, 4, 0, 0);
         status.Visibility = Visibility.Collapsed;
-        AutomationProperties.SetLiveSetting(status, AutomationLiveSetting.Polite);
+        // Screen readers read the result of an export or import when it appears.
+        Controls.LiveRegion.SetIsLive(status, true);
         body.Children.Add(status);
         Content = body;
     }
+
+    /// <summary>Export… (search for the setup reveals it).</summary>
+    internal Button ExportButton { get; }
 
     private void ShowStatus(string text)
     {
         status.Text = text;
         status.Visibility = Visibility.Visible;
+        // The same result twice (two exports in a row) is read again too.
+        Controls.LiveRegion.Notify(status);
     }
 
     private async Task ExportAsync()

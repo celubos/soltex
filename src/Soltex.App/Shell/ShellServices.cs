@@ -10,6 +10,15 @@ namespace Soltex.App.Shell;
 
 public enum NoticeSeverity { Information, Success, Caution, Critical }
 
+/// <summary>Saved settings that could not be used at start-up, and where a copy of the file was kept (null when it could not be).</summary>
+public sealed record SettingsLoadIssue(string Problem, string? CopyPath)
+{
+    /// <summary>What the shell shows: the problem and where the copy is.</summary>
+    public string Message => CopyPath is null
+        ? Problem + " A copy could not be kept, so nothing is saved automatically until you change a setting yourself."
+        : Problem + " A copy is saved at " + CopyPath + ", so nothing is lost when settings are saved again.";
+}
+
 /// <summary>One plain-language event the user may want to see later (Settings › Recent events).</summary>
 public sealed record Notice(DateTimeOffset At, NoticeSeverity Severity, string Area, string Message)
 {
@@ -35,6 +44,8 @@ public sealed class ShellServices : IAsyncDisposable
         ProfileDirectory = profileDirectory;
         ExplicitProfile = profileDirectory is not null;
         Settings = settings;
+        // First, before anything can save settings: keep the file that could not be used.
+        SettingsProblem = KeepUnreadableSettings(settings);
         DataRoot = profileDirectory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), ProductIdentity.DataFolderName);
         Security = SecurityRuntime.CreateDefault(profileDirectory is null ? null : Path.Combine(profileDirectory, "Security"));
@@ -43,6 +54,7 @@ public sealed class ShellServices : IAsyncDisposable
         SystemChanges = new SystemChanges(DataRoot, ExplicitProfile, () => dispatcher.InvokeAsync(RaiseSystemChanged));
         TaskbarLook = new TaskbarLookService(settings, DataRoot);
         Desktop = new Desktop.DesktopService(settings);
+        Desktop.SaveFailed += message => Report(NoticeSeverity.Caution, "Desktop", message);
         Drift = new DriftWatcher(this);
         Wallpaper = new Personalize.LiveWallpaper(settings);
         settings.Changed += next => { if (keysAttached) Keys.Set(next.KeyRemaps); };
@@ -85,6 +97,38 @@ public sealed class ShellServices : IAsyncDisposable
         Drift.Attach();
         keysAttached = true;
         Keys.Set(Settings.Current.KeyRemaps);
+    }
+
+    /// <summary>Suffix of the copy kept of a settings file that could not be used (app-settings-v1.unreadable.json).</summary>
+    internal const string UnreadableCopySuffix = "unreadable";
+
+    /// <summary>
+    /// Set when the saved settings could not be used at start-up (defaults are in use): what went wrong and where a copy
+    /// of the file was kept. The shell shows it; null when the settings loaded.
+    /// </summary>
+    public SettingsLoadIssue? SettingsProblem { get; }
+
+    private static SettingsLoadIssue? KeepUnreadableSettings(AppSettingsStore settings)
+    {
+        if (settings.LoadProblem is not { } problem) return null;
+        string? copy = null;
+        try { copy = settings.SaveCopy(UnreadableCopySuffix); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            Trace.WriteLine("The unreadable settings file could not be copied: " + error.Message);
+        }
+        return new SettingsLoadIssue(problem, copy);
+    }
+
+    /// <summary>
+    /// Saves a change the user did not ask for (a first-run notice shown, drift remembered). While settings that could
+    /// not be loaded have no kept copy, nothing is saved this way, so that file is never replaced by defaults behind the
+    /// user's back; once the user changes a setting themselves, the new file is theirs.
+    /// </summary>
+    public bool TryUpdateSettingsAutomatically(Func<AppSettings, AppSettings> change, string area = "Settings")
+    {
+        if (Settings.LoadProblem is not null && SettingsProblem?.CopyPath is null) return false;
+        return TryUpdateSettings(change, area);
     }
 
     /// <summary>
@@ -168,7 +212,7 @@ public sealed class ShellServices : IAsyncDisposable
         Protection.Updated += update => dispatcher.InvokeAsync(() => ProtectionUpdated?.Invoke(update));
         Protection.Start();
         importMonitor = new ImportFolderMonitor(Security.ImportsPath, Security.Assessor, HandleImportAsync);
-        if (Settings.LoadProblem is { } problem) Report(NoticeSeverity.Caution, "Settings", problem);
+        // A settings problem (SettingsProblem) is shown and recorded by the shell window, which every start creates.
     }
 
     public void Report(NoticeSeverity severity, string area, string message)

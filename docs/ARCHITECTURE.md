@@ -16,9 +16,12 @@ Soltex.exe (WPF, unelevated, one instance per user)
 ```
 
 `Soltex.exe` takes one lock (`Local\` mutex plus a current-user pipe) so a second launch shows the open window instead
-of starting another copy. `--tray` starts hidden, `--audio` opens the Audio page, `--quit` asks the running copy to exit
-and `--profile-dir <absolute path>` uses a separate data folder (useful for testing). Closing the window hides it; Quit
-from the tray or `Ctrl+Q` exits.
+of starting another copy. `--tray` starts hidden, `--audio` opens the Audio page and `--profile-dir <absolute path>`
+uses a separate data folder (useful for testing). `--quit` asks the running copy to quit, as Quit in the tray does (it
+asks first while audio plays), and waits up to 20 seconds for its process to exit. It never shows anything itself and
+returns 0 when the copy exited, 1 when none was running, 2 when quitting was cancelled and 3 when the copy did not
+answer or exit in time; setup and the uninstaller rely on these codes (`App.Instance.cs`, `eng/soltex.iss`). Closing
+the window hides it; Quit from the tray or `Ctrl+Q` exits.
 
 ## Shell and pages
 
@@ -26,10 +29,15 @@ from the tray or `Ctrl+Q` exits.
 background work until they are shown. Every page registers search entries, so the search box can jump to a single
 setting.
 
+When the page area (in the scaled layout) would be narrower than 600 pixels, the navigation pane becomes a 64-pixel
+icon rail: labels are hidden and shown as tooltips, and search keeps its icon. Narrow page areas get slimmer page and
+card padding, and below 380 pixels the page keeps that width and scrolls sideways. Text scale and window size feed the
+same rule.
+
 | Page | What it does | Main code |
 | --- | --- | --- |
 | Home | De-Windows profile, protection status, processor/memory/storage/network use, busy apps, Windows version | `Pages/MyPcPage`, `Pages/DeWindowsPanel`, `Pages/SystemPanel`, `Soltex.Monitoring`, `Soltex.Security` |
-| Taskbar | Taskbar options, taskbar look per state (clear, acrylic, blur, opaque; desktop, window visible or maximized, Start, Search, Task View, battery saver) and style rules | `Pages/CustomizePage`, `Pages/TaskbarLookPanel`, `Shell/TaskbarLook.cs`, `Shell/TaskbarStates.cs`, native helper |
+| Taskbar | Taskbar options, taskbar look per state and per display (Windows default, opaque, clear, blur, acrylic; desktop, window visible or maximized, Start, Search, Task View, battery saver) and style rules | `Pages/CustomizePage`, `Pages/TaskbarLookPanel`, `Shell/TaskbarLook.cs`, `Shell/TaskbarStates.cs`, native helper |
 | Start | Start layout, recommendations and search options | `Pages/CustomizePage`, `Soltex.Customize` |
 | File Explorer | Extensions, context menus, navigation pane | `Pages/CustomizePage`, `Soltex.Customize` |
 | Appearance | Dark mode, transparency, accent colour, theme schedule | `Pages/CustomizePage`, `Personalize/` |
@@ -55,8 +63,9 @@ setting.
   scheduled tasks, firewall block rules and app removals need administrator rights. The app writes a request that
   names catalogue entries by id (never commands or paths) to `%LOCALAPPDATA%\Soltex\System\`, then starts
   `Soltex.exe --system <request>` with the `runas` verb. The helper accepts only a request file with the expected name
-  inside that folder, rejects redirected folders, runs only catalogue entries, journals each previous value, writes a
-  result file and exits. App removals cannot be undone from Soltex; the item says how to get the app back.
+  inside that folder, rejects redirected folders, runs only catalogue entries, journals each previous value in
+  `%ProgramData%\Soltex\System` (changeable only by administrators, and kept by uninstall so undo still works after a
+  reinstall), writes a result file and exits. App removals cannot be undone from Soltex; the item says how to get the app back.
 - **Drift.** `Shell/DriftWatcher.cs` notices when Windows turns a setting back on and reports it.
 
 Everything is off until the user turns it on. The De-Windows profile on Home is a named selection of per-user catalogue
@@ -69,8 +78,16 @@ taskbar look, the app copies the DLL to `%LOCALAPPDATA%\Soltex\Taskbar\` under a
 `WH_GETMESSAGE` hook on the taskbar thread for a moment so Explorer loads it, and the DLL attaches through the XAML
 diagnostics API. It recolours the taskbar background rectangles and applies style rules, keeping each original value so
 it can be restored exactly. Settings travel through `HKCU\Software\Soltex\Taskbar` and a named event per helper build.
-Choosing the Windows default look with no rules restores everything; the DLL stays loaded until Explorer restarts. See
-`native/Soltex.TaskbarStyle/README.md`.
+
+Looks follow TranslucentTB's states. `Shell/TaskbarStates.cs` decides, for each taskbar window (one per display), which
+enabled state applies: a window visible or maximized, Start, Search or Task View open on that display, battery saver on
+every display, otherwise the desktop look. The helper then gets a global look plus one entry per taskbar window. The
+hooks that watch windows run only while an enabled state needs them. Those states last only while the app runs: on
+Quit every taskbar goes back to the desktop look, which, like the style rules, stays applied in Explorer.
+
+Choosing the Windows default look with no rules restores everything; the DLL stays loaded until Explorer restarts. So
+uninstall guidance is to choose Windows default first, and the staged DLL in `%LOCALAPPDATA%\Soltex\Taskbar` can be
+deleted only after signing out or restarting. See `native/Soltex.TaskbarStyle/README.md`.
 
 ## Audio
 
@@ -79,8 +96,10 @@ The Audio page hosts `Soltex.Audio.UI`. Audio work runs out of the UI thread and
 - `Soltex.Audio` reads endpoints, defaults, volume, mute and meters through Core Audio on one MTA worker.
 - `Soltex.Audio.Sessions` lists app sessions and sets per-app volume and mute.
 - `Soltex.Audio.WindowsRouting` sends one app to a chosen output, with a journal and selective undo.
-- `Soltex.Audio.Engine` is the DSP (EQ, gate, compressor, expander, noise suppression, stereo controls) and the WASAPI
-  bridge, built on NAudio.
+- `Soltex.Audio.Engine` is the DSP (EQ, gate, compressor, expander, noise suppression with an optional smooth
+  background rule, stereo controls, an optional safety limiter) and the WASAPI bridge, built on NAudio. Every device
+  path converts sample rates with its own sinc resampler, which also corrects the drift between the capture and render
+  device clocks.
 - `Soltex.Audio.Host` plus `Soltex.Audio.Host.Cli` (`Soltex.Audio.Host.Service.exe`) run the five-channel graph and the
   personal/stream mix in an unelevated helper, controlled over an authenticated current-user pipe. The helper starts
   stopped and exits when Soltex exits.
@@ -105,21 +124,27 @@ Details: [audio/ARCHITECTURE.md](audio/ARCHITECTURE.md).
 
 ## Data
 
-All state is per-user under `%LOCALAPPDATA%\Soltex` (or `--profile-dir`):
+Per-user state is under `%LOCALAPPDATA%\Soltex` (or `--profile-dir`); the administrator journal is the one exception
+(below):
 
 | Path | Contents |
 | --- | --- |
 | `Settings\app-settings-v1.json` | App preferences (never secrets or Windows state) |
 | `Customize\journal-v1.jsonl` | Per-user change journal (History) |
-| `System\` | Elevated helper request, result and journal |
+| `System\` | Elevated helper request and result (its journal is in `%ProgramData%\Soltex\System`, below) |
 | `Taskbar\` | Staged taskbar helper and its log |
 | `Audio\` | Audio profiles, presets and routing journals |
 | `Security\`, `Imports\` | Security state, quarantine, audit log, protected imports folder |
 | `logs\crash\` | Local crash reports |
 
-Nothing is uploaded. The app has no telemetry and no account. Start at sign-in is an opt-in value under
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Compatibility rules for the data folder are in
-[NAMING_AND_COMPATIBILITY.md](NAMING_AND_COMPATIBILITY.md).
+The administrator changes' journal (Full De-Windows) is in `%ProgramData%\Soltex\System`: readable by everyone,
+changeable only by administrators. The taskbar helper's settings are under `HKCU\Software\Soltex\Taskbar`. Nothing is
+uploaded. The app has no telemetry and no account. Start at sign-in is an opt-in value under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; the installer offers it on a first install only, and the app's
+switch owns it after that. Uninstalling removes the program files, shortcuts and that value, but keeps the data folder,
+`HKCU\Software\Soltex` and `%ProgramData%\Soltex\System`, so a reinstall can still undo administrator changes. Removing
+that last folder needs administrator rights and ends the ability to undo them. Compatibility rules for the data folder
+are in [NAMING_AND_COMPATIBILITY.md](NAMING_AND_COMPATIBILITY.md).
 
 ## Performance rules
 

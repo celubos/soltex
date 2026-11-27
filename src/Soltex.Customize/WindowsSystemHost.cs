@@ -22,13 +22,7 @@ public sealed class WindowsSystemHost : ISystemHost
     {
         using RegistryKey root = RegistryKey.OpenBaseKey(hive == RegistryHive2.LocalMachine ? RegistryHive.LocalMachine : RegistryHive.CurrentUser, RegistryView.Registry64);
         using RegistryKey? key = root.OpenSubKey(path, writable: false);
-        return key?.GetValue(name, null, RegistryValueOptions.DoNotExpandEnvironmentNames) switch
-        {
-            int dword => RegistryValue.Dword(dword),
-            string text => RegistryValue.FromText(text),
-            null => RegistryValue.Absent,
-            object other => RegistryValue.FromText(other.ToString() ?? "")
-        };
+        return RegistryData.Read(key, name);
     }
 
     public void Write(RegistryHive2 hive, string path, string name, RegistryValue value)
@@ -40,9 +34,9 @@ public sealed class WindowsSystemHost : ISystemHost
             existing?.DeleteValue(name, throwOnMissingValue: false);
             return;
         }
+        if (!RegistryData.TryEncode(value, out _, out _, out string reason)) throw new IOException(reason);
         using RegistryKey key = root.CreateSubKey(path, writable: true) ?? throw new UnauthorizedAccessException("Windows did not allow this change.");
-        if (value.Kind == ValueKind.DWord) key.SetValue(name, int.Parse(value.Text!, CultureInfo.InvariantCulture), RegistryValueKind.DWord);
-        else key.SetValue(name, value.Text ?? "", RegistryValueKind.String);
+        RegistryData.Write(key, name, value);
     }
 
     public int? ServiceStart(string service)
@@ -56,6 +50,14 @@ public sealed class WindowsSystemHost : ISystemHost
         string mode = startType switch { 2 => "auto", 3 => "demand", 4 => "disabled", _ => throw new ArgumentOutOfRangeException(nameof(startType)) };
         Run("sc.exe", ["config", service, "start=", mode], ToolTimeout, mustSucceed: true);
         if (startType == 4) Run("sc.exe", ["stop", service], ToolTimeout, mustSucceed: false);
+    }
+
+    public void StartService(string service)
+    {
+        (int code, string output) = Run("sc.exe", ["start", service], ToolTimeout, mustSucceed: false);
+        // 1056: already running.
+        if (code is not (0 or 1056))
+            throw new InvalidOperationException("sc.exe failed (" + code.ToString(CultureInfo.InvariantCulture) + "): " + output.Trim());
     }
 
     public bool? TaskEnabled(string taskPath)

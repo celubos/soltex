@@ -16,7 +16,10 @@ public sealed class OwnedAudioRouter : IDisposable
     private Thread? worker;
     private bool disposed;
     private string? failure;
+    private bool highResolutionPacing;
     public string? Failure => Volatile.Read(ref failure);
+    /// <summary>True once the worker paces with the high-resolution timer (false before it starts or on the plain-wait fallback).</summary>
+    public bool HighResolutionPacing => Volatile.Read(ref highResolutionPacing);
     public OwnedAudioRouter(OwnedAudioTransport transport, bool automatic = true)
     { this.transport = transport ?? throw new ArgumentNullException(nameof(transport)); this.automatic = automatic; }
     public RenderSubscription Subscribe(OwnedAudioBus bus, BoundedFloatBus? target = null)
@@ -36,13 +39,20 @@ public sealed class OwnedAudioRouter : IDisposable
         if (!automatic || worker is not null) return;
         worker = new Thread(() =>
         {
-            // This thread paces kernel refills; MMCSS keeps its 10 ms waits on time under CPU load.
+            // This thread paces kernel refills; MMCSS keeps its 10 ms waits on time under CPU load, and a high-resolution
+            // timer keeps them 10 ms (a plain wait lands on the default 15.6 ms timer tick, which adds latency).
             AudioThreadScheduling.RegisterCurrentThread();
-            while (!stop.IsSet)
+            try
             {
-                try { PumpOnce(); } catch (Exception error) { Volatile.Write(ref failure, error.Message); return; }
-                stop.Wait(10);
+                using var pacer = new AudioThreadPacer(stop);
+                Volatile.Write(ref highResolutionPacing, pacer.IsHighResolution);
+                while (!stop.IsSet)
+                {
+                    try { PumpOnce(); } catch (Exception error) { Volatile.Write(ref failure, error.Message); return; }
+                    pacer.Wait(10);
+                }
             }
+            finally { AudioThreadScheduling.ReleaseCurrentThread(); }
         }) { IsBackground = true, Name = "Soltex owned PCM transport" };
         worker.Start();
     }

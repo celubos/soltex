@@ -16,6 +16,8 @@ Thanks for your interest in Soltex. It is released under the [MIT License](LICEN
 - Describe what changed and how you tested it. Mention anything you could not test (for example, a Windows version or
   audio hardware you do not have).
 - CI must pass: the Release build, the test suites, `eng/verify-identity.ps1` and `eng/verify-design-tokens.ps1`.
+  Changes to packaging or the installer (`eng/soltex.iss`, `eng/installer/`) also run `package-smoke`, which builds
+  the installer and installs, upgrades and uninstalls it on the runner.
 
 ## Code style
 

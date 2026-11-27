@@ -41,7 +41,11 @@ public sealed class OwnedWaveIn : IWaveIn
                 }
             }
             catch (Exception error) { failure = error; }
-            finally { RecordingStopped?.Invoke(this, new(failure)); }
+            finally
+            {
+                try { RecordingStopped?.Invoke(this, new(failure)); }
+                finally { Soltex.Audio.Engine.AudioThreadScheduling.ReleaseCurrentThread(); }
+            }
         }) { IsBackground = true, Name = "Soltex owned stream input" };
         thread.Start();
     }

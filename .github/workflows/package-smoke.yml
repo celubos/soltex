@@ -10,6 +10,8 @@ on:
       - 'eng/publish-release.ps1'
       - 'eng/record-package-identity.ps1'
       - 'eng/package/**'
+      - 'eng/soltex.iss'
+      - 'eng/installer/**'
       - 'native/Soltex.TaskbarStyle/**'
       - 'src/**'
   pull_request:
@@ -21,6 +23,8 @@ on:
       - 'eng/publish-release.ps1'
       - 'eng/record-package-identity.ps1'
       - 'eng/package/**'
+      - 'eng/soltex.iss'
+      - 'eng/installer/**'
       - 'native/Soltex.TaskbarStyle/**'
       - 'src/**'
   workflow_dispatch:
@@ -64,13 +68,18 @@ jobs:
           "SOLTEX_LLVM_MINGW=$(Join-Path $cacheRoot $lock.packages[0].folder)" |
             Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
 
+      # The Inno Setup version the release workflow uses (pinned in the script; installed with Chocolatey if missing).
+      - name: Get Inno Setup
+        shell: pwsh
+        run: .\eng\installer\get-inno-setup.ps1 -GitHubEnv
+
       # Publishes the same folder layout the installer and the release zip ship: the app with its
-      # runtime, TaskbarHelper\ and Soltex.Audio.Host\.
-      - name: Publish self-contained desktop package
+      # runtime, TaskbarHelper\ and Soltex.Audio.Host\, then compiles eng\soltex.iss from it.
+      - name: Publish self-contained desktop package and installer
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & .\eng\publish-release.ps1 -Version '0.0.0-ci' -Runtime 'win-x64' -SkipInstaller 2>&1 |
+          & .\eng\publish-release.ps1 -Version '0.0.0-ci' -Runtime 'win-x64' -Iscc $env:ISCC 2>&1 |
             Tee-Object -FilePath .\artifacts\validation\package-publish.log
 
       - name: Launch published package render smoke
@@ -115,6 +124,17 @@ jobs:
             -EventName $env:GITHUB_EVENT_NAME `
             -HeadRef $env:GITHUB_HEAD_REF
 
+      # Installs for the runner's account, checks --quit, then upgrades and uninstalls while Soltex runs.
+      - name: Install, upgrade and uninstall
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\eng\installer\test-installer.ps1 `
+            -Setup .\artifacts\installer\Soltex-0.0.0-ci-win-x64-setup.exe `
+            -Version '0.0.0-ci' 2>&1 |
+            Tee-Object -FilePath .\artifacts\validation\installer-smoke.log
+
       - name: Upload package smoke results
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -128,5 +148,7 @@ jobs:
             artifacts/validation/package-my-pc.png
             artifacts/validation/package-my-pc.png.error.txt
             artifacts/validation/package-smoke.json
+            artifacts/validation/installer-smoke.log
+            artifacts/installer/*.sha256
           if-no-files-found: warn
           retention-days: 30

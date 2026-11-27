@@ -8,10 +8,11 @@ public sealed class BoundedFloatBus : ISampleProvider
     private readonly object sync = new();
     private readonly float[] ring;
     private readonly TimeProvider clock;
-    private int readIndex, count, lastWriteFrames;
-    private long droppedFrames, silentFrames, lastWriteTimestamp;
+    private int readIndex, count, lastWriteFrames, burstFrames;
+    private long droppedFrames, silentFrames, lastWriteTimestamp, writeCount, burstStart, previousWrite;
+    private double latenessPeak;
     public WaveFormat WaveFormat { get; }
-    /// <summary>Seconds since the most recent write (0 before the first), on the bus clock.</summary>
+    /// <summary>Seconds since the most recent non-empty write (0 before the first), on the bus clock.</summary>
     public double SecondsSinceLastWrite
     {
         get
@@ -24,8 +25,23 @@ public sealed class BoundedFloatBus : ISampleProvider
     public int BufferedFrames { get { lock (sync) return count / WaveFormat.Channels; } }
     public long DroppedFrames { get { lock (sync) return droppedFrames; } }
     public long SilentFrames { get { lock (sync) return silentFrames; } }
-    /// <summary>Frames in the most recent write (the producer's packet size), for consumers that size their margin.</summary>
+    /// <summary>
+    /// Frames in the most recent packet (non-empty writes less than 1 ms apart count as one), i.e. the producer's packet
+    /// size, for consumers that size their margin.
+    /// </summary>
     public int LastWriteFrames => Volatile.Read(ref lastWriteFrames);
+    /// <summary>Non-empty writes so far; a consumer can tell whether the producer delivered since it last looked.</summary>
+    public long WriteCount { get { lock (sync) return writeCount; } }
+
+    /// <summary>
+    /// Largest producer lateness, in seconds, since the previous call, then resets it. Writes less than 1 ms apart count as
+    /// one packet; a packet is late by the time it arrived after the previous packet's audio would have run out (arrival
+    /// gap minus the previous packet's duration). A long value means the producer paused and came back.
+    /// </summary>
+    public double TakeLatenessPeak()
+    {
+        lock (sync) { double peak = latenessPeak; latenessPeak = 0; return peak; }
+    }
 
     /// <summary>Removes up to <paramref name="frames"/> of the oldest frames (a consumer skipping backlog). Returns frames removed.</summary>
     public int Discard(int frames)
@@ -60,10 +76,26 @@ public sealed class BoundedFloatBus : ISampleProvider
     {
         int channels = WaveFormat.Channels;
         if (samples.Length % channels != 0) throw new ArgumentException("Only complete frames may be written.", nameof(samples));
-        Volatile.Write(ref lastWriteFrames, samples.Length / channels);
-        Volatile.Write(ref lastWriteTimestamp, Math.Max(1, clock.GetTimestamp()));
+        // An empty packet (an idle producer, e.g. the router polling a silent endpoint) delivers nothing: it must not reset
+        // the packet size or the write clock, or a consumer would mistake a paused source for a live one that runs dry.
+        if (samples.IsEmpty) return;
+        int frames = samples.Length / channels;
+        long now = Math.Max(1, clock.GetTimestamp());
         lock (sync)
         {
+            writeCount++;
+            // A producer that splits one delivery into several writes (a long capture callback cut into blocks) sends them
+            // within microseconds: they are one packet for sizing and lateness.
+            if (previousWrite != 0 && now >= previousWrite && now - previousWrite < clock.TimestampFrequency / 1000) burstFrames += frames;
+            else
+            {
+                if (burstStart != 0)
+                    latenessPeak = Math.Max(latenessPeak, (double)(now - burstStart) / clock.TimestampFrequency - (double)burstFrames / WaveFormat.SampleRate);
+                burstStart = now; burstFrames = frames;
+            }
+            previousWrite = now;
+            Volatile.Write(ref lastWriteFrames, burstFrames);
+            Volatile.Write(ref lastWriteTimestamp, now);
             if (samples.Length > ring.Length)
             {
                 droppedFrames += (samples.Length - ring.Length) / channels;

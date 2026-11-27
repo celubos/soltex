@@ -20,7 +20,7 @@ public partial class ToolsPage : UserControl, IShellPage, IDisposable
         new("Window zones", "Tools › More tools", Destination.Tools, "zones", "PowerToys", "FancyZones", "snap", "layout", "tile windows"),
         new("Batch rename", "Tools › More tools", Destination.Tools, "rename", "PowerToys", "PowerRename", "rename files", "regex"),
         new("Key remapping", "Tools › More tools", Destination.Tools, "keys", "PowerToys", "Keyboard Manager", "remap", "caps lock"),
-        new("Startup apps", "Tools", Destination.Tools, "startup", "start at sign-in", "autostart", "boot", "run at startup", "task manager"),
+        new("Startup apps", "Tools", Destination.Tools, "startup", "apps that start at sign-in", "autostart", "boot", "run at startup", "task manager"),
         new("Let someone help me remotely", "Tools › Remote help", Destination.Tools, "remote", "rustdesk", "remote desktop", "share screen", "support", "teamviewer"),
         new("Connect to someone else's PC", "Tools › Remote help", Destination.Tools, "connect", "rustdesk id", "help a friend", "remote control"),
         new("Quick scan with Microsoft Defender", "Tools › Microsoft Defender", Destination.Tools, "scan", "virus scan", "antivirus", "malware", "defender"),
@@ -39,6 +39,7 @@ public partial class ToolsPage : UserControl, IShellPage, IDisposable
 
     private readonly ShellContext context;
     private readonly PageAnchors anchors = new();
+    private readonly StartupAppsPanel startup;
     private RemoteAssistExecutable? rustDesk;
     private AuthenticodeVerificationResult? rustDeskTrust;
     private CancellationTokenSource? operation;
@@ -52,13 +53,13 @@ public partial class ToolsPage : UserControl, IShellPage, IDisposable
         RenderUtilities();
         PowerToolsPanel more = new(context);
         MoreTools.Content = more;
-        StartupAppsPanel startup = new(context);
+        startup = new StartupAppsPanel(context);
         StartupAppsHost.Content = startup;
         anchors.Add("startup", startup);
         anchors.Add("textextractor", more.TextExtractorSwitch);
         anchors.Add("zones", more.ZonesList);
-        anchors.Add("rename", more);
-        anchors.Add("keys", more);
+        anchors.Add("rename", more.RenameRow);
+        anchors.Add("keys", more.RemapRow);
         anchors.Add("top", Intro);
         anchors.Add("remote", ShareButton);
         anchors.Add("connect", PeerId);
@@ -67,7 +68,8 @@ public partial class ToolsPage : UserControl, IShellPage, IDisposable
         anchors.Add("update", UpdateIntelligence);
         anchors.Add("events", EventsExpander);
         anchors.Add("imports", OpenImports);
-        anchors.Add("quarantine", QuarantineList);
+        // The list is hidden while quarantine is empty; search then lands on the section's own button.
+        anchors.Add("quarantine", QuarantineList, OpenImports);
         SetRustDesk(RemoteAssistExecutableLocator.FindInstalled());
     }
 
@@ -80,6 +82,8 @@ public partial class ToolsPage : UserControl, IShellPage, IDisposable
     public void OnShown()
     {
         if (!quarantineLoaded) _ = RefreshQuarantineAsync();
+        // Startup apps change outside this app (Task Manager, installers, Settings › Start when I sign in to Windows).
+        startup.Refresh();
     }
 
     public void OnHidden() { }
@@ -184,9 +188,15 @@ public partial class ToolsPage : UserControl, IShellPage, IDisposable
     }
 
     // ---------- scans ----------
-    private async Task RunAsync(string startedText, Func<CancellationToken, Task<string>> work)
+    /// <summary>
+    /// Runs one Microsoft Defender or quarantine task at a time. The buttons stay enabled while it runs (a second press
+    /// says to wait), so the pressed button keeps focus; afterwards the keyboard returns to it, or to the nearest control
+    /// left when the task removed it (Restore and Delete once the file is gone).
+    /// </summary>
+    private async Task RunAsync(string startedText, Func<CancellationToken, Task<string>> work, UIElement? origin = null)
     {
-        if (operation is not null) return;
+        if (BusyNotice()) return;
+        FocusSnapshot focus = origin is null ? default : FocusSnapshot.Take(origin);
         operation = new CancellationTokenSource();
         SetScanBusy(true);
         ScanResult.Text = startedText;
@@ -202,13 +212,13 @@ public partial class ToolsPage : UserControl, IShellPage, IDisposable
             operation.Dispose();
             operation = null;
             SetScanBusy(false);
+            focus.Restore(this, QuarantineList, OpenImports, QuickScan);
         }
     }
 
     private void SetScanBusy(bool busy)
     {
-        QuickScan.IsEnabled = ScanFile.IsEnabled = ScanFolder.IsEnabled = UpdateIntelligence.IsEnabled = !busy;
-        RestoreButton.IsEnabled = DeleteButton.IsEnabled = !busy && QuarantineList.SelectedItem is not null;
+        RestoreButton.IsEnabled = DeleteButton.IsEnabled = QuarantineList.SelectedItem is not null;
         ScanProgress.Visibility = CancelScan.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
     }
 
@@ -223,23 +233,33 @@ public partial class ToolsPage : UserControl, IShellPage, IDisposable
 
     private async void QuickScan_Click(object sender, RoutedEventArgs e) =>
         await RunAsync("Quick scan running…", t => DefenderAsync(context.Services.Security.Defender.RunQuickScanAsync,
-            "Quick scan finished. Any threats found are handled by Microsoft Defender and listed in Windows Security.", t));
+            "Quick scan finished. Any threats found are handled by Microsoft Defender and listed in Windows Security.", t), QuickScan);
 
     private async void UpdateIntelligence_Click(object sender, RoutedEventArgs e) =>
         await RunAsync("Updating security intelligence…", t => DefenderAsync(context.Services.Security.Defender.UpdateSecurityIntelligenceAsync,
-            "Security intelligence is up to date.", t));
+            "Security intelligence is up to date.", t), UpdateIntelligence);
 
     private async void ScanFolder_Click(object sender, RoutedEventArgs e)
     {
+        if (BusyNotice()) return;
         OpenFolderDialog dialog = new() { Title = "Choose a folder to scan" };
         if (dialog.ShowDialog(context.Owner) != true) return;
         string folder = dialog.FolderName;
         await RunAsync("Scanning " + folder + "…", t => DefenderAsync(c => context.Services.Security.Defender.RunCustomScanAsync(folder, c),
-            "Scan of " + folder + " finished. Any threats found are handled by Microsoft Defender.", t));
+            "Scan of " + folder + " finished. Any threats found are handled by Microsoft Defender.", t), ScanFolder);
+    }
+
+    /// <summary>True (and says so) while a task runs, so no file or folder is asked for that could not be scanned now.</summary>
+    private bool BusyNotice()
+    {
+        if (operation is null) return false;
+        context.ShowNotice(NoticeSeverity.Information, "Another Microsoft Defender task is still running. Wait for it to finish, or choose Stop waiting.");
+        return true;
     }
 
     private async void ScanFile_Click(object sender, RoutedEventArgs e)
     {
+        if (BusyNotice()) return;
         OpenFileDialog dialog = new() { Title = "Choose a file to check", CheckFileExists = true };
         if (dialog.ShowDialog(context.Owner) != true) return;
         string path = dialog.FileName;
@@ -261,7 +281,7 @@ public partial class ToolsPage : UserControl, IShellPage, IDisposable
             }
             if (File.Exists(path)) await context.Services.Security.Defender.RunCustomScanAsync(path, token);
             return $"{name}: {Plain.Verdict(assessment.Verdict)}.";
-        });
+        }, ScanFile);
     }
 
     private void CancelScan_Click(object sender, RoutedEventArgs e) => operation?.Cancel();
@@ -320,11 +340,11 @@ public partial class ToolsPage : UserControl, IShellPage, IDisposable
     }
 
     private void QuarantineList_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
-        RestoreButton.IsEnabled = DeleteButton.IsEnabled = operation is null && QuarantineList.SelectedItem is not null;
+        RestoreButton.IsEnabled = DeleteButton.IsEnabled = QuarantineList.SelectedItem is not null;
 
     private async void Restore_Click(object sender, RoutedEventArgs e)
     {
-        if (QuarantineList.SelectedItem is not QuarantineRow row) return;
+        if (BusyNotice() || QuarantineList.SelectedItem is not QuarantineRow row) return;
         if (MessageBox.Show(context.Owner, $"Only restore {row.Title} if you are sure it is safe. It goes back to:\n{row.Entry.OriginalPath}",
                 "Restore file", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         await RunAsync("Restoring…", async token =>
@@ -333,12 +353,12 @@ public partial class ToolsPage : UserControl, IShellPage, IDisposable
             await context.Services.AuditAsync("quarantine.restore", SecurityEventSeverity.Warning, "A quarantine item was restored by the user.", restored);
             await RefreshQuarantineAsync(token);
             return row.Title + " was restored to " + restored + ".";
-        });
+        }, RestoreButton);
     }
 
     private async void Delete_Click(object sender, RoutedEventArgs e)
     {
-        if (QuarantineList.SelectedItem is not QuarantineRow row) return;
+        if (BusyNotice() || QuarantineList.SelectedItem is not QuarantineRow row) return;
         if (MessageBox.Show(context.Owner, $"Permanently delete {row.Title}? This cannot be undone.",
                 "Delete permanently", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         await RunAsync("Deleting…", async token =>
@@ -347,7 +367,7 @@ public partial class ToolsPage : UserControl, IShellPage, IDisposable
             await context.Services.AuditAsync("quarantine.delete", SecurityEventSeverity.Warning, "A quarantine item was permanently deleted by the user.");
             await RefreshQuarantineAsync(token);
             return row.Title + " was deleted.";
-        });
+        }, DeleteButton);
     }
 
     private bool renderingUtilities;
@@ -376,6 +396,7 @@ public partial class ToolsPage : UserControl, IShellPage, IDisposable
     {
         if (renderingUtilities) return;
         bool top = AlwaysOnTopSwitch.IsChecked == true, picker = ColorPickerSwitch.IsChecked == true;
-        context.Services.Settings.Update(s => s with { AlwaysOnTopShortcut = top, ColorPickerShortcut = picker });
+        // A settings file that can't be written is reported, and the switches show what is saved.
+        if (!PageSettings.TrySave(context, s => s with { AlwaysOnTopShortcut = top, ColorPickerShortcut = picker })) RenderUtilities();
     }
 }

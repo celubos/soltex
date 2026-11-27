@@ -74,22 +74,32 @@ public sealed class OwnedAudioTransport : IDisposable
             // A capture stream can restart independently. Query its generation/producer sequence immediately before injection.
             var before = QueryCore(bus);
             byte[] request = Request(bus, frames, before.Sequence, samples.Length * 2, before.Generation);
-            for (int i = 0; i < samples.Length; i++)
+            bool silent = true;
+            foreach (float sample in samples)
             {
-                if (!float.IsFinite(samples[i])) throw new ArgumentException("PCM samples must be finite.", nameof(samples));
-                BinaryPrimitives.WriteInt16LittleEndian(request.AsSpan(RequestSize + i * 2), Quantize(samples[i]));
+                if (!float.IsFinite(sample)) throw new ArgumentException("PCM samples must be finite.", nameof(samples));
+                silent &= Math.Abs(sample) < HalfLsb;
             }
+            // A block with nothing 16-bit PCM can represent (digital silence, or the residue of a closed gate far below one
+            // LSB) stays exact digital zero (the request payload is already zeroed) instead of becoming dither noise.
+            if (!silent)
+                for (int i = 0; i < samples.Length; i++)
+                    BinaryPrimitives.WriteInt16LittleEndian(request.AsSpan(RequestSize + i * 2), Quantize(samples[i]));
             var result = Parse(device.Exchange(WriteControl, request, ResponseSize), bus, frames, hasPcm: false);
             if (result.Frames != frames || result.Generation != before.Generation) throw new IOException("Microphone stream generation changed during injection; packet was not confirmed.");
             return result;
         }
     }
 
+    /// <summary>Half of one PCM16 step: a block whose samples all stay below it rounds to zero without dither.</summary>
+    private const float HalfLsb = 0.5f / 32768f;
+
     /// <summary>
     /// Float to PCM16 with TPDF dither (±1 LSB triangular), so low-level detail and fades turn into a constant, signal-
-    /// independent noise floor (about -101 dBFS RMS) instead of correlated quantization distortion. Values already exactly
-    /// representable in 16 bits (digital silence, unity-gain 16-bit sources) are written unchanged and stay bit exact.
-    /// Called under the transport lock.
+    /// independent noise floor instead of correlated quantization distortion. Dither and rounding error together are
+    /// 0.5 LSB RMS, about -96 dBFS. Values already exactly representable in 16 bits (unity-gain 16-bit sources) are
+    /// written unchanged and stay bit exact; a whole block below half an LSB (digital silence, a closed gate) is written
+    /// as exact zeros by the caller and never reaches this. Called under the transport lock.
     /// </summary>
     private short Quantize(float sample)
     {

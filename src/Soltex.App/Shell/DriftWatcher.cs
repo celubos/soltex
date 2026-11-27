@@ -59,8 +59,11 @@ internal sealed record DriftPutBack(IReadOnlyList<ChangeResult> Settings, IReadO
 }
 
 /// <summary>
-/// Drift check: a little after start-up and twice a day, compares what this app set with what is set now. Each difference
-/// is reported once (remembered across launches), with a way to put it back. Reads only; nothing changes without the user.
+/// Drift check: a little after start-up and twice a day, compares what this app set with what is set now, and offers to put
+/// back what is different. A difference stays on offer until the user puts it back or closes the offer
+/// (<see cref="Dismiss"/>); only then is it remembered across launches and not offered again. An offer that was never
+/// answered (another notice replaced it, or the app closed) comes back with the next check, at most twice a day.
+/// Reads only; nothing changes without the user.
 /// </summary>
 public sealed class DriftWatcher : IDisposable
 {
@@ -79,7 +82,7 @@ public sealed class DriftWatcher : IDisposable
         timer.Tick += (_, _) => _ = CheckAsync();
     }
 
-    /// <summary>Raised on the UI thread when a difference not reported before is found.</summary>
+    /// <summary>Raised on the UI thread when a check finds a difference the user has not answered yet.</summary>
     public event Action<DriftReport>? Found;
 
     /// <summary>True while the checks are scheduled.</summary>
@@ -108,9 +111,10 @@ public sealed class DriftWatcher : IDisposable
                 services.SystemChanges.Inspector().Drifted(SystemCatalog.All))).ConfigureAwait(true);
             report = Filter(report, services.Settings.Current);
             string? reported = services.Settings.Current.ReportedDrift;
-            bool fresh = IsNew(report.Ids, reported);
-            Remember(report.Ids);
-            if (fresh && !disposed) Found?.Invoke(report);
+            // Something new stays unremembered until the user answers the offer, so it is offered again if they never do.
+            // Nothing new: forget what is no longer different, so it counts as new if it changes back again.
+            if (IsNew(report.Ids, reported)) { if (!disposed) Found?.Invoke(report); }
+            else Remember(report.Ids);
             return report;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException
@@ -136,6 +140,9 @@ public sealed class DriftWatcher : IDisposable
         Remember(result.StillDifferent);
         return result;
     }
+
+    /// <summary>The user closed the offer without putting anything back: these differences are not offered again.</summary>
+    internal void Dismiss(DriftReport report) => Remember(report.Ids);
 
     private ChangeResult Reapply(SettingDefinition setting)
     {
@@ -171,7 +178,7 @@ public sealed class DriftWatcher : IDisposable
     {
         string? key = AppSettings.NormalizeIdList(string.Join("|", ids));
         if (key == services.Settings.Current.ReportedDrift) return;
-        services.TryUpdateSettings(s => s with { ReportedDrift = key });
+        services.TryUpdateSettingsAutomatically(s => s with { ReportedDrift = key });
     }
 
     public void Dispose()

@@ -10,9 +10,9 @@ internal readonly record struct TaskbarWindowLook(nint Window, TaskbarLookState 
 /// A look per taskbar. The helper reads the optional REG_MULTI_SZ value "Taskbars" with the other settings, one entry per
 /// taskbar window: <c>hwnd=&lt;decimal HWND&gt;;look=&lt;0-4&gt;;color=&lt;decimal ARGB&gt;;line=&lt;0|1&gt;</c>. A taskbar
 /// the helper can match to an entry's window shows that entry's look; every other taskbar shows the global look. The
-/// helper matches a taskbar to its window by size, so two taskbars of the same size (two displays with the same
-/// resolution and scale) both keep the global look. Its report counts the background rectangles that used an entry
-/// (<see cref="ReadMappedCount"/>).
+/// helper matches a taskbar to its window through its XAML island (the island root knows its window), and by size only
+/// when that fails; by size, two taskbars of the same size cannot be told apart. Its report counts the background
+/// rectangles that used an entry (<see cref="ReadMappedCount"/>), so the app can tell when some taskbar was not matched.
 /// </summary>
 internal sealed partial class TaskbarHelper
 {
@@ -21,6 +21,9 @@ internal sealed partial class TaskbarHelper
     /// helper when it loads; Explorer's own Shell_TrayWnd and Shell_SecondaryTrayWnd always count.
     /// </summary>
     public string? TaskbarClasses { get; init; }
+
+    /// <summary>Tests only: the helper matches taskbars by size alone, never through their island (passed when it loads).</summary>
+    public bool MatchBySize { get; init; }
 
     /// <summary>
     /// Saves a look per taskbar window (or deletes the Taskbars value when <paramref name="perTaskbar"/> is empty), then

@@ -60,7 +60,29 @@ public sealed partial class IndependentMixerWorkspace : UserControl, IAsyncDispo
         if (disposed || connection is null || initialization is { IsCompleted: false }) return;
         if (!ready) { await RefreshAsync(); return; }
         try { ApplyStatus(await connection.ReadAsync(lifetime.Token)); }
-        catch (Exception error) when (error is IOException or OperationCanceledException or InvalidOperationException) { }
+        catch (Exception error) when (error is IOException or OperationCanceledException or InvalidOperationException) { if (!disposed) LoseConnection(error); }
+    }
+
+    /// <summary>
+    /// True after a read of a connected engine failed, until the next read succeeds. <see cref="LatestSnapshot"/> then
+    /// still holds the last confirmed state, which may no longer be true: views show the connection instead of it.
+    /// </summary>
+    public bool ConnectionLost { get; private set; }
+
+    /// <summary>A read failed: meters go back to "not measured" and views are told the state is unknown.</summary>
+    private void LoseConnection(Exception error)
+    {
+        if (!ready || error is OperationCanceledException && lifetime.IsCancellationRequested) return;
+        foreach (var row in Channels)
+        {
+            row.Peak = -1;
+            row.State = "Not connected";
+            row.Reason = "The audio engine isn't answering, so this channel's state is unknown.";
+        }
+        bool changed = !ConnectionLost;
+        ConnectionLost = true;
+        if (!LastOperationFailed) Feedback.Text = "Audio connection lost: " + error.Message;
+        if (changed) StatusApplied?.Invoke(this, EventArgs.Empty);
     }
 
     private void ReportProblem(string text) { problemUntil = DateTime.UtcNow + ProblemNoticeDuration; Feedback.Text = text; }
@@ -121,7 +143,12 @@ public sealed partial class IndependentMixerWorkspace : UserControl, IAsyncDispo
             }
             finally { operations.Release(); }
         }
-        catch (Exception error) when (Expected(error)) { if (!disposed && !LastOperationFailed) Feedback.Text = (ready ? "Audio connection lost: " : "Audio isn't available: ") + error.Message; }
+        catch (Exception error) when (Expected(error))
+        {
+            if (disposed) return;
+            if (ready) LoseConnection(error);
+            else if (!LastOperationFailed) Feedback.Text = "Audio isn't available: " + error.Message;
+        }
         finally { reading = false; }
     }
 
@@ -143,6 +170,7 @@ public sealed partial class IndependentMixerWorkspace : UserControl, IAsyncDispo
 
     private void ApplyStatus(HostSnapshot snapshot)
     {
+        ConnectionLost = false;
         confirmed = snapshot.Profile; endpoints = snapshot.Endpoints;
         latestSnapshot = snapshot; microphoneWindow?.Observe(snapshot); streamWindow?.Observe(snapshot);
         StatusApplied?.Invoke(this, EventArgs.Empty);
@@ -181,18 +209,27 @@ public sealed partial class IndependentMixerWorkspace : UserControl, IAsyncDispo
             if (LastOperationFailed) { }
             else if (snapshot.LastError is not null) Feedback.Text = snapshot.LastError;
             else if (snapshot.StreamMix is { } mixStatus) Feedback.Text = mixStatus.Failure is string failure ? "Stream mix failed: " + failure : "Stream mix is " + (mixStatus.Running ? "on." : "off.");
-            else if (!routingDirty && !levelsPending) Feedback.Text = snapshot.Running ? "Audio is running."
+            else if (!routingDirty && !levelsPending) Feedback.Text = snapshot.Running ? RunningStatus
                 : snapshot.StartRequested ? "Waiting for your devices; no channel is running yet." : "Audio is stopped. Choose Start audio when you're ready.";
         }
         finally { applying = false; }
     }
 
+    /// <summary>The routine status while audio runs; a view with its own Running badge need not repeat it.</summary>
+    public const string RunningStatus = "Audio is running.";
+
     private void UpdateChoices(ObservableCollection<IndependentEndpointChoice> choices, bool capture, string? retained)
     {
         List<IndependentEndpointChoice> wanted = [new("", "Choose a device…")];
         var eligible = endpoints.Where(e => e.IsCapture == capture && !e.Name.Contains("Sonar", StringComparison.OrdinalIgnoreCase)).ToArray();
-        foreach (var endpoint in eligible)
-            wanted.Add(new(endpoint.Id, IndependentEndpointChoice.Describe(endpoint, DuplicateSuffix(eligible, endpoint)) + (endpoint.IsActive ? "" : " (unavailable)")));
+        // A narrow strip's closed box shows the device's own name ("Headphones"); the list and tooltip keep the full one.
+        string[] compact = eligible.Select(e => DeviceNames.WithoutHardware(e.Name) + DuplicateSuffix(eligible, e) + (e.IsActive ? "" : " (unavailable)")).ToArray();
+        for (int i = 0; i < eligible.Length; i++)
+        {
+            HostEndpoint endpoint = eligible[i];
+            wanted.Add(new(endpoint.Id, IndependentEndpointChoice.Describe(endpoint, DuplicateSuffix(eligible, endpoint)) + (endpoint.IsActive ? "" : " (unavailable)"))
+            { CompactLabel = compact.Count(c => c == compact[i]) > 1 ? null : compact[i] });
+        }
         if (!string.IsNullOrWhiteSpace(retained) && wanted.All(c => c.Id != retained)) wanted.Add(new(retained, "Saved device (not connected)"));
         if (choices.SequenceEqual(wanted)) return;
         for (int i = 0; i < wanted.Count; i++)

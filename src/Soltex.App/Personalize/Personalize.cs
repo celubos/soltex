@@ -27,7 +27,8 @@ public static class StartFolders
         ("Pictures", new("383F07A0-E80A-4C80-B05A-86DB845DBC4D")),
         ("Videos", new("42B3A5C5-7D86-42F4-80A4-93FACA7A88B5")),
         ("Network", new("FE758144-080D-42AE-8BDA-34ED97B66394")),
-        ("Personal folder", new("74BDB04A-F94A-4F68-8BD6-4398071DA8BC"))
+        // Named as Appearance › Desktop icons names the same folder, so the app calls it one thing everywhere.
+        ("Your user folder", new("74BDB04A-F94A-4F68-8BD6-4398071DA8BC"))
     ];
 
     public static IReadOnlyList<Guid> Read(RegistryKey? root = null)

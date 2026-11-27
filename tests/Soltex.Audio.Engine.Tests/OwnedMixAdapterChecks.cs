@@ -12,10 +12,13 @@ internal static class OwnedMixAdapterChecks
         var mixer = new WasapiStreamMixer(config, (id, _) => { Check(id == "owned:Game", "Capture identity changed"); opens++; return capture; },
             (id, _) => id == "physical:test" ? personal : stream);
         mixer.Start();
-        capture.Emit(2400, .1f, .2f);
+        // The drift-compensating converters keep one read plus one packet and a fade reserve queued, so the producer runs
+        // one 50 ms packet ahead (a pull of exactly what was just written would, correctly, fade out as an underrun).
+        // Packets are separate deliveries, so leave a few milliseconds between them.
+        capture.Emit(2400, .1f, .2f); Thread.Sleep(5); capture.Emit(2400, .1f, .2f);
         float[] own = personal.Pull(2400), broadcast = stream.Pull(2400);
         Check(opens == 1 && capture.Starts == 1, "Owned input opened more than once");
-        Check(mixer.Status.Sources.Single().ProcessedFrames == 2400, "DSP producer frame count duplicated");
+        Check(mixer.Status.Sources.Single().ProcessedFrames == 4800, "DSP producer frame count duplicated");
         Check(Math.Abs(own[^1] - .2) < .00001 && Math.Abs(own[^2] - .2) < .00001, "Input2 did not reach both personal channels");
         Check(Math.Abs(broadcast[^1] - .2 * Math.Pow(10, -6.0/20)) < .0001, "Owned stream output lost its independent send gain");
         mixer.UpdateSource("Game", config.Sources[0].Dsp, new(), new(0, true));

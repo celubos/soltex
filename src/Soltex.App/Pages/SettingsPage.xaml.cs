@@ -18,7 +18,16 @@ public partial class SettingsPage : UserControl, IShellPage
         new("Text and control size", "Settings › Appearance", Destination.Settings, "scale", "zoom", "bigger text", "font size", "accessibility"),
         new("Spacing: comfortable or compact", "Settings › Appearance", Destination.Settings, "density", "compact", "dense"),
         new("Reduce animations", "Settings › Appearance", Destination.Settings, "motion", "animation", "reduced motion"),
-        new("Start when I sign in to Windows", "Settings › Starting and closing", Destination.Settings, "startup", "launch at login", "boot", "autostart"),
+        // How people (and the search hint) put it. Its own entry, because search ranks words found in a title highest and
+        // "Start audio automatically after sign-in" would otherwise come first ("at" is inside "automatically").
+        new("Start at sign-in", "Settings › Start when I sign in to Windows", Destination.Settings, "startup",
+            "start when I sign in to Windows", "sign in", "login", "log in", "startup", "autostart"),
+        // Spelled with and without hyphens: search matches each typed word against these.
+        new("Start when I sign in to Windows", "Settings › Starting and closing", Destination.Settings, "startup",
+            "start at sign-in", "sign-in", "sign in", "signin", "start at sign in", "start with Windows", "launch at login", "log in", "login", "logon",
+            "run at startup", "open at startup", "boot", "autostart", "auto-start"),
+        new("Export or import your setup", "Settings › Your setup", Destination.Settings, "setup",
+            "export", "import", "backup", "back up", "restore", "save settings", "load settings", "profile", "transfer", "move to another PC", "new PC"),
         new("Start audio automatically after sign-in", "Settings › Starting and closing", Destination.Settings, "startaudio", "auto start audio", "resume audio", "microphone at login"),
         new("Start page", "Settings › Starting and closing", Destination.Settings, "startpage", "home page", "default page"),
         new("Ask before quitting while audio is running", "Settings › Starting and closing", Destination.Settings, "confirmquit", "quit", "exit", "close"),
@@ -49,7 +58,9 @@ public partial class SettingsPage : UserControl, IShellPage
     {
         this.context = context;
         InitializeComponent();
-        ProfileHost.Content = new ProfilePanel(context);
+        ProfilePanel profile = new(context);
+        ProfileHost.Content = profile;
+        anchors.Add("setup", profile.ExportButton);
         Intro.Text = $"How {ProductIdentity.DisplayName} looks, starts and behaves.";
         BuildPageChoices();
         anchors.Add("top", Intro);
@@ -156,7 +167,12 @@ public partial class SettingsPage : UserControl, IShellPage
             }
             else
             {
-                StartAtSignIn.IsChecked = SuiteStartupRegistration.IsEnabled();
+                // Task Manager can turn the app off at sign-in without removing its entry; the switch shows that too.
+                SuiteStartupState state = ReadStartup();
+                StartAtSignIn.IsChecked = state == SuiteStartupState.On;
+                StartAtSignInHint.Text = state == SuiteStartupState.TurnedOffInTaskManager
+                    ? "Turned off in Task Manager's Startup apps. Turn this on to start again when you sign in."
+                    : StartAtSignInText;
             }
             StartAudio.IsChecked = s.StartAudioWhenSignedIn;
             StartAudio.IsEnabled = StartAtSignIn.IsChecked == true;
@@ -212,6 +228,15 @@ public partial class SettingsPage : UserControl, IShellPage
 
     private void StartAudio_Changed(object sender, RoutedEventArgs e) =>
         Update(s => s with { StartAudioWhenSignedIn = StartAudio.IsChecked == true });
+
+    private const string StartAtSignInText = "Starts quietly in the notification area.";
+
+    /// <summary>Off when the sign-in entries can't be read (a policy may block them).</summary>
+    private static SuiteStartupState ReadStartup()
+    {
+        try { return SuiteStartupRegistration.State(); }
+        catch (Exception error) when (error is UnauthorizedAccessException or System.Security.SecurityException or IOException) { return SuiteStartupState.Off; }
+    }
 
     private void StartAtSignIn_Changed(object sender, RoutedEventArgs e)
     {

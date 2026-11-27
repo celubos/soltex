@@ -89,7 +89,64 @@ using (var hotplug = new OwnedEndpointBackend(new FakeWindows { Endpoints = [new
     idle.Enumerate();
     Check(idle.TransportOpenAttempts == 23); // a Windows endpoint change (e.g. installing the driver) retries at once
 }
+{
+    // The router's pacing thread and each owned stream input register with MMCSS; every start/stop cycle must release both
+    // (fake scheduler: no real MMCSS calls), so restarting streams all day never accumulates registrations.
+    var scheduler = new FakeScheduler();
+    var previous = AudioThreadScheduling.Scheduler;
+    AudioThreadScheduling.Scheduler = scheduler;
+    try
+    {
+        for (int cycle = 0; cycle < 40; cycle++)
+        {
+            var cycleDevice = new FakeDevice();
+            var router = new OwnedAudioRouter(new OwnedAudioTransport(cycleDevice));
+            var input = new OwnedWaveIn(router, OwnedAudioBus.Chat);
+            input.StartRecording();
+            var wait = System.Diagnostics.Stopwatch.StartNew();
+            while (scheduler.Outstanding < 2 && wait.ElapsedMilliseconds < 2000) Thread.Sleep(1);
+            Check(scheduler.Outstanding == 2); // worker and input thread both registered
+            input.Dispose(); router.Dispose();
+            Check(scheduler.Outstanding == 0);
+        }
+        Check(scheduler.Granted == 80 && scheduler.Reverted == 80 && scheduler.MaximumOutstanding == 2);
+    }
+    finally { AudioThreadScheduling.Scheduler = previous; }
+}
+{
+    // The router pumps every 10 ms on its high-resolution timer (the plain wait it replaced landed on the 15.6 ms timer
+    // tick: about 64 pumps a second instead of 100).
+    var pacedDevice = new FakeDevice();
+    using var paced = new OwnedAudioRouter(new OwnedAudioTransport(pacedDevice));
+    using var subscription = paced.Subscribe(OwnedAudioBus.Game);
+    Thread.Sleep(200);
+    int startReads = pacedDevice.Reads; var clock = System.Diagnostics.Stopwatch.StartNew();
+    Thread.Sleep(1000);
+    double pumpsPerSecond = (pacedDevice.Reads - startReads) / clock.Elapsed.TotalSeconds;
+    Check(paced.HighResolutionPacing);
+    Check(pumpsPerSecond is >= 75 and <= 110);
+    Console.WriteLine($"  Router paced at {pumpsPerSecond:F0} pumps per second on the high-resolution timer.");
+}
 Console.WriteLine($"PASS {checks} owned endpoint adapter checks; fake transport only, no live audio.");
+
+sealed class FakeScheduler : AudioThreadScheduling.IScheduler
+{
+    private readonly object sync = new();
+    private readonly HashSet<nint> held = [];
+    private long next;
+    public int Granted { get; private set; }
+    public int Reverted { get; private set; }
+    public int MaximumOutstanding { get; private set; }
+    public int Outstanding { get { lock (sync) return held.Count; } }
+    public nint Register(string taskName)
+    {
+        lock (sync) { nint handle = (nint)(++next); held.Add(handle); Granted++; MaximumOutstanding = Math.Max(MaximumOutstanding, held.Count); return handle; }
+    }
+    public void Revert(nint handle)
+    {
+        lock (sync) { if (!held.Remove(handle)) throw new InvalidOperationException("Unknown or already reverted MMCSS handle."); Reverted++; }
+    }
+}
 
 sealed class ConstantSource(float value) : ISampleProvider
 {

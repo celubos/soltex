@@ -5,11 +5,13 @@
 Soltex is a Windows desktop app (`src/Soltex.App`) that changes per-user Windows settings, makes administrator changes
 through a short-lived elevated helper, restyles the taskbar through a helper loaded into Explorer, runs audio through
 an unelevated helper process, shows Windows protection status, assesses files dropped into its imports folder, and can
-start a separately installed RustDesk client. The update planner (`src/Soltex.Update`) is a library with no installer
-behind it. The audio broker and driver are source only and are not installed by any build.
+start a separately installed RustDesk client. The update planner (`src/Soltex.Update`) is a library that installs
+nothing. Releases ship a separate, unsigned per-user Inno Setup installer that copies the app folder, adds shortcuts
+and the optional sign-in entry, and quits a running Soltex before replacing or removing files. The audio broker and
+driver are source only and are not installed by any build.
 
 Assets: user files and quarantined payloads, the Windows settings Soltex changes and their journals, allow-list
-decisions, the honesty of displayed protection health, local audit integrity, audio routes and app routing policy,
+decisions, the accuracy of displayed protection health, local audit integrity, audio routes and app routing policy,
 release and metadata signing keys, update policy and staged artifacts, the approved RustDesk fingerprint, and the
 user's intent behind each remote session.
 
@@ -99,9 +101,10 @@ assessment and later use; consumers must use the validated handle or re-check.
 ### Settings changes and the elevated helper
 
 A same-user attacker can write the request file, but it can only name catalogue entries and still needs the user to
-accept the UAC prompt; a redirected request folder is refused. The journals are plain per-user files: a same-user
-attacker can edit them to make undo skip a value, but undo still writes only catalogue values and only where the
-current value matches the journal. App removals are not reversible from Soltex and say so before running.
+accept the UAC prompt; a redirected request folder is refused. The administrator journal is in
+`%ProgramData%\Soltex\System`, which only administrators can change. The per-user journal is a plain per-user file: a
+same-user attacker can edit it to make undo skip a value, but undo still writes only catalogue values and only where
+the current value matches the journal. App removals are not reversible from Soltex and say so before running.
 
 ### Taskbar helper
 
@@ -122,6 +125,15 @@ Every routing change is journaled and undo restores only values that still match
 Covered in [SUPPLY_CHAIN_SECURITY.md](SUPPLY_CHAIN_SECURITY.md): exact-byte signatures, publisher subject and key
 pins, anti-rollback sequence state, bounded ZIP staging, pinned HTTPS and a non-installing planner. Production keys,
 pins and a release source are not configured.
+
+### Installer and release workflow
+
+The installer and the binaries are not code-signed, so a user who downloads them from somewhere other than the GitHub
+release has only `SHA256SUMS.txt` to check them against. The installer runs unelevated and writes only the user's
+Programs folder, Start menu, uninstall entry and Run value. The release workflow builds it only from a zip whose hash
+matches `SHA256SUMS.txt` and whose `BUILD.json` names the tagged commit, a clean tree and a passed test run, and it
+passes the write token only to the steps that download from and upload to the release. Inno Setup is pinned to one
+version. Details: [SUPPLY_CHAIN_SECURITY.md](SUPPLY_CHAIN_SECURITY.md), section 8.
 
 ### Quarantine and allow list
 

@@ -1,22 +1,25 @@
-<UserControl x:Class="Soltex.App.Pages.HistoryPage"
+﻿<UserControl x:Class="Soltex.App.Pages.HistoryPage"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:Soltex.App.Controls">
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
         <Grid Margin="{DynamicResource Shell.PagePadding}">
-        <Grid.ColumnDefinitions><ColumnDefinition Width="*" MaxWidth="900" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*" MaxWidth="{DynamicResource Shell.PageMaxWidth}" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
         <StackPanel>
             <TextBlock Style="{StaticResource Shell.PageTitle}" Text="History" />
+            <!-- "De&#x2011;Windows" uses a non-breaking hyphen, so a narrow page never splits the name across lines. -->
             <TextBlock x:Name="Intro" Style="{StaticResource Shell.PageSubtitle}"
-                       Text="Changes this app made to Windows, newest first. Undo puts back what was there before, unless you or another app changed it since. Full De-Windows changes are undone on Home." />
+                       Text="Windows settings this app changed, newest first. Undo puts back what was there before, unless you or another app changed it since. Full De&#x2011;Windows changes are undone on Home. Quick options such as the taskbar look, auto-hide, Start folders and startup apps aren't listed here; switch them back to undo them." />
             <Border Style="{StaticResource Shell.Card}">
                 <StackPanel>
                     <DockPanel x:Name="HeaderRow" Margin="0,0,0,8">
-                        <Button x:Name="UndoAllButton" DockPanel.Dock="Right" Content="Undo all…" Click="UndoAll_Click"
+                        <Button x:Name="UndoAllButton" DockPanel.Dock="Right" Content="Undo all…" Click="UndoAll_Click" Margin="12,0,0,0" VerticalAlignment="Top"
                                 AutomationProperties.HelpText="Undo every setting change listed here that can still be undone. Full De-Windows changes are undone on Home." />
-                        <TextBlock x:Name="Summary" Style="{StaticResource Shell.Body}" VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite" />
+                        <!-- Read out by screen readers when an undo changes it. -->
+                        <TextBlock x:Name="Summary" Style="{StaticResource Shell.Body}" VerticalAlignment="Center" controls:LiveRegion.IsLive="True" />
                     </DockPanel>
                     <TextBlock x:Name="EmptyText" Style="{StaticResource Shell.Secondary}"
-                               Text="No changes yet. Changes you make on Home, Taskbar, Start, File Explorer, Appearance, Multitasking and Privacy appear here." />
+                               Text="No changes yet. Windows settings you change on Home, Taskbar, Start, File Explorer, Appearance, Multitasking and Privacy are listed here so you can undo them. Quick options such as the taskbar look, auto-hide, Start folders, the pointer, automatic dark mode, the Desktop page's switches and startup apps aren't listed; switch them back to undo them." />
                     <ItemsControl x:Name="ChangeList" Focusable="False" AutomationProperties.Name="Changes">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>

@@ -37,18 +37,41 @@ Settings, the change history and audio profiles are stored in:
 
     %LOCALAPPDATA%\Soltex
 
+The history of Home > Full De-Windows (administrator) changes is kept
+where only administrators can change it:
+
+    %ProgramData%\Soltex\System
+
 Nothing is sent over the internet. Soltex has no account and no telemetry.
 
 Removing Soltex
 ---------------
+If you installed with setup.exe, uninstall from Settings > Apps >
+Installed apps instead of steps 3 to 5 (do steps 1 and 2 first). The
+uninstaller quits Soltex for you.
+
 1. Undo the changes you want to reverse: turn the features off again, or
    open History and choose Undo (or "Undo all..."). Administrator changes
    from Home > Full De-Windows are undone there with "Undo system
    changes". Apps you chose to remove are not reinstalled by Undo.
-2. In Settings, turn off "Start when I sign in to Windows" if you turned
+2. If you changed the taskbar look, open Taskbar, set the look to
+   "Windows default" and turn off the taskbar details you turned on.
+   Otherwise the taskbar keeps its look until you sign out or restart.
+3. In Settings, turn off "Start when I sign in to Windows" if you turned
    it on.
-3. Quit Soltex from the tray icon.
-4. Delete this folder and the %LOCALAPPDATA%\Soltex folder.
+4. Quit Soltex from the tray icon.
+5. Delete this folder.
+
+Your settings stay in %LOCALAPPDATA%\Soltex and in the registry key
+HKCU\Software\Soltex. To remove them too, sign out or restart Windows
+first (the taskbar helper stays loaded in File Explorer until then),
+then delete that folder and that key.
+
+If you used Full De-Windows, its change history stays in
+%ProgramData%\Soltex\System, so Soltex can still undo those changes
+after a reinstall. Deleting that folder needs administrator rights, and
+afterwards those changes can no longer be undone from Soltex. Undo them
+first (step 1) if you want them reversed.
 
 Soltex is free and open source under the MIT License (LICENSE.txt).
 

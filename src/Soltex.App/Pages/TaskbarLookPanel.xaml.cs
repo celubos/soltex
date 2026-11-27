@@ -7,6 +7,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Soltex.App.Controls;
 using Soltex.App.Settings;
 using Soltex.App.Shell;
 
@@ -35,7 +36,7 @@ public partial class TaskbarLookPanel : UserControl
             "Change the look when Start is open", ["start menu", "dynamic"]),
         new(TaskbarState.SearchOpen, "Search open", "Taskbar when Search is open", "Used while Search is open on the taskbar's display.",
             "Change the look when Search is open", ["search box", "windows search", "dynamic"]),
-        new(TaskbarState.TaskViewOpen, "Task View open", "Taskbar when Task View is open", "Used while Task View is open on the taskbar's display.",
+        new(TaskbarState.TaskViewOpen, "Task View open", "Taskbar when Task View is open", "Used on every display while Task View is open.",
             "Change the look when Task View is open", ["task view", "virtual desktops", "win+tab"]),
         new(TaskbarState.BatterySaver, "Battery saver", "Taskbar in battery saver",
             "Used on every display while battery saver is on, unless Start, Search or Task View is open.",
@@ -60,6 +61,9 @@ public partial class TaskbarLookPanel : UserControl
     /// <summary>Windows 11 draws its taskbar with XAML; earlier versions are not supported.</summary>
     private static readonly bool Supported = Environment.OSVersion.Version.Build >= 22000;
 
+    /// <summary>Width of a Studio.Switch without a label: the space the Desktop row keeps so its chevron lines up.</summary>
+    private const double SwitchWidth = 44;
+
     /// <summary>One state's row.</summary>
     private sealed record Row(StateInfo Info, ExpandButton Header, TextBlock Summary, CheckBox? Switch, Border Host);
 
@@ -81,8 +85,8 @@ public partial class TaskbarLookPanel : UserControl
     public TaskbarLookPanel()
     {
         InitializeComponent();
-        note = new TextBlock { Style = Resource<Style>("Shell.Secondary"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(22, 0, 0, 4), Visibility = Visibility.Collapsed };
-        AutomationProperties.SetLiveSetting(note, AutomationLiveSetting.Polite);
+        note = new TextBlock { Style = Resource<Style>("Shell.Secondary"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 4), Visibility = Visibility.Collapsed };
+        LiveRegion.SetIsLive(note, true); // screen readers read a new problem as it shows
 
         description = new TextBlock { Style = Resource<Style>("Shell.Secondary"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 2) };
         styleList = new ComboBox { MinWidth = 220, ItemsSource = Styles.Select(s => s.Label).ToArray() };
@@ -111,7 +115,8 @@ public partial class TaskbarLookPanel : UserControl
         colorRow = EditorRow("Color", colors);
         opacityRow = EditorRow("Opacity", new StackPanel { Orientation = Orientation.Horizontal, Children = { opacitySlider, opacityText } });
         StackPanel editor = new() { Children = { description, EditorRow("Style", styleList), colorRow, opacityRow, EditorRow("Line above the taskbar", lineSwitch) } };
-        editorFrame = new Border { BorderThickness = new Thickness(0, 1, 0, 0), Margin = new Thickness(0, 8, 0, 0), Padding = new Thickness(22, 8, 0, 2), Child = editor };
+        // Editor labels line up with the row titles (and every other row's label on the page).
+        editorFrame = new Border { BorderThickness = new Thickness(0, 1, 0, 0), Margin = new Thickness(0, 8, 0, 0), Padding = new Thickness(0, 8, 0, 2), Child = editor };
         editorFrame.SetResourceReference(Border.BorderBrushProperty, "Studio.StrokeBrush");
 
         foreach (StateInfo info in States) Rows.Children.Add(BuildRow(info));
@@ -231,16 +236,18 @@ public partial class TaskbarLookPanel : UserControl
         lineSwitch.IsChecked = look.Line;
         AutomationProperties.SetName(lineSwitch, title + ": line above the taskbar");
 
+        // The chosen colour is marked by its ring and, for screen readers, by ", selected" in its name.
         Brush selected = Resource<Brush>("Studio.AccentBrush");
         uint rgb = look.Color & 0xFFFFFF;
         foreach (Button swatch in swatches.Children.OfType<Button>())
         {
-            swatch.BorderBrush = !look.UseAccent && (uint)swatch.Tag == rgb ? selected : Brushes.Transparent;
-            AutomationProperties.SetName(swatch, title + " color: " + swatch.ToolTip);
+            bool chosen = !look.UseAccent && (uint)swatch.Tag == rgb;
+            swatch.BorderBrush = chosen ? selected : Brushes.Transparent;
+            AutomationProperties.SetName(swatch, title + " color: " + swatch.ToolTip + (chosen ? ", selected" : ""));
         }
         if (colorRow.Visibility == Visibility.Visible) accentSwatch.Background = new SolidColorBrush(ToColor(TaskbarStateProbe.AccentColor()));
         accentSwatch.BorderBrush = look.UseAccent ? selected : Brushes.Transparent;
-        AutomationProperties.SetName(accentSwatch, title + " color: Windows accent color");
+        AutomationProperties.SetName(accentSwatch, title + " color: Windows accent color" + (look.UseAccent ? ", selected" : ""));
         AutomationProperties.SetName(customButton, "Choose a custom color: " + title);
     }
 
@@ -253,20 +260,27 @@ public partial class TaskbarLookPanel : UserControl
         header.Checked += Header_Changed;
         header.Unchecked += Header_Changed;
 
+        // The header fills the first column (title at the row's left edge, its chevron at the column's right edge); the
+        // switch has the second column to itself, so the two never overlap at any width or text size. Desktop has no
+        // switch: an empty space of the same width keeps its chevron in line with the other rows'.
         Grid top = new();
         top.ColumnDefinitions.Add(new ColumnDefinition());
         top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         top.Children.Add(header);
         CheckBox? toggle = null;
+        FrameworkElement end;
         if (info.SwitchName is { } switchName)
         {
-            toggle = new CheckBox { Style = Resource<Style>("Studio.Switch"), Tag = info.State, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) };
+            toggle = new CheckBox { Style = Resource<Style>("Studio.Switch"), Tag = info.State, VerticalAlignment = VerticalAlignment.Center };
             AutomationProperties.SetName(toggle, switchName);
             toggle.Checked += Switch_Changed;
             toggle.Unchecked += Switch_Changed;
-            Grid.SetColumn(toggle, 1);
-            top.Children.Add(toggle);
+            end = toggle;
         }
+        else end = new Border { Width = SwitchWidth };
+        end.Margin = new Thickness(16, 0, 0, 0);
+        Grid.SetColumn(end, 1);
+        top.Children.Add(end);
 
         StackPanel body = new() { Children = { top } };
         if (info.State == TaskbarState.Desktop) body.Children.Add(note); // problems show under the first row, as the details' do

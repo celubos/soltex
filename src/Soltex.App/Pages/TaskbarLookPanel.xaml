@@ -20,7 +20,9 @@
             </Setter>
         </Style>
 
-        <!-- A state's row header: chevron, title and a short summary of its look. Opens and closes the row's editor. -->
+        <!-- A state's row header: title and a short summary of its look, then a chevron at the header's right edge. The title
+             starts where every other row's label does; the row's switch has its own column after the header, never over it.
+             Opens and closes the row's editor. -->
         <Style x:Key="StateHeader" TargetType="ToggleButton">
             <Setter Property="Foreground" Value="{DynamicResource Studio.TextBrush}" />
             <Setter Property="Cursor" Value="Hand" />
@@ -32,15 +34,15 @@
                     <ControlTemplate TargetType="ToggleButton">
                         <Border Background="Transparent" Padding="0,4">
                             <Grid>
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="22" /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                <TextBlock x:Name="Chevron" Text="&#xE76C;" FontFamily="{StaticResource Shell.IconFont}" FontSize="11"
-                                           VerticalAlignment="Center" Foreground="{DynamicResource Studio.TextSecondaryBrush}" />
-                                <ContentPresenter Grid.Column="1" VerticalAlignment="Center" />
+                                <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <ContentPresenter VerticalAlignment="Center" />
+                                <TextBlock x:Name="Chevron" Grid.Column="1" Text="&#xE70D;" FontFamily="{StaticResource Shell.IconFont}" FontSize="11"
+                                           Margin="12,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource Studio.TextSecondaryBrush}" />
                             </Grid>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Chevron" Property="Text" Value="&#xE70D;" />
+                                <Setter TargetName="Chevron" Property="Text" Value="&#xE70E;" />
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Chevron" Property="Foreground" Value="{DynamicResource Studio.AccentTextBrush}" />

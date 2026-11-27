@@ -158,7 +158,7 @@ internal static class Program
         micDialog.Observe(new(false, AudioHostProfile.CreateDefault(), [], micDevices, null) { MicrophoneTest = new("interface-input", true, 96000, 2, 960, [.00001f, .25f], [.000005f, .1f], null) });
         Check(Descendants<TextBlock>(micFixture).Any(t => t.Text.Contains("Signal detected on Input 2", StringComparison.Ordinal)) && selectors[1].SelectedValue as string == "all",
             "measured input-two signal recommends centered input without silently changing the user's channel selection");
-        Descendants<Button>(micFixture).Single(b => Equals(b.Content, "Test input for 15 seconds")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Descendants<Button>(micFixture).Single(b => Equals(b.Content, "Test input for " + MicrophonePath.TestDurationText)).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Check(probeRequests == 1, "capture-only microphone test requires an explicit test button action");
         if (renderDirectory is not null)
         {
@@ -203,6 +203,7 @@ internal static class Program
         MicrophoneSetupChecks.Run(Check);
         ResponsiveLayoutChecks.Run(Check);
         DspWindowChecks.Run(Check);
+        await ReliabilityChecks.RunAsync(Check);
         Console.WriteLine($"{checks}/{checks} independent UI checks passed. Inert host fixture only; no process launch, device stream or Windows audio write.");
     }
 

@@ -95,6 +95,70 @@ internal static class AudioLayoutChecks
     }
 
     /// <summary>
+    /// Every Audio tab is as wide as the others (a tab with little content doesn't narrow the page), nothing in the page
+    /// sets a TabIndex (the embedded Sonar section used to jump ahead of the window's own controls), and Sonar starts with
+    /// the app only when its device shortcuts or automatic output selection are on (never in a capture or layout check).
+    /// </summary>
+    public static void PageKeepsOneWidthTabOrderAndSonarStartRule()
+    {
+        List<string> problems = [];
+        bool preview = AudioPreview.Enabled, sonar = AudioPage.SonarInstalled;
+        AudioPreview.Enabled = true;
+        AudioPage.SonarInstalled = true;
+        string root = Path.Combine(Path.GetTempPath(), "soltex-audio-start-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            ThemeService.Apply(Application.Current, new AppSettings { Theme = ThemePreference.Dark });
+            using (Shell shell = new(ThemePreference.Dark))
+            {
+                AudioPage page = (AudioPage)shell.Window.Page(Destination.Audio);
+                shell.Window.Navigate(Destination.Audio);
+                Pump();
+                foreach (int width in new[] { 1280, 1600 })
+                {
+                    RenderSmokeCapture.ConfigureWindow(shell.Window, width, WindowHeight);
+                    Dictionary<string, double> widths = [];
+                    foreach (string tab in new[] { "playback", "microphone", "apps", "sonar" })
+                    {
+                        page.Reveal(tab);
+                        Pump();
+                        shell.Window.UpdateLayout();
+                        Pump();
+                        widths[tab] = page.ActualWidth;
+                        foreach (Control control in Descendants(page).OfType<Control>().Where(c => c.IsVisible))
+                            if (control.ReadLocalValue(Control.TabIndexProperty) != DependencyProperty.UnsetValue)
+                                problems.Add($"{width}px {tab}: {Describe(control)} sets TabIndex {control.TabIndex}");
+                    }
+                    if (widths.Values.Distinct().Count() != 1)
+                        problems.Add($"{width}px: the tabs have different widths: " + string.Join(", ", widths.Select(w => $"{w.Key} {w.Value:0}")));
+                }
+            }
+
+            Directory.CreateDirectory(Path.Combine(root, "Channels"));
+            AudioPreview.Enabled = false;
+            if (AudioPage.SonarRunsInBackground(root)) problems.Add("Sonar starts with the app although its shortcuts and automatic output selection are off.");
+            File.WriteAllText(Path.Combine(root, "Channels", "preferences.json"), "{\"Version\":1,\"Shortcuts\":true}");
+            if (!AudioPage.SonarRunsInBackground(root)) problems.Add("Sonar's device shortcuts are on, but Sonar would wait for its tab to be opened.");
+            File.Delete(Path.Combine(root, "Channels", "preferences.json"));
+            File.WriteAllText(Path.Combine(root, "Channels", "device-policy.json"), "{\"Version\":1,\"Enabled\":true}");
+            if (!AudioPage.SonarRunsInBackground(root)) problems.Add("Automatic output selection is on, but Sonar would wait for its tab to be opened.");
+            AudioPage.SonarInstalled = false;
+            if (AudioPage.SonarRunsInBackground(root)) problems.Add("Sonar would start although it isn't installed.");
+            AudioPage.SonarInstalled = true;
+            AudioPreview.Enabled = true;
+            if (AudioPage.SonarRunsInBackground(root)) problems.Add("A capture or layout check would start Sonar.");
+        }
+        finally
+        {
+            AudioPreview.Enabled = preview;
+            AudioPage.SonarInstalled = sonar;
+            ThemeService.Apply(Application.Current, new AppSettings());
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+        if (problems.Count > 0) throw new InvalidOperationException(string.Join("\n      ", problems.Take(20)));
+    }
+
+    /// <summary>
     /// Opens the parts that start hidden, so they are checked too: the microphone setup form and, on the Mixer, the
     /// bar that asks to apply a staged change (made by switching Aux on in the made-up state; nothing is applied).
     /// </summary>

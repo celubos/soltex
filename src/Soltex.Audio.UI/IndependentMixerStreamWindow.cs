@@ -48,8 +48,8 @@ internal sealed class IndependentMixerStreamWindow : Window
             string source = snapshot.Endpoints.FirstOrDefault(e => e.Id == channel.CaptureEndpointId)?.Name ?? "No source";
             Text(channel.Bus + (channel.Enabled ? " · " + source : " · off"), 14);
             WrapPanel row = new() { IsEnabled = channel.Enabled, Margin = new Thickness(0, 0, 0, 8) }; body.Children.Add(row);
-            var personal = SendControls(row, "You hear", send.PersonalGainDb, send.PersonalMute);
-            var stream = SendControls(row, "Stream", send.StreamGainDb, send.StreamMute);
+            var personal = SendControls(row, channel.Bus.ToString(), "You hear", "your mix", send.PersonalGainDb, send.PersonalMute);
+            var stream = SendControls(row, channel.Bus.ToString(), "Stream", "the stream mix", send.StreamGainDb, send.StreamMute);
             sends.Add(channel.Bus, (personal.Gain, personal.Mute, stream.Gain, stream.Mute));
         }
         Text("Channel level, mute and sound settings change both mixes. The overall level and the Game and Chat balance change only what you hear. Closing this window keeps audio running.");
@@ -69,15 +69,20 @@ internal sealed class IndependentMixerStreamWindow : Window
         var block = new TextBlock { Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, size > 13 ? 12 : 4, 0, 5) };
         block.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush"); body.Children.Add(block);
     }
-    private (Slider Gain, CheckBox Mute) SendControls(Panel parent, string name, double gain, bool muted)
+    /// <summary>
+    /// One send: a level and a mute. Their accessible names include the channel and the mix ("Game level in your mix",
+    /// "Mute Game in the stream mix"), so a screen reader can tell the rows apart.
+    /// </summary>
+    private (Slider Gain, CheckBox Mute) SendControls(Panel parent, string channel, string name, string mix, double gain, bool muted)
     {
         StackPanel group = new() { Width = 350, Margin = new Thickness(0, 0, 14, 0) }; parent.Children.Add(group);
-        TextBlock label = new() { Text = name + " · " + gain.ToString("0.0", CultureInfo.CurrentCulture) + " dB" }; label.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush"); group.Children.Add(label);
+        TextBlock label = new() { Text = name + " · " + MicrophonePath.Decibels(gain) }; label.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush"); group.Children.Add(label);
         DockPanel line = new(); group.Children.Add(line);
         CheckBox mute = new() { Content = "Mute", IsChecked = muted, Margin = new Thickness(10, 0, 0, 0) }; DockPanel.SetDock(mute, Dock.Right); line.Children.Add(mute);
+        System.Windows.Automation.AutomationProperties.SetName(mute, "Mute " + channel + " in " + mix);
         Slider slider = new() { Minimum = -80, Maximum = 12, Value = gain, SmallChange = 1, LargeChange = 5 };
-        System.Windows.Automation.AutomationProperties.SetName(slider, name + " send gain"); line.Children.Add(slider);
-        slider.ValueChanged += (_, _) => { label.Text = name + " · " + slider.Value.ToString("0.0", CultureInfo.CurrentCulture) + " dB"; Changed(slider, new RoutedEventArgs()); };
+        System.Windows.Automation.AutomationProperties.SetName(slider, channel + " level in " + mix); line.Children.Add(slider);
+        slider.ValueChanged += (_, _) => { label.Text = name + " · " + MicrophonePath.Decibels(slider.Value); Changed(slider, new RoutedEventArgs()); };
         mute.Checked += Changed; mute.Unchecked += Changed;
         return (slider, mute);
     }
@@ -101,7 +106,7 @@ internal sealed class IndependentMixerStreamWindow : Window
         start.IsEnabled = !busy && !dirty && !snapshot.StartRequested && !snapshot.Running && snapshot.StreamMix is null;
         stop.IsEnabled = !busy && (snapshot.StartRequested || snapshot.Running || snapshot.StreamMix is not null);
         var status = snapshot.StreamMix;
-        string Db(float value) => value > 0 ? (20 * Math.Log10(value)).ToString("0.0", CultureInfo.CurrentCulture) + " dBFS" : "silence";
+        string Db(float value) => value > 0 ? MicrophonePath.Dbfs(20 * Math.Log10(value), "0.0") + " dBFS" : "silence";
         meters.Text = status is null ? "Stream mix is off. Apply your choices, then choose Start stream mix."
             : status.Failure is not null ? "Stream mix failed: " + status.Failure + ". Stop audio before retrying."
             : (status.Running ? "On" : "Off") + " · You hear " + Db(status.PersonalPeak) + " · Stream " + Db(status.StreamPeak);

@@ -16,8 +16,14 @@ internal readonly record struct TaskbarWindowFacts(nint Window, nint Monitor);
 internal readonly record struct WindowFacts(nint Window, nint Monitor, string ClassName, bool Visible, bool Minimized, bool Maximized,
     bool Cloaked, bool ToolWindow, bool OnScreen, bool OwnedByThisApp);
 
-/// <summary>The foreground window: its display, its process's file name, its class and (only for Explorer's switcher windows) its title.</summary>
-internal readonly record struct ForegroundFacts(nint Window, nint Monitor, string Process, string ClassName, string Title);
+/// <summary>
+/// The foreground window: its display, its process's file name, its class and (only for Explorer's switcher windows) its
+/// title. <see cref="Shown"/> is false while it is hidden or cloaked: Start and Search cloak themselves when they close and
+/// may stay the foreground window for a while. <see cref="AltDown"/> (switcher windows only) is true while Alt is held, as
+/// it is for Alt+Tab; <see cref="EnglishTitles"/> says Windows shows its window titles in English.
+/// </summary>
+internal readonly record struct ForegroundFacts(nint Window, nint Monitor, string Process, string ClassName, string Title, bool Shown = true,
+    bool AltDown = false, bool EnglishTitles = true);
 
 /// <summary>Everything the taskbar states depend on at one moment. Facts that no enabled state needs are left empty.</summary>
 internal sealed record DesktopSnapshot(IReadOnlyList<TaskbarWindowFacts> Taskbars, IReadOnlyList<WindowFacts> Windows, ForegroundFacts? Foreground, bool BatterySaver);
@@ -44,11 +50,13 @@ internal static class TaskbarStateRules
         new[] { "Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd" }.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>
-    /// Titles of Explorer's Task View window. Its window class is shared with Alt+Tab and Snap Assist, so the title tells
-    /// them apart. Windows translates the title: on other display languages Task View may not be recognised, and the
-    /// taskbar then simply keeps the look of the next state that applies.
+    /// Titles of Explorer's Task View window in English. Its window class is shared with Alt+Tab and Snap Assist, so on an
+    /// English display the title tells them apart.
     /// </summary>
     private static readonly FrozenSet<string> TaskViewTitles = new[] { "Task View" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>English titles of the other windows of that class (Alt+Tab), never Task View whatever the display language.</summary>
+    private static readonly FrozenSet<string> OtherSwitcherTitles = new[] { "Task Switching" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The state that wins among <paramref name="active"/>: the first enabled one in <see cref="Precedence"/>.</summary>
     public static TaskbarState Winner(IEnumerable<TaskbarState> active, IReadOnlyDictionary<TaskbarState, TaskbarStateLook> looks)
@@ -69,21 +77,29 @@ internal static class TaskbarStateRules
         && !ShellClasses.Contains(window.ClassName);
 
     /// <summary>
-    /// The state the foreground window stands for, or null. Start and Search are recognised by their process
-    /// (StartMenuExperienceHost.exe; SearchHost.exe, or SearchApp.exe before Windows 11). Task View is recognised by
-    /// its window first (Explorer's XamlExplorerHostIslandWindow, or MultitaskingViewFrame on older builds), then by its
-    /// title, because Alt+Tab and Snap Assist use the same window class.
+    /// The state the foreground window stands for, or null. A hidden or cloaked window stands for nothing: Start and Search
+    /// cloak themselves when they close. Start and Search are recognised by their process (StartMenuExperienceHost.exe;
+    /// SearchHost.exe, or SearchApp.exe before Windows 11). Task View is Explorer's XamlExplorerHostIslandWindow (or
+    /// MultitaskingViewFrame on older builds), a class it shares with Alt+Tab and Snap Assist: on an English display the
+    /// title "Task View" tells them apart. Windows translates titles, so on other display languages any window of that
+    /// class counts unless it has Alt+Tab's English title or Alt is held (Alt+Tab shows only while Alt is down); Snap
+    /// Assist may then count as Task View too.
     /// </summary>
     public static TaskbarState? Opened(in ForegroundFacts foreground)
     {
+        if (!foreground.Shown) return null;
         string process = Path.GetFileName(foreground.Process);
         if (process.Equals("StartMenuExperienceHost.exe", StringComparison.OrdinalIgnoreCase)) return TaskbarState.StartOpen;
         if (process.Equals("SearchHost.exe", StringComparison.OrdinalIgnoreCase) || process.Equals("SearchApp.exe", StringComparison.OrdinalIgnoreCase))
             return TaskbarState.SearchOpen;
-        if (process.Equals("explorer.exe", StringComparison.OrdinalIgnoreCase) && IsSwitcherClass(foreground.ClassName) && TaskViewTitles.Contains(foreground.Title))
+        if (process.Equals("explorer.exe", StringComparison.OrdinalIgnoreCase) && IsSwitcherClass(foreground.ClassName) && IsTaskView(foreground))
             return TaskbarState.TaskViewOpen;
         return null;
     }
+
+    private static bool IsTaskView(in ForegroundFacts foreground) =>
+        TaskViewTitles.Contains(foreground.Title)
+        || (!foreground.EnglishTitles && !foreground.AltDown && !OtherSwitcherTitles.Contains(foreground.Title));
 
     /// <summary>Explorer's window classes that may be Task View (the title is needed to be sure).</summary>
     public static bool IsSwitcherClass(string className) =>
@@ -91,7 +107,8 @@ internal static class TaskbarStateRules
 
     /// <summary>
     /// The winning state for each taskbar. Each taskbar has the states of its own display: a window visible or maximized
-    /// there, Start, Search or Task View open there; battery saver applies to every display.
+    /// there, Start or Search open there. Task View (Windows shows it on every display) and battery saver apply to every
+    /// display.
     /// </summary>
     public static IReadOnlyList<(nint Taskbar, TaskbarState State)> Evaluate(DesktopSnapshot snapshot, IReadOnlyDictionary<TaskbarState, TaskbarStateLook> looks)
     {
@@ -103,7 +120,7 @@ internal static class TaskbarStateRules
         {
             List<TaskbarState> active = [TaskbarState.Desktop];
             if (snapshot.BatterySaver) active.Add(TaskbarState.BatterySaver);
-            if (opened is { } open && openedOn == taskbar.Monitor) active.Add(open);
+            if (opened is { } open && (open == TaskbarState.TaskViewOpen || openedOn == taskbar.Monitor)) active.Add(open);
             foreach (WindowFacts window in snapshot.Windows)
             {
                 if (window.Monitor != taskbar.Monitor || !Counts(window)) continue;
@@ -153,7 +170,7 @@ internal static class TaskbarStateRules
 internal static unsafe partial class TaskbarStateProbe
 {
     private const uint MonitorDefaultToNull = 0, MonitorDefaultToNearest = 2, Owner = 4, QueryLimitedInformation = 0x1000;
-    private const int ExStyle = -20, ToolWindowStyle = 0x80, Cloaked = 14;
+    private const int ExStyle = -20, ToolWindowStyle = 0x80, Cloaked = 14, AltKey = 0x12;
     /// <summary>Windows' default blue, used when the accent colour cannot be read.</summary>
     public const uint FallbackAccent = 0x0078D4;
 
@@ -208,9 +225,18 @@ internal static unsafe partial class TaskbarStateProbe
         if (window == 0) return null;
         string className = ClassName(window);
         _ = TaskbarNative.GetWindowThreadProcessId(window, out uint process);
-        string title = TaskbarStateRules.IsSwitcherClass(className) ? Title(window) : "";
-        return new ForegroundFacts(window, StateNative.MonitorFromWindow(window, MonitorDefaultToNearest), ProcessFile(process), className, title);
+        int cloaked = 0;
+        bool shown = TaskbarNative.IsWindowVisible(window)
+            && !(TaskbarNative.DwmGetWindowAttribute(window, Cloaked, &cloaked, sizeof(int)) == 0 && cloaked != 0);
+        bool switcher = TaskbarStateRules.IsSwitcherClass(className);
+        string title = switcher ? Title(window) : "";
+        bool alt = switcher && (StateNative.GetAsyncKeyState(AltKey) & 0x8000) != 0;
+        return new ForegroundFacts(window, StateNative.MonitorFromWindow(window, MonitorDefaultToNearest), ProcessFile(process), className, title,
+            shown, alt, EnglishTitles);
     }
+
+    /// <summary>True when Windows' display language is English (window titles such as "Task View" are then in English).</summary>
+    private static readonly bool EnglishTitles = (StateNative.GetUserDefaultUILanguage() & 0x3FF) == 0x09; // LANG_ENGLISH
 
     /// <summary>True while Windows' battery saver (energy saver) is on.</summary>
     public static bool BatterySaverOn() => StateNative.GetSystemPowerStatus(out StateNative.PowerStatus status) && status.SystemStatusFlag == 1;
@@ -281,6 +307,11 @@ internal sealed unsafe class WindowEvents : IDisposable
         (0x0003, 0x0003), // EVENT_SYSTEM_FOREGROUND
         (0x8017, 0x8018)  // EVENT_OBJECT_CLOAKED..UNCLOAKED (Start and Search hide by cloaking)
     ];
+    /// <summary>
+    /// EVENT_OBJECT_HIDE, for the foreground alone: Task View may hide its window rather than cloak it, and the foreground
+    /// can stay on a closed window. <see cref="WindowRanges"/> already include it.
+    /// </summary>
+    private static readonly (uint Min, uint Max)[] HideRange = [(0x8003, 0x8003)];
     private static readonly (uint Min, uint Max)[] WindowRanges =
     [
         (0x0016, 0x0017), // EVENT_SYSTEM_MINIMIZESTART..MINIMIZEEND
@@ -311,8 +342,9 @@ internal sealed unsafe class WindowEvents : IDisposable
         if (kinds == WindowEventKinds.None) return;
         watchers.Add(this);
         delegate* unmanaged<nint, uint, nint, int, int, uint, uint, void> callback = &OnEvent;
-        IEnumerable<(uint, uint)> ranges = (kinds.HasFlag(WindowEventKinds.Foreground) ? ForegroundRanges : [])
-            .Concat(kinds.HasFlag(WindowEventKinds.Windows) ? WindowRanges : []);
+        bool foreground = kinds.HasFlag(WindowEventKinds.Foreground), windows = kinds.HasFlag(WindowEventKinds.Windows);
+        IEnumerable<(uint, uint)> ranges = (foreground ? ForegroundRanges : []).Concat(foreground && !windows ? HideRange : [])
+            .Concat(windows ? WindowRanges : []);
         foreach ((uint min, uint max) in ranges)
         {
             nint hook = TaskbarNative.SetWinEventHook(min, max, 0, (nint)callback, 0, 0, OutOfContext);
@@ -407,6 +439,17 @@ internal static unsafe partial class StateNative
     [LibraryImport("kernel32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool GetSystemPowerStatus(out PowerStatus status);
+
+    /// <summary>Creation, exit, kernel and user times of a process (FILETIMEs).</summary>
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetProcessTimes(nint process, out long creation, out long exit, out long kernel, out long user);
+
+    [LibraryImport("kernel32.dll")]
+    internal static partial ushort GetUserDefaultUILanguage();
+
+    [LibraryImport("user32.dll")]
+    internal static partial short GetAsyncKeyState(int key);
 
     [LibraryImport("user32.dll")]
     internal static partial nint RegisterPowerSettingNotification(nint recipient, in Guid setting, uint flags);

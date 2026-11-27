@@ -15,14 +15,15 @@ body:
       label: Steps to reproduce
       placeholder: |
         1. Open Taskbar
-        2. Set Background to Blur
-        3. ...
+        2. Under Look, open Window maximized, turn it on and set Style to Blur
+        3. Maximize a window on the second display
+        4. ...
   - type: input
     id: soltex
     attributes:
       label: Soltex version
       description: Settings › About
-      placeholder: "1.0.0"
+      placeholder: "1.1.0"
     validations:
       required: true
   - type: input

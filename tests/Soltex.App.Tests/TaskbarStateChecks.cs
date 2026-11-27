@@ -91,6 +91,27 @@ internal static class TaskbarStateChecks
         foreach ((ForegroundFacts window, TaskbarState? state) in foregrounds)
             Program.True(TaskbarStateRules.Opened(window) == state, $"{Path.GetFileName(window.Process)} {window.ClassName} \"{window.Title}\" must be {state?.ToString() ?? "nothing"}.");
 
+        // Closed but still the foreground window (Start and Search cloak themselves; Task View may hide its window): nothing is open.
+        Program.True(TaskbarStateRules.Opened(start with { Shown = false }) is null, "A cloaked Start must not count as open.");
+        Program.True(TaskbarStateRules.Opened(foregrounds[1].Window with { Shown = false }) is null, "A cloaked Search must not count as open.");
+        Program.True(TaskbarStateRules.Opened(foregrounds[3].Window with { Shown = false }) is null, "A hidden Task View must not count as open.");
+        Expect(Evaluate(new(Taskbars, [Window(1, RightDisplay, maximized: true)], start with { Shown = false }, false)),
+            TaskbarState.Desktop, TaskbarState.MaximizedWindow, "Start closed (cloaked) while still the foreground window");
+
+        // Task View shows on every display, so every taskbar gets its look wherever its window is.
+        ForegroundFacts taskView = foregrounds[3].Window;
+        Expect(Evaluate(new(Taskbars, [Window(1, RightDisplay, maximized: true)], taskView, true)),
+            TaskbarState.TaskViewOpen, TaskbarState.TaskViewOpen, "Task View open (its window on the left display)");
+
+        // Other display languages translate the title: any title but Alt+Tab's counts, unless Alt is held (Alt+Tab).
+        ForegroundFacts translated = new(30, LeftDisplay, @"C:\Windows\explorer.exe", "XamlExplorerHostIslandWindow", "Vista de tareas", EnglishTitles: false);
+        Program.True(TaskbarStateRules.Opened(translated) == TaskbarState.TaskViewOpen, "A translated Task View title must still count on a non-English display.");
+        Program.True(TaskbarStateRules.Opened(translated with { AltDown = true }) is null, "With Alt held it is Alt+Tab, not Task View.");
+        Program.True(TaskbarStateRules.Opened(translated with { Title = "Task Switching" }) is null, "Alt+Tab's English title never counts.");
+        Program.True(TaskbarStateRules.Opened(translated with { Shown = false }) is null, "A hidden switcher window never counts.");
+        Program.True(TaskbarStateRules.Opened(translated with { EnglishTitles = true }) is null, "On an English display only the title \"Task View\" counts.");
+        Program.True(TaskbarStateRules.Opened(translated with { Process = @"C:\Tools\other.exe" }) is null, "Only Explorer's window counts.");
+
         // Looks: each taskbar its own, accent colour with the look's opacity, and one shared look when they all agree.
         IReadOnlyDictionary<TaskbarState, TaskbarStateLook> looks = new AppSettings()
             .WithTaskbarState(TaskbarState.Desktop, l => l with { Kind = TaskbarLookKind.Clear, Color = 0x00000000 })
@@ -105,6 +126,24 @@ internal static class TaskbarStateChecks
         Program.True(perTaskbar[1].Look == new TaskbarLookState(TaskbarLookKind.Acrylic, 0x990067C0, true),
             "The accent colour must keep the look's opacity: " + perTaskbar[1].Look);
         Program.True(TaskbarLookService.Entries(global, perTaskbar).Length == 2, "Taskbars with different looks need their own entries.");
+
+        // Taskbars the helper cannot tell apart show the strongest state's look, not the Desktop look (as version 1.0 did).
+        TaskbarLooks maximizedRight = TaskbarLookService.LooksFor(new(Taskbars, [Window(1, RightDisplay, maximized: true)], null, false), looks, 0x0067C0);
+        TaskbarWindowLook[] entries = TaskbarLookService.Entries(maximizedRight.Global, maximizedRight.PerTaskbar);
+        Program.True(maximizedRight.Strongest == opaque && entries.Length == 2, "The strongest look on any taskbar is the maximized one: " + maximizedRight.Strongest);
+        Program.True(TaskbarLookService.GlobalToWrite(maximizedRight, entries, tellsApart: true) == clear,
+            "When the helper tells the taskbars apart, the Desktop look stays the global one.");
+        Program.True(TaskbarLookService.GlobalToWrite(maximizedRight, entries, tellsApart: false) == opaque,
+            "When it cannot, the strongest look becomes the global one.");
+        Program.True(TaskbarLookService.GlobalToWrite(maximizedRight, [], tellsApart: false) == maximizedRight.Global,
+            "Without per-taskbar looks there is nothing to tell apart.");
+        TaskbarLooks startRight = TaskbarLookService.LooksFor(new(Taskbars, [Window(1, RightDisplay, maximized: true)], start, false), looks, 0x0067C0);
+        Program.True(startRight.Strongest == new TaskbarLookState(TaskbarLookKind.Acrylic, 0x990067C0, true), "Start open wins over a maximized window: " + startRight.Strongest);
+        Program.True(TaskbarLookService.TellsApart(new TaskbarHelperStatus(4, 4, 2, 0), 2) == false
+            && TaskbarLookService.TellsApart(new TaskbarHelperStatus(4, 4, 2, 0), 4) == true
+            && TaskbarLookService.TellsApart(new TaskbarHelperStatus(0, 0, 2, 0), 0) is null
+            && TaskbarLookService.TellsApart(new TaskbarHelperStatus(4, 4, 2, 0), null) is null
+            && TaskbarLookService.TellsApart(null, 4) is null, "A report with fewer mapped rectangles than targets means the helper could not tell the taskbars apart.");
         (global, perTaskbar) = TaskbarLookService.LooksFor(new(Taskbars, [Window(1, RightDisplay, maximized: true), Window(2, LeftDisplay, maximized: true)], null, false), looks, 0);
         Program.True(global == opaque, "When every taskbar shows the same look it is also the global look (for taskbars the helper cannot tell apart).");
         Program.True(TaskbarLookService.Entries(global, perTaskbar).Length == 0, "When every taskbar shows the global look no per-taskbar entries are written.");
@@ -125,11 +164,14 @@ internal static class TaskbarStateChecks
         Program.True(TaskbarStateRules.EventsFor(Enabled([TaskbarState.VisibleWindow])) == (WindowEventKinds.Windows | WindowEventKinds.Foreground),
             "Window states need every top-level window.");
 
-        // A service that is never attached: it hooks and unhooks window events, and never reaches Explorer.
+        // A service that is never attached: it hooks and unhooks window events, and never reaches Explorer. The helper
+        // path only has to exist as a name (nothing is loaded without an attached window).
         string root = Path.Combine(Path.GetTempPath(), "soltex-state-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         AppSettingsStore store = new(AppSettingsStore.DefaultPath(root));
-        TaskbarLookService service = new(store, root);
+        string helperName = Path.Combine(root, "SoltexTaskbar.dll");
+        TaskbarLookService service = new(store, root, helperName, windows11: true);
+        TaskbarLookService windows10 = new(store, root, helperName, windows11: false), noHelper = new(store, root, null, windows11: true);
         try
         {
             void Expect(WindowEventKinds kinds, int hooks, string what)
@@ -143,7 +185,19 @@ internal static class TaskbarStateChecks
             store.Update(s => s.WithTaskbarState(TaskbarState.BatterySaver, l => l with { Enabled = true }));
             Expect(WindowEventKinds.None, 0, "Battery saver (listened for on the app window, not with window hooks)");
             store.Update(s => s.WithTaskbarState(TaskbarState.StartOpen, l => l with { Enabled = true }));
-            Expect(WindowEventKinds.Foreground, 2, "Start open");
+            // The foreground window, cloaking, and hiding (Task View may hide its window rather than cloak it).
+            Expect(WindowEventKinds.Foreground, 3, "Start open");
+
+            // Windows 10, or no helper for this PC: imported or saved looks never hook window events or load the helper.
+            foreach ((TaskbarLookService unusable, string what) in new[] { (windows10, "Windows 10"), (noHelper, "No helper for this PC") })
+            {
+                unusable.UpdateWatching();
+                Program.True(unusable.Watching == WindowEventKinds.None && unusable.WatchHooks == 0 && !unusable.WatchingBatterySaver,
+                    $"{what}: watching {unusable.Watching} with {unusable.WatchHooks} hook(s).");
+                Task apply = unusable.ApplyAsync();
+                Program.True(apply.IsCompletedSuccessfully && unusable.Problem is null && unusable.WatchHooks == 0,
+                    $"{what}: applying must stop before the helper (problem: {unusable.Problem}).");
+            }
             store.Update(s => s.WithTaskbarState(TaskbarState.MaximizedWindow, l => l with { Enabled = true }));
             Expect(WindowEventKinds.Foreground | WindowEventKinds.Windows, 5, "Start open and Window maximized");
             store.Update(s => s.WithTaskbarState(TaskbarState.StartOpen, l => l with { Enabled = false }).WithTaskbarState(TaskbarState.MaximizedWindow, l => l with { Enabled = false }));
@@ -152,7 +206,12 @@ internal static class TaskbarStateChecks
             Expect(WindowEventKinds.Foreground | WindowEventKinds.Windows, 5, "Window visible");
             Program.True(!service.WatchingBatterySaver, "Battery saver is listened for only on the attached app window.");
         }
-        finally { service.Dispose(); }
+        finally
+        {
+            service.Dispose();
+            windows10.Dispose();
+            noHelper.Dispose();
+        }
         Program.True(service.WatchHooks == 0 && service.Watching == WindowEventKinds.None, "Disposing must remove every window hook.");
     }
 
@@ -224,6 +283,26 @@ internal static class TaskbarStateChecks
         Program.True(newer.LoadProblem is null && newer.Current.LookFor(TaskbarState.Desktop) == new TaskbarStateLook(true, TaskbarLookKind.Acrylic, 0x66000000, true, true)
             && newer.Current.LookFor(TaskbarState.StartOpen) == new TaskbarStateLook(true, TaskbarLookKind.Blur, 0, false),
             "Unknown state names must be skipped and known ones loaded: " + newer.LoadProblem);
+
+        // A look a newer version adds (or any look this version cannot read) skips only that state; the other states and
+        // every other setting still load.
+        File.WriteAllText(path, """
+            { "Theme": "Dark", "TaskbarScrollVolume": true, "TaskbarStates": {
+                "Desktop": { "Enabled": true, "Kind": "Frosted", "Color": 1711276032, "Line": true },
+                "SearchOpen": 7,
+                "StartOpen": { "Enabled": true, "Kind": "Blur", "Color": 0, "Line": false } } }
+            """);
+        AppSettingsStore frosted = new(path);
+        Program.True(frosted.LoadProblem is null && frosted.Current.Theme == ThemePreference.Dark && frosted.Current.TaskbarScrollVolume
+            && frosted.Current.LookFor(TaskbarState.Desktop) == TaskbarStateLook.DefaultFor(TaskbarState.Desktop)
+            && frosted.Current.LookFor(TaskbarState.SearchOpen) == TaskbarStateLook.DefaultFor(TaskbarState.SearchOpen)
+            && frosted.Current.LookFor(TaskbarState.StartOpen) == new TaskbarStateLook(true, TaskbarLookKind.Blur, 0, false),
+            "A look from a newer version must skip only its state: " + frosted.LoadProblem + " " + frosted.Current.LookFor(TaskbarState.Desktop));
+        File.WriteAllText(path, """{ "Theme": "Dark", "TaskbarStates": [ 1, 2 ] }""");
+        AppSettingsStore listed = new(path);
+        Program.True(listed.LoadProblem is null && listed.Current.Theme == ThemePreference.Dark
+            && Enum.GetValues<TaskbarState>().All(t => listed.Current.LookFor(t) == TaskbarStateLook.DefaultFor(t)),
+            "Unreadable taskbar states must leave the states at their starting looks and keep every other setting: " + listed.LoadProblem);
 
         // A setup exported by version 1.0 keeps its look on import.
         string profile = Path.Combine(root, "setup.json");

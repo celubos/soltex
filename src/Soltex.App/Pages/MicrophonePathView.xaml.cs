@@ -23,6 +23,8 @@ public interface IMicrophonePathSource
     Task ApplyMicrophoneAsync(HostChannelProfile profile);
     /// <summary>The connection's latest status, shown while there is no state yet (for example why it can't connect).</summary>
     string StatusText => "";
+    /// <summary>True when the connection stopped answering: <see cref="Latest"/> is then old and may no longer be true.</summary>
+    bool ConnectionLost => false;
 }
 
 /// <summary>Adapts the independent mixer workspace (which owns the helper connection) to the microphone card.</summary>
@@ -37,6 +39,7 @@ internal sealed class WorkspaceMicrophoneSource(IndependentMixerWorkspace worksp
     public Task StopAudioAsync() => workspace.StopAudioOrThrowAsync();
     public Task ApplyMicrophoneAsync(HostChannelProfile profile) => workspace.ApplyChannelAsync(profile);
     public string StatusText => workspace.StatusText;
+    public bool ConnectionLost => workspace.ConnectionLost;
 }
 
 /// <summary>
@@ -45,7 +48,8 @@ internal sealed class WorkspaceMicrophoneSource(IndependentMixerWorkspace worksp
 /// </summary>
 public partial class MicrophonePathView : UserControl
 {
-    public static readonly TimeSpan TestDuration = TimeSpan.FromSeconds(10);
+    /// <summary>The shared test length, so this card and the setup window always say and do the same.</summary>
+    public static readonly TimeSpan TestDuration = MicrophonePath.TestDuration;
     private readonly DispatcherTimer polling = new() { Interval = TimeSpan.FromMilliseconds(250) };
     /// <summary>Puts "Copy name" back after the confirmation has been seen.</summary>
     private readonly DispatcherTimer copyReset = new() { Interval = TimeSpan.FromSeconds(2) };
@@ -58,6 +62,7 @@ public partial class MicrophonePathView : UserControl
     public MicrophonePathView()
     {
         InitializeComponent();
+        TestButton.ToolTip = "Listens for " + MicrophonePath.TestDurationText + " and tells you what it heard. Nothing is played or sent.";
         EditSound = settings =>
         {
             ProcessingWindow window = new("Microphone sound", settings, microphone: true) { Owner = Window.GetWindow(this) };
@@ -112,18 +117,21 @@ public partial class MicrophonePathView : UserControl
         try
         {
             await source.RefreshAsync();
-            // No state means no Changed event; refresh the text so a failed connection shows its reason.
-            if (source.Latest is null) Render(null);
+            // No new state means no Changed event; refresh the text so a failed connection shows its reason.
+            if (source.Latest is null || source.ConnectionLost) Render(source.Latest);
         }
         finally { reading = false; }
     }
 
     internal void Render(HostSnapshot? snapshot)
     {
-        model = snapshot is null ? null : MicrophonePath.Describe(snapshot);
+        // A connection that stopped answering leaves an old snapshot behind: show the connection, not that state.
+        bool lost = snapshot is not null && source?.ConnectionLost == true;
+        model = snapshot is null || lost ? null : MicrophonePath.Describe(snapshot);
         if (model is null)
         {
-            StateText.Text = "Connecting…";
+            StateText.Text = lost ? "Not connected" : "Connecting…";
+            StateBadge.Background = (System.Windows.Media.Brush)FindResource(lost ? "SystemFillColorCriticalBackgroundBrush" : "SubtleFillColorSecondaryBrush");
             Explanation.Text = source?.StatusText is { Length: > 0 } status ? status : "Connecting to audio…";
             SourceName.Text = DestinationName.Text = ReceivingName.Text = "—";
             SourceDetail.Text = ReceivingDetail.Text = InputLevel.Text = OutputLevel.Text = "";
@@ -183,7 +191,8 @@ public partial class MicrophonePathView : UserControl
     {
         // The meter rises at once and falls back smoothly between readings; no reading means an empty track.
         meter.Level = peak is { } measured && float.IsFinite(measured) ? measured : -1;
-        string text = peak is { } value ? MicrophonePath.PeakDbfs(value).ToString("0", CultureInfo.InvariantCulture) + " dBFS peak" : unknown;
+        // A true minus sign ("−9 dBFS peak"), like every other level in the app.
+        string text = peak is { } value ? MicrophonePath.Dbfs(MicrophonePath.PeakDbfs(value)) + " dBFS peak" : unknown;
         label.Text = text;
         AutomationProperties.SetItemStatus(meter, text);
     }
@@ -225,7 +234,9 @@ public partial class MicrophonePathView : UserControl
                 HostSnapshot? latest = source.Latest;
                 if (latest is null) continue;
                 int remaining = Math.Max(0, (int)Math.Ceiling((end - DateTime.UtcNow).TotalSeconds));
-                TestTitle.Text = "Speak normally… " + remaining.ToString(CultureInfo.InvariantCulture);
+                // Beside the title, not in it: the title is a live region and must not be re-announced every second.
+                TestCountdown.Text = remaining.ToString(CultureInfo.CurrentCulture);
+                TestCountdown.Visibility = Visibility.Visible;
                 if (probeId is not null)
                 {
                     if (latest.MicrophoneTest is not { } probe || probe.EndpointId != probeId) continue;
@@ -281,8 +292,27 @@ public partial class MicrophonePathView : UserControl
     {
         TestPanel.Tag = severity;
         TestPanel.Visibility = Visibility.Visible;
+        TestCountdown.Visibility = Visibility.Collapsed;
         TestTitle.Text = title;
         TestAdvice.Text = advice;
+    }
+
+    private void Steps_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateArrows();
+
+    /// <summary>
+    /// Four cards in a row: each arrow points at the next card. Wrapped (two by two), the arrow at the end of a row would
+    /// point at nothing, so it is hidden; in a single column the arrows point down at the next card.
+    /// </summary>
+    private void UpdateArrows()
+    {
+        int columns = Math.Max(1, Steps.Columns);
+        TextBlock[] arrows = [SourceArrow, ProcessingArrow, DestinationArrow];
+        for (int i = 0; i < arrows.Length; i++)
+        {
+            bool endOfRow = columns > 1 && i % columns == columns - 1;
+            arrows[i].Visibility = endOfRow ? Visibility.Collapsed : Visibility.Visible;
+            arrows[i].LayoutTransform = columns == 1 ? new System.Windows.Media.RotateTransform(90) : System.Windows.Media.Transform.Identity;
+        }
     }
 
     private async void StartStopButton_Click(object sender, RoutedEventArgs e)

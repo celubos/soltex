@@ -6,6 +6,7 @@ namespace Soltex.Audio.UI;
 public partial class MixerWorkspace
 {
     private LinkedOutputPolicySettings _outputPolicy = new();
+    private SettingsFile? _policyFile;
     private CancellationTokenSource? _policyPending;
     private DateTimeOffset _lastPolicyWrite;
     private string? _expectedPolicyOutput;
@@ -45,7 +46,8 @@ public partial class MixerWorkspace
             foreach (var known in _outputPolicy.KnownDevices)
                 if (next.KnownDevices.All(d => !Same(d.Id, known.Id))) next.KnownDevices.Add(known);
             foreach (var item in _outputPolicy.IndependentBusEndpointIds) next.IndependentBusEndpointIds[item.Key] = item.Value;
-            next.Save();
+            await (_policyFile ?? throw new InvalidOperationException("The mixer isn't ready yet.")).SaveAsync(next.Serialize());
+            if (_disposed) return "Soltex is closing.";
             _outputPolicy = next.Copy();
             UpdateStateTimer();
             _policyStatus = next.Enabled ? "Configured linked output priorities are enabled." : "Automatic output selection is off.";
@@ -174,12 +176,21 @@ public partial class MixerWorkspace
         });
     }
 
-    private void PersistOutputPolicy()
+    /// <summary>
+    /// Saves the policy off the UI thread. The 2-second refresh calls this whenever it records something; a write is
+    /// skipped when the file would not change.
+    /// </summary>
+    private void PersistOutputPolicy() => _ = PersistOutputPolicyAsync();
+
+    private async Task PersistOutputPolicyAsync()
     {
-        try { _outputPolicy.Save(); }
+        if (_policyFile is null || _disposed || _preview) return;
+        try { await _policyFile.SaveAsync(_outputPolicy.Serialize()); }
         catch (Exception ex) when (IsExpected(ex))
         {
+            if (_disposed) return;
             _outputPolicy.Enabled = false;
+            UpdateStateTimer();
             _policyStatus = "Automatic selection disabled because device preferences could not be saved: " + ex.Message;
             StatusText.Text = _policyStatus;
         }

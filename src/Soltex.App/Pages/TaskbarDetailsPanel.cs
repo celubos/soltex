@@ -121,7 +121,8 @@ public sealed class TaskbarDetailsPanel : UserControl
     private void Update(Func<AppSettings, AppSettings> change)
     {
         if (context is null || loading) return;
-        context.Services.Settings.Update(change);
+        // A failed save (full disk, locked file) is reported in Recent events instead of closing the app.
+        if (!context.Services.TryUpdateSettings(change, "Taskbar")) Refresh();
     }
 
     private TextBlock Note()

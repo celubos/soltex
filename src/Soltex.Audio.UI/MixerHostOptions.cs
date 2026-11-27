@@ -20,4 +20,8 @@ public sealed record MixerHostOptions
     public bool Embedded { get; init; }
 }
 
-public sealed record MixerOutput(string Id, string Label);
+public sealed record MixerOutput(string Id, string Label)
+{
+    /// <summary>What a screen reader announces for a list item.</summary>
+    public override string ToString() => Label;
+}

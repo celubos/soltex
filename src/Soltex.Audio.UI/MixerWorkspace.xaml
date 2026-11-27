@@ -26,6 +26,15 @@
     </Style>
     <!-- Device and route names can be long: the box trims them and its tooltip has the full name. -->
     <DataTemplate x:Key="TrimmedLabel"><TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis"/></DataTemplate>
+    <!-- Narrow strip boxes show the device's own name ("Headphones"); the open list and the tooltip keep the full name. -->
+    <DataTemplate x:Key="CompactLabel">
+      <TextBlock x:Name="Label" Text="{Binding Label}" TextTrimming="CharacterEllipsis"/>
+      <DataTemplate.Triggers>
+        <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ComboBoxItem}, FallbackValue={x:Null}}" Value="{x:Null}">
+          <Setter TargetName="Label" Property="Text" Value="{Binding Compact}"/>
+        </DataTrigger>
+      </DataTemplate.Triggers>
+    </DataTemplate>
     <DataTemplate x:Key="TrimmedRoute"><TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"/></DataTemplate>
   </UserControl.Resources>
 
@@ -48,16 +57,18 @@
           <WrapPanel>
             <TextBlock x:Name="MixerTitle" Text="Sonar mixer" FontSize="22" FontWeight="SemiBold" FontFamily="Segoe UI Variable Display, Segoe UI" VerticalAlignment="Center" Margin="0,0,12,0"/>
             <Border x:Name="ConnectionBadge" CornerRadius="10" Padding="10,3" VerticalAlignment="Center" Background="{DynamicResource QuietBrush}" Margin="0,2,0,2">
-              <TextBlock x:Name="ConnectionText" Text="Connecting…" FontSize="12" FontWeight="SemiBold" AutomationProperties.HelpText="Sonar connection" AutomationProperties.LiveSetting="Polite"/>
+              <TextBlock x:Name="ConnectionText" Text="Connecting…" FontSize="12" FontWeight="SemiBold" AutomationProperties.HelpText="Sonar connection" local:LiveRegion.IsLive="True"/>
             </Border>
           </WrapPanel>
           <TextBlock x:Name="MixerSubtitle" Style="{StaticResource SonarSecondary}" FontSize="13" Margin="0,4,0,0"
                      Text="Sonar's channels, ChatMix and app routing. SteelSeries GG keeps running Sonar itself."/>
         </StackPanel>
-        <Button Content="Devices" Click="DevicesClick" TabIndex="0" VerticalAlignment="Center" ToolTip="Which playback device Sonar's channels use, and in what order"/>
-        <Button Content="Processing" Click="ProcessingClick" TabIndex="1" VerticalAlignment="Center" ToolTip="Noise reduction, equalizer and other sound processing"/>
-        <Button Content="Reconnect" Click="ReconnectClick" TabIndex="2" VerticalAlignment="Center" ToolTip="Connect to Sonar again"/>
-        <Button Content="Settings" Click="SettingsClick" TabIndex="3" VerticalAlignment="Center" ToolTip="Device shortcuts and other mixer settings"/>
+        <!-- No TabIndex anywhere in the workspace: inside a host window, explicit indexes would jump ahead of the
+             host's own controls. Document order is already the reading order. -->
+        <Button Content="Devices" Click="DevicesClick" VerticalAlignment="Center" ToolTip="Which playback device Sonar's channels use, and in what order"/>
+        <Button Content="Processing" Click="ProcessingClick" VerticalAlignment="Center" ToolTip="Noise reduction, equalizer and other sound processing"/>
+        <Button Content="Reconnect" Click="ReconnectClick" VerticalAlignment="Center" ToolTip="Connect to Sonar again"/>
+        <Button Content="Settings" Click="SettingsClick" VerticalAlignment="Center" ToolTip="Device shortcuts and other mixer settings"/>
       </local:ResponsiveRow>
 
       <!-- Shown when Sonar can't be reached or is off, with the next step. -->
@@ -65,7 +76,7 @@
               BorderThickness="1" CornerRadius="12" Padding="16,12" Margin="0,0,0,16" AutomationProperties.Name="Sonar status">
         <local:ResponsiveRow MinPrimaryWidth="220">
           <StackPanel VerticalAlignment="Center">
-            <TextBlock x:Name="SonarNoticeTitle" Text="Sonar isn't running" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap" AutomationProperties.LiveSetting="Assertive"/>
+            <TextBlock x:Name="SonarNoticeTitle" Text="Sonar isn't running" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap" local:LiveRegion.IsLive="True"/>
             <TextBlock x:Name="SonarNoticeText" Style="{StaticResource SonarSecondary}" FontSize="13" Margin="0,2,0,0"
                        Text="Open SteelSeries GG and turn on Sonar, then choose Try again. Your Sonar settings are kept."/>
           </StackPanel>
@@ -76,10 +87,12 @@
       <!-- One playback device for every playback channel, and whether channels move together. -->
       <local:ResponsiveRow Grid.Row="2" MinPrimaryWidth="200" Spacing="16" Margin="0,0,0,16">
         <StackPanel MaxWidth="520" HorizontalAlignment="Left" VerticalAlignment="Bottom">
-          <Label Content="_Playback device" Target="{Binding ElementName=LinkedDevice}" Padding="0" Margin="0,0,0,6" FontSize="12" Foreground="{DynamicResource MutedBrush}"/>
+          <!-- A caption like every other field caption in the audio tabs (small capitals), with its access key. -->
+          <Label Content="_Playback device" Target="{Binding ElementName=LinkedDevice}" Padding="0" Margin="0,0,0,6" FontSize="11" FontWeight="SemiBold"
+                 Typography.Capitals="AllSmallCaps" Foreground="{DynamicResource MutedBrush}"/>
           <Grid>
             <ComboBox x:Name="LinkedDevice" ItemsSource="{Binding Outputs}" ItemTemplate="{StaticResource TrimmedLabel}" SelectedValuePath="Id"
-                      SelectionChanged="LinkedDeviceChanged" MinHeight="34" IsTabStop="True" TabIndex="4" AutomationProperties.Name="Linked playback device"
+                      SelectionChanged="LinkedDeviceChanged" MinHeight="34" IsTabStop="True" AutomationProperties.Name="Linked playback device"
                       ToolTip="{Binding SelectedItem.Label, RelativeSource={RelativeSource Self}}"/>
             <TextBlock x:Name="LinkedPlaceholder" Text="Channels use different devices" ToolTip="Channels use different devices" Margin="12,0,36,0"
                        VerticalAlignment="Center" IsHitTestVisible="False" Foreground="{DynamicResource QuietTextBrush}" TextTrimming="CharacterEllipsis">
@@ -94,7 +107,7 @@
             </TextBlock>
           </Grid>
         </StackPanel>
-        <CheckBox x:Name="LinkOutputs" Content="Link playback outputs" IsChecked="True" Checked="LinkChanged" Unchecked="LinkChanged" TabIndex="5"
+        <CheckBox x:Name="LinkOutputs" Content="Link playback outputs" IsChecked="True" Checked="LinkChanged" Unchecked="LinkChanged"
                   VerticalAlignment="Bottom" Margin="0,0,0,8" ToolTip="When on, choosing a device for one playback channel moves Game, Chat, Media and Aux together."/>
       </local:ResponsiveRow>
 
@@ -102,7 +115,7 @@
       <ItemsControl x:Name="ChannelStrips" Grid.Row="3" ItemsSource="{Binding Channels}" Focusable="False" KeyboardNavigation.TabNavigation="Continue"
                     AutomationProperties.Name="Sonar channels">
         <ItemsControl.ItemsPanel>
-          <ItemsPanelTemplate><local:AdaptiveGrid MinColumnWidth="132" MaxColumnWidth="260" ColumnSpacing="10" RowSpacing="10" StretchRows="True"/></ItemsPanelTemplate>
+          <ItemsPanelTemplate><local:AdaptiveGrid MinColumnWidth="132" ColumnSpacing="10" RowSpacing="10" StretchRows="True"/></ItemsPanelTemplate>
         </ItemsControl.ItemsPanel>
         <ItemsControl.ItemTemplate>
           <DataTemplate>
@@ -126,7 +139,7 @@
                 </DockPanel>
                 <StackPanel Grid.Row="2" Margin="0,8,0,0">
                   <TextBlock Text="{Binding DestinationCaption}" Style="{StaticResource SonarCaption}" Margin="0,0,0,4"/>
-                  <ComboBox ItemsSource="{Binding Devices}" ItemTemplate="{StaticResource TrimmedLabel}" SelectedValuePath="Id" SelectedValue="{Binding DeviceId,Mode=OneWay}"
+                  <ComboBox ItemsSource="{Binding Devices}" ItemTemplate="{StaticResource CompactLabel}" SelectedValuePath="Id" SelectedValue="{Binding DeviceId,Mode=OneWay}"
                             ToolTip="{Binding DeviceName}" SelectionChanged="ChannelDeviceChanged" IsEnabled="{Binding CanSelectDevice}" MinHeight="32" IsTabStop="True"
                             AutomationProperties.Name="{Binding DeviceAccessibleName}"/>
                 </StackPanel>
@@ -194,7 +207,7 @@
         <StackPanel>
           <local:ResponsiveRow MinPrimaryWidth="160" Margin="0,0,0,6" RowSpacing="2">
             <TextBlock Text="Game and Chat balance" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap" VerticalAlignment="Center"/>
-            <TextBlock x:Name="ChatMixStatus" Text="Connecting…" Style="{StaticResource SonarSecondary}" FontSize="13" VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite"/>
+            <TextBlock x:Name="ChatMixStatus" Text="Connecting…" Style="{StaticResource SonarSecondary}" FontSize="13" VerticalAlignment="Center" local:LiveRegion.IsLive="True"/>
           </local:ResponsiveRow>
           <local:ResponsiveRow MinPrimaryWidth="200">
             <Grid VerticalAlignment="Center">
@@ -222,7 +235,17 @@
             <ItemsControl x:Name="ApplicationList" ItemsSource="{Binding Applications}" Focusable="False" AutomationProperties.Name="Application routing list">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
-                  <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="0,10" Background="Transparent" PreviewMouseMove="ApplicationDrag">
+                  <Border Padding="0,10" Background="Transparent" PreviewMouseMove="ApplicationDrag">
+                    <!-- Dividers between rows only: the last row ends at the card's own edge, never a second line. -->
+                    <Border.Style>
+                      <Style TargetType="Border">
+                        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+                        <Setter Property="BorderThickness" Value="0,0,0,1"/>
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsLast}" Value="True"><Setter Property="BorderThickness" Value="0"/></DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </Border.Style>
                     <local:ResponsiveRow MinPrimaryWidth="180">
                       <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding Name}"/>
@@ -259,7 +282,7 @@
 
       <local:ResponsiveRow Grid.Row="6" MinPrimaryWidth="200" Margin="0,10,0,10">
         <TextBlock x:Name="StatusText" Text="Connecting to Sonar…" FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" VerticalAlignment="Center"
-                   AutomationProperties.LiveSetting="Polite"/>
+                   local:LiveRegion.IsLive="True"/>
         <TextBlock x:Name="BackendNote" Text="Requires SteelSeries GG" FontSize="12" Foreground="{DynamicResource QuietTextBrush}" VerticalAlignment="Center"/>
       </local:ResponsiveRow>
     </Grid>

@@ -72,11 +72,13 @@ internal sealed class SafetyLimiter
         historyPosition = (historyPosition + 1) % InterpolationTaps;
         double required = peak > threshold ? threshold / peak : 1;
 
-        // 2) Sliding minimum over the lookahead window.
+        // 2) Sliding minimum over the lookahead window [index - lookahead + 1, index]. Expired entries leave before the push:
+        // a rising gain requirement (the falling side of a low-frequency crest) keeps every entry, and pushing first would
+        // need lookahead + 1 slots and overwrite the window minimum.
+        while (windowCount > 0 && windowIndex[windowHead] <= index - lookahead) { windowHead = (windowHead + 1) % lookahead; windowCount--; }
         while (windowCount > 0 && windowValue[(windowHead + windowCount - 1) % lookahead] >= required) windowCount--;
         int tail = (windowHead + windowCount) % lookahead;
         windowValue[tail] = required; windowIndex[tail] = index; windowCount++;
-        while (windowIndex[windowHead] <= index - lookahead) { windowHead = (windowHead + 1) % lookahead; windowCount--; }
         double minimum = windowValue[windowHead];
         index++;
 

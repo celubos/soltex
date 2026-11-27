@@ -44,7 +44,7 @@ public sealed record SystemItem(string Id, SystemArea Area, string Title, IReadO
 
 /// <summary>
 /// The full De-Windows profile (needs administrator). Telemetry, advertising and AI data collection off by policy,
-/// telemetry services and tasks disabled and firewalled, Windows Update set to notify instead of installing on its own,
+/// telemetry services and tasks disabled and firewalled, Windows Update set to ask before downloading (it still checks),
 /// OneDrive, Edge and chosen built-in apps removed. Defender, the firewall itself, UAC, Secure Boot and driver signing
 /// are never weakened: firewall entries here only add blocks, and no write (including an undo) turns updates off.
 /// </summary>
@@ -241,9 +241,11 @@ public static class SystemCatalog
     }
 
     /// <summary>
-    /// True when writing <paramref name="value"/> would stop Windows Update from downloading or installing updates
-    /// automatically (NoAutoUpdate other than 0, or an AUOptions value that is not one of Windows' documented update modes).
-    /// Such a value is never written, not even to restore what was there before.
+    /// True when writing <paramref name="value"/> would turn automatic updates off: NoAutoUpdate other than 0, or an
+    /// AUOptions value that is not one of Windows' documented update modes. Updates are never turned off; Windows keeps
+    /// checking for them. Every documented mode stays allowed, including 2, "notify before download" (the mode
+    /// system.updates.notify sets on purpose: Windows finds updates and asks before downloading them). Such a value is
+    /// never written, not even to restore what was there before.
     /// </summary>
     internal static bool WeakensUpdates(string path, string name, RegistryValue value)
     {

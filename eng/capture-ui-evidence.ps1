@@ -13,7 +13,8 @@ param(
 )
 
 # Renders every page of the built app in the light and dark themes through its --render-smoke switch,
-# checks each PNG, and writes render-matrix.json with the file hashes. Requires a prior build of
+# plus a few pages in a narrow window at 150 percent text, where the navigation pane is an icon rail.
+# Checks each PNG and writes render-matrix.json with the file hashes. Requires a prior build of
 # src\Soltex.App in the chosen configuration.
 
 $ErrorActionPreference = 'Stop'
@@ -99,15 +100,28 @@ $projectPath = Join-Path $repoRoot 'src\Soltex.App\Soltex.App.csproj'
 
 # Must match SuiteLaunchOptions.PanelNames in src\Soltex.App\SuiteLaunchOptions.cs.
 $panels = @(
-    'my-pc', 'customize', 'history', 'audio', 'audio-apps', 'tools', 'settings',
+    'my-pc', 'customize', 'history', 'audio', 'audio-mic', 'audio-apps', 'audio-sonar', 'tools', 'settings',
     'search', 'taskbar', 'start', 'explorer', 'appearance', 'multitasking', 'desktop'
 )
 $themes = @('light', 'dark')
+# Canonical capture size (RenderSmokeCapture in src\Soltex.App).
+$canonicalWidth = 1280
+$canonicalHeight = 820
+# 900 px at 150 percent leaves a 600 px wide layout, so the navigation pane shows icons only.
+$narrowPanels = @('my-pc', 'taskbar', 'audio-mic')
+$narrowWidth = 900
+$narrowHeight = 700
+$narrowScale = 150
 
 $matrix = @(
     foreach ($panel in $panels) {
         foreach ($theme in $themes) {
-            [ordered]@{ id = "$panel-$theme"; panel = $panel; theme = $theme; file = "$panel-$theme.png" }
+            [ordered]@{ id = "$panel-$theme"; panel = $panel; theme = $theme; file = "$panel-$theme.png"; width = $canonicalWidth; height = $canonicalHeight; scale = $null }
+        }
+    }
+    foreach ($panel in $narrowPanels) {
+        foreach ($theme in $themes) {
+            [ordered]@{ id = "$panel-$theme-narrow"; panel = $panel; theme = $theme; file = "$panel-$theme-narrow.png"; width = $narrowWidth; height = $narrowHeight; scale = $narrowScale }
         }
     }
 )
@@ -139,11 +153,17 @@ foreach ($entry in $matrix) {
     $logPath = Join-Path $validationRoot ("render-{0}.log" -f $entry.id)
     $stderrPath = $logPath + '.stderr'
 
-    Write-Host "Rendering page '$($entry.panel)' in the $($entry.theme) theme..."
+    Write-Host "Rendering page '$($entry.panel)' in the $($entry.theme) theme at $($entry.width)x$($entry.height)..."
     $arguments = @(
         'run', '--project', (ConvertTo-ProcessArgument $projectPath), '--configuration', $Configuration, '--no-build', '--',
         '--render-smoke', (ConvertTo-ProcessArgument $renderPath), '--panel', $entry.panel, '--theme', $entry.theme
     )
+    if ($entry.width -ne $canonicalWidth -or $entry.height -ne $canonicalHeight) {
+        $arguments += @('--size', ('{0}x{1}' -f $entry.width, $entry.height))
+    }
+    if ($null -ne $entry.scale) {
+        $arguments += @('--scale', [string]$entry.scale)
+    }
     $process = Start-Process -FilePath $resolvedDotnet -ArgumentList $arguments -NoNewWindow -PassThru `
         -RedirectStandardOutput $logPath -RedirectStandardError $stderrPath
     # Reading Handle keeps the exit code available after the process ends.
@@ -183,8 +203,8 @@ foreach ($entry in $matrix) {
 
     $image = [System.Drawing.Image]::FromFile($renderPath)
     try {
-        if ($image.Width -ne 1280 -or $image.Height -ne 820) {
-            throw "Render '$($entry.id)' is $($image.Width)x$($image.Height); expected 1280x820."
+        if ($image.Width -ne $entry.width -or $image.Height -ne $entry.height) {
+            throw "Render '$($entry.id)' is $($image.Width)x$($image.Height); expected $($entry.width)x$($entry.height)."
         }
     }
     finally {
@@ -197,13 +217,16 @@ foreach ($entry in $matrix) {
         panel = $entry.panel
         theme = $entry.theme
         file = $entry.file
+        width = $entry.width
+        height = $entry.height
+        scale_percent = $entry.scale
         bytes = $file.Length
         sha256 = $hash.Hash.ToLowerInvariant()
     }
 }
 
 [ordered]@{
-    schema_version = 2
+    schema_version = 3
     source_head_sha = $SourceHeadSha
     tested_commit_sha = $TestedCommitSha
     captured_at_utc = (Get-Date).ToUniversalTime().ToString('o')
@@ -214,11 +237,16 @@ foreach ($entry in $matrix) {
         process_render_mode = 'SoftwareOnly'
     }
     viewport = [ordered]@{
-        width = 1280
-        height = 820
+        width = $canonicalWidth
+        height = $canonicalHeight
+    }
+    narrow_viewport = [ordered]@{
+        width = $narrowWidth
+        height = $narrowHeight
+        scale_percent = $narrowScale
     }
     artifacts = $artifacts
 } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $manifestPath
 
-Write-Host "Rendered and checked $($artifacts.Count) pages ($($panels.Count) pages x $($themes.Count) themes)."
+Write-Host "Rendered and checked $($artifacts.Count) pages ($($panels.Count) pages x $($themes.Count) themes, plus $($narrowPanels.Count) narrow pages x $($themes.Count) themes)."
 Write-Host "Manifest: $manifestPath"

@@ -25,6 +25,7 @@ public partial class MixerWorkspace : UserControl
     private SonarSnapshot? _snapshot;
     private bool _applying, _refreshing, _readingMeters, _disposed;
     private Preferences _preferences = new();
+    private SettingsFile? _preferencesFile;
     private HwndSource? _windowSource;
     private Task? _shutdown;
     private bool _initialized, _active;
@@ -109,10 +110,13 @@ public partial class MixerWorkspace : UserControl
                 channel.IsReady = ChannelReady(snapshot, state);
                 channel.DeviceId = state.DeviceId;
                 channel.DeviceName = snapshot.Devices.FirstOrDefault(d => d.Id == state.DeviceId)?.FriendlyName ?? (channel.Id == "master" ? "All playback channels" : "Device unavailable");
-                ReplaceWhenChanged(channel.Devices, channel.Id == "master" ? [new DeviceChoice("", "All playback channels")] : Choices(snapshot, channel.Id == "mic" ? "capture" : "render"));
+                bool devicesReplaced = ReplaceWhenChanged(channel.Devices, channel.Id == "master" ? [new DeviceChoice("", "All playback channels")] : Choices(snapshot, channel.Id == "mic" ? "capture" : "render"));
                 channel.CanSelectDevice = channel.Id != "master" && channel.Devices.Count > 0 && snapshot.Devices.Any(d => d.Id == state.VirtualDeviceId && d.IsVad && d.State == "active");
                 if (channel.Id == "master") channel.DeviceId = "";
-                if (!_pendingLevels.ContainsKey(channel.Id)) channel.Status = channel.IsReady ? channel.Id == "master" ? "Playback master" : "Route active" : "Route unavailable";
+                // Rebuilding the list clears the box's selection while DeviceId stays the same; show it again.
+                if (devicesReplaced) channel.RefreshDevice();
+                if (!_pendingLevels.ContainsKey(channel.Id))
+                    channel.Status = !channel.IsReady ? "Route unavailable" : channel.Muted ? "Muted" : channel.Id == "master" ? "Playback master" : "Route active";
             }
             UpdateApplications(snapshot);
             if (outputChanged) OutputsChanged?.Invoke(this, EventArgs.Empty);
@@ -136,17 +140,27 @@ public partial class MixerWorkspace : UserControl
             snapshot.Devices.Any(d => d.Id == channel.DeviceId && !d.IsVad && d.State == "active" && d.DataFlow == flow);
     }
 
-    private static DeviceChoice[] Choices(SonarSnapshot snapshot, string flow)
+    /// <summary>
+    /// The devices for one direction. Devices that share a name are numbered "(2)", "(3)" in list order, like the rest
+    /// of the app, never labelled with internal IDs; the closed strip box shows the name without its hardware in brackets
+    /// when that is still unique.
+    /// </summary>
+    internal static DeviceChoice[] Choices(SonarSnapshot snapshot, string flow)
     {
         var devices = snapshot.Devices.Where(d => !d.IsVad && d.DataFlow == flow && d.State == "active").ToArray();
-        return devices.Select(d => new DeviceChoice(d.Id, devices.Count(other => other.FriendlyName == d.FriendlyName) > 1 ? d.FriendlyName + " · " + d.Id[Math.Max(0, d.Id.Length - 9)..] : d.FriendlyName)).ToArray();
+        string[] suffixes = devices.Select(d => DeviceNames.DuplicateSuffix(devices, d, device => device.FriendlyName)).ToArray();
+        string[] compact = devices.Select((d, i) => DeviceNames.WithoutHardware(d.FriendlyName) + suffixes[i]).ToArray();
+        return devices.Select((d, i) => new DeviceChoice(d.Id, d.FriendlyName + suffixes[i])
+        { CompactLabel = compact.Count(c => c == compact[i]) > 1 ? null : compact[i] }).ToArray();
     }
 
-    private static void ReplaceWhenChanged<T>(ObservableCollection<T> destination, IEnumerable<T> source)
+    /// <summary>Replaces the items when they differ; returns true when it did (which clears a bound box's selection).</summary>
+    private static bool ReplaceWhenChanged<T>(ObservableCollection<T> destination, IEnumerable<T> source)
     {
         var items = source.ToArray();
-        if (items.SequenceEqual(destination)) return;
+        if (items.SequenceEqual(destination)) return false;
         destination.Clear(); foreach (T item in items) destination.Add(item);
+        return true;
     }
 
     private void UpdateApplications(SonarSnapshot snapshot)
@@ -162,14 +176,17 @@ public partial class MixerWorkspace : UserControl
             if (row is null) { row = new(key, observed.ProcessId, observed.Name, observed.DataFlow); _model.Applications.Add(row); }
             row.SessionIds = group.Select(a => a.SessionId).Where(id => id.Length > 0).Distinct(StringComparer.Ordinal).ToArray();
             var routes = snapshot.Channels.Where(c => row.SessionIds.Count > 0 && c.VirtualDeviceId is not null && ChannelReady(snapshot, c) && (observed.DataFlow == "capture" ? c.Id == "mic" : c.Id is "game" or "chat" or "media" or "aux")).Select(c => new RouteChoice(c.VirtualDeviceId!, c.Name));
-            ReplaceWhenChanged(row.Routes, routes);
+            bool routesReplaced = ReplaceWhenChanged(row.Routes, routes);
             var active = group.Where(a => a.State == "active").ToArray();
             var ids = (active.Length > 0 ? active : group.ToArray()).Select(a => a.DeviceId).Distinct(StringComparer.Ordinal).ToArray();
             row.RouteId = ids.Length == 1 ? ids[0] : null;
+            // Rebuilding the list clears the box's selection while RouteId stays the same; show it again.
+            if (routesReplaced) row.RefreshRoute();
             row.Status = group.Any(a => a.RoutingErrorDetected) ? "Windows reported a routing error" : active.Length == 0 ? "Idle audio session" :
                 active.Select(a => a.DeviceId).Distinct(StringComparer.Ordinal).Count() > 1 ? "Active sessions on different devices" :
                 row.Routes.Any(r => r.Id == active[0].DeviceId) ? "Active session on this channel" : "Active on another Windows device";
         }
+        for (int i = 0; i < _model.Applications.Count; i++) _model.Applications[i].IsLast = i == _model.Applications.Count - 1;
         EmptyApps.Visibility = _model.Applications.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
@@ -294,7 +311,7 @@ public partial class MixerWorkspace : UserControl
     {
         if (!IsLoaded) return;
         _preferences.Linked = LinkOutputs.IsChecked == true;
-        _ = SavePreferences();
+        _ = SavePreferencesAsync();
     }
 
     private async void ApplicationRouteChanged(object sender, SelectionChangedEventArgs e)
@@ -349,11 +366,12 @@ public partial class MixerWorkspace : UserControl
         await RouteAsync(app, channel.VirtualDeviceId);
     }
 
-    private bool SavePreferences()
+    /// <summary>Saves the mixer settings off the UI thread (skipped when nothing changed); false when they were not saved.</summary>
+    private async Task<bool> SavePreferencesAsync()
     {
-        if (!_initialized || _disposed) return false;
-        try { _preferences.Save(); return true; }
-        catch (Exception ex) when (IsExpected(ex)) { StatusText.Text = "Settings were not saved: " + ex.Message; return false; }
+        if (!_initialized || _disposed || _preferencesFile is null) return false;
+        try { await _preferencesFile.SaveAsync(_preferences.Serialize()); return true; }
+        catch (Exception ex) when (IsExpected(ex)) { if (!_disposed) StatusText.Text = "Settings were not saved: " + ex.Message; return false; }
     }
 
     private void SettingsClick(object sender, RoutedEventArgs e)
@@ -383,11 +401,15 @@ public partial class MixerWorkspace : UserControl
         var save = new Button { Content = "Save settings", HorizontalAlignment = HorizontalAlignment.Right };
         panel.Children.Add(save);
         var dialog = new Window { Title = "Sonar settings", Width = 560, SizeToContent = SizeToContent.Height, ResizeMode = ResizeMode.NoResize, Owner = Window.GetWindow(this), WindowStartupLocation = WindowStartupLocation.CenterOwner, Content = panel };
-        save.Click += (_, _) =>
+        save.Click += async (_, _) =>
         {
             _preferences.Shortcuts = enabled.IsChecked == true;
             _preferences.Favorite1 = selectors[0].SelectedValue as string; _preferences.Favorite2 = selectors[1].SelectedValue as string;
-            if (SavePreferences())
+            save.IsEnabled = false;
+            bool saved;
+            try { saved = await SavePreferencesAsync(); }
+            finally { save.IsEnabled = true; }
+            if (saved)
             {
                 try { if (launchAtLogin.IsEnabled) _hostOptions.SetStartupEnabled?.Invoke(launchAtLogin.IsChecked == true); RegisterShortcuts(); dialog.Close(); }
                 catch (Exception ex) when (IsExpected(ex)) { save.Content = "Startup setting failed — retry"; save.ToolTip = ex.Message; }
@@ -408,18 +430,42 @@ public partial class MixerWorkspace : UserControl
         bool second = NativeHotkeys.RegisterHotKey(handle, 8102, 0x4003, 0x32);
         if (!first || !second) StatusText.Text = "A device shortcut is already used by another app. Change or disable it in Settings.";
     }
+    /// <summary>
+    /// The device shortcuts belong to a message-only window of the workspace's own, so they work while the mixer is
+    /// not shown, before the host window exists, and while it is hidden in the notification area.
+    /// </summary>
+    private void StartShortcutWindow()
+    {
+        if (!_hostOptions.EnableGlobalShortcuts || _windowSource is not null) return;
+        _windowSource = new HwndSource(new HwndSourceParameters("Soltex Sonar shortcuts") { ParentWindow = new nint(-3), WindowStyle = 0 });
+        _windowSource.AddHook(WindowMessage);
+        _shortcutHandle = _windowSource.Handle;
+        RegisterShortcuts();
+    }
+
     private nint WindowMessage(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
     {
         if (message == 0x0312 && (wParam == 8101 || wParam == 8102))
         {
             string? id = wParam == 8101 ? _preferences.Favorite1 : _preferences.Favorite2;
-            if (id is not null) _ = ManualOutputAsync("game", id, true);
+            if (id is not null) _ = ShortcutAsync(id);
             handled = true;
         }
         return 0;
     }
+
+    private async Task ShortcutAsync(string id)
+    {
+        // Sonar may have started after Soltex did: connect first, so the shortcut works without opening the mixer.
+        if (_sonar is null && !_disposed) await ConnectAsync();
+        if (_sonar is not null && !_disposed) await ManualOutputAsync("game", id, true);
+    }
+
     private async Task FinishShutdownAsync()
     {
+        // Settings already queued (a closing window's size, a last change) reach the disk before the workspace ends.
+        if (_preferencesFile is not null) await _preferencesFile.Pending;
+        if (_policyFile is not null) await _policyFile.Pending;
         // The closing handler awaits this without blocking Dispatcher continuations.
         await _operations.WaitAsync();
         try
@@ -464,18 +510,11 @@ internal sealed class Preferences
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException or System.Security.SecurityException)
         { return new() { _preserveUnreadable = true, PathName = path }; }
     }
-    public void Save()
+    /// <summary>The file's content now, on the caller's thread; <see cref="SettingsFile"/> writes it off the UI thread.</summary>
+    public byte[] Serialize()
     {
         if (_preserveUnreadable) throw new InvalidOperationException("The settings file couldn't be read, so it was left as it is. Move preferences.json out of " + Path.GetDirectoryName(PathName) + " and reopen the mixer to reset settings.");
         if (Version != 1) throw new InvalidOperationException("The settings file is from a different Soltex version, so it was left as it is.");
-        Directory.CreateDirectory(Path.GetDirectoryName(PathName)!);
-        string temporary = PathName + "." + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture) + ".tmp";
-        try
-        {
-            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
-            { JsonSerializer.Serialize(stream, this); stream.Flush(flushToDisk: true); }
-            Soltex.Shared.AtomicFileReplace.Move(temporary, PathName);
-        }
-        finally { try { if (File.Exists(temporary)) File.Delete(temporary); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        return JsonSerializer.SerializeToUtf8Bytes(this);
     }
 }

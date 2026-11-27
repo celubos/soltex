@@ -170,7 +170,7 @@ public sealed class WasapiStreamMixer : IDisposable
                 PcmDecoder.Decode([], [], format);
                 decoded = new float[Math.Max(1, format.SampleRate / 50) * format.Channels];
                 Source = new(format.SampleRate, format.Channels, format.SampleRate * config.BufferMs / 1000, source.Dsp, source.Personal, source.Stream);
-                Input = input; Input.DataAvailable += Data; Input.RecordingStopped += Stopped;
+                Input = input; Input.DataAvailable += Data; Input.RecordingStopped += Stopped; AudioThreadScheduling.ReleaseOnStop(Input);
             }
             catch { try { input?.Dispose(); } finally { device?.Dispose(); } throw; }
         }
@@ -235,7 +235,7 @@ public sealed class WasapiStreamMixer : IDisposable
                 Sum = new(sources, config.OutputCeiling); Guard = new(Sum, config.OutputCeiling);
                 Head = new RenderHeadSampleProvider(Guard);
                 output.Init(Head.ToWaveProvider());
-                Output = output; Output.PlaybackStopped += stopped;
+                Output = output; Output.PlaybackStopped += stopped; AudioThreadScheduling.ReleaseOnStop(Output);
             }
             catch { try { output?.Dispose(); } finally { device?.Dispose(); } throw; }
         }

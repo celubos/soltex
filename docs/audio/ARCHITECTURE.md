@@ -41,8 +41,14 @@ Two running modes exclude each other:
 Switching outputs opens the new path muted, checks it, ramps the old path down, retires it, then ramps the new path in.
 Known shared-cable identities and feedback loops are refused. Sonar endpoints are refused in this graph.
 
-The microphone test is a separate, explicitly started 15-second capture that reports per-input peak and RMS; it does
+The microphone test is a separate, explicitly started 10-second capture that reports per-input peak and RMS; it does
 not play back or save audio. `DspSettings.InputChannel` picks one hardware input and centres it.
+
+Every capture-to-render path, and each send of the stream mix, converts sample rates with
+`AdaptiveResamplingSampleProvider`: a 64-tap Kaiser-windowed sinc that also absorbs the drift between the capture and
+render device clocks. A control loop trims the ratio by at most ±0.5 % to hold the bus between them at a small target
+fill, so independent clocks no longer cause periodic dropouts or slowly growing delay; a real underrun is concealed
+with a short fade and counted. Details and measurements are in `src/Soltex.Audio.Engine/README.md`.
 
 ## Endpoints
 
@@ -71,7 +77,10 @@ broker service and production signing.
 
 Original code: ten-band parametric EQ, gate, compressor, downward expander, stationary noise suppression (manual noise
 floor, about 20–40 ms of added delay), stereo width/pan/crossfeed/mono/swap, gain, headroom and an output ceiling.
-Noise suppression is not machine-learning speech isolation, and the stereo tools are not HRTF. Details are in
+Two options are off by default: **Smooth background** switches noise suppression to a decision-directed gain rule that
+leaves a steadier residual instead of isolated warbling, and the **Safety limiter** replaces the hard clamp at the
+ceiling with a channel-linked lookahead limiter (about 1.5 ms, true-peak aware) that is an exact delay below the
+ceiling. Noise suppression is not machine-learning speech isolation, and the stereo tools are not HRTF. Details are in
 `src/Soltex.Audio.Engine/README.md`.
 
 The Sonar tab's percentages map to Sonar's own controls; Soltex's DSP uses dB. The two engines are separate and their
@@ -80,5 +89,5 @@ settings are never combined.
 ## Limits
 
 Not yet qualified on hardware: the owned driver, stream mode end to end, acoustic latency, long-run clock drift
-between devices, hot-plug of wireless devices, and mixed-DPI layouts. Automated tests use fake devices, real local
-pipes and known PCM signals.
+between real devices (the drift correction is tested against simulated clocks), hot-plug of wireless devices, and
+mixed-DPI layouts. Automated tests use fake devices, real local pipes and known PCM signals.

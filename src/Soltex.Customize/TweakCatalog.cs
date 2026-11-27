@@ -40,10 +40,22 @@ public static class TweakCatalog
 
     /// <summary>Several named options over one value. <paramref name="profile"/> is the option the De-Windows profile picks.</summary>
     private static SettingDefinition Choice(string id, SettingGroup group, string title, string path, string name, RegistryValue implied,
-        TakesEffect effect, (string Label, RegistryValue Value)[] options, int? profile = null, int minimumBuild = 0, string subtitle = "") =>
+        TakesEffect effect, (string Label, RegistryValue Value)[] options, int? profile = null, int minimumBuild = 0, string subtitle = "", string? note = null) =>
         new(id, group, title, subtitle, "", effect, profile is not null,
             [new RegistryTarget(path, name, profile is int p ? options[p].Value : implied, implied, implied)], [], minimumBuild, "TW",
-            options.Select(o => new SettingChoice(o.Label, [o.Value])).ToArray());
+            options.Select(o => new SettingChoice(o.Label, [o.Value])).ToArray(), Note: note);
+
+    /// <summary>
+    /// On/off switch over one bit of a flags number Windows stores as decimal text (the accessibility "Flags" values).
+    /// Only that bit changes; the other bits (such as whether the feature itself is on) are kept. <paramref name="implied"/>
+    /// is the whole value Windows assumes while none is stored.
+    /// </summary>
+    private static SettingDefinition Flag(string id, SettingGroup group, string title, string path, string name, int bit, string implied, TakesEffect effect) =>
+        new(id, group, title, "", "", effect, false, [new RegistryTarget(path, name, D(bit), D(bit), S(implied), bit)], [], 0, "TW",
+            [new SettingChoice("Off", [D(0)]), new SettingChoice("On", [D(bit)])], IsSwitch: true);
+
+    /// <summary>The accessibility flag that lets the keyboard shortcut turn the feature on (SKF_/FKF_/TKF_HOTKEYACTIVE).</summary>
+    private const int ShortcutBit = 0x4;
 
     public static IReadOnlyList<SettingDefinition> All { get; } =
     [
@@ -73,8 +85,11 @@ public static class TweakCatalog
         Switch("taskbar.animations", SettingGroup.Taskbar, "Taskbar animations", Advanced, "TaskbarAnimations", D(1), D(0), D(1), TakesEffect.ExplorerRestart),
 
         // ---- Start ----
+        // Only the classic Start reads this; the redesigned Start (rolling out to 24H2 and 25H2 since late 2025) ignores it,
+        // and which one a PC shows cannot be told reliably, so it is not part of the one-click profile.
         Choice("start.layout", SettingGroup.StartAndSearch, "Layout", Advanced, "Start_Layout", D(0), TakesEffect.NextStartOpen,
-            [("Default", D(0)), ("More pins", D(1)), ("More recommendations", D(2))], profile: 1, minimumBuild: 22621),
+            [("Default", D(0)), ("More pins", D(1)), ("More recommendations", D(2))], minimumBuild: 22621,
+            note: "Only the classic Start menu uses this; the redesigned Start menu ignores it."),
 
         // ---- File Explorer ----
         Switch("explorer.extensions", SettingGroup.FileExplorer, "File name extensions", Advanced, "HideFileExt", D(0), D(1), D(1), TakesEffect.Immediately, profileOn: true),
@@ -93,7 +108,9 @@ public static class TweakCatalog
             minimumBuild: 22621),
         Switch("explorer.gallery", SettingGroup.FileExplorer, "Gallery in the navigation pane", GalleryPin, PinnedToTree, None, D(0), D(1), TakesEffect.ExplorerRestart,
             minimumBuild: 22621),
-        Switch("explorer.onedrive", SettingGroup.FileExplorer, "OneDrive in the navigation pane", OneDrivePin, PinnedToTree, None, D(0), D(1), TakesEffect.ExplorerRestart),
+        // OneDrive registers this CLSID for the user only (no machine-wide copy shows through), and the item is shown only
+        // while the value is 1: On writes 1, and a missing value means it is hidden.
+        Switch("explorer.onedrive", SettingGroup.FileExplorer, "OneDrive in the navigation pane", OneDrivePin, PinnedToTree, D(1), D(0), D(0), TakesEffect.ExplorerRestart),
         Switch("explorer.expandfolder", SettingGroup.FileExplorer, "Expand the navigation pane to the open folder", Advanced, "NavPaneExpandToCurrentFolder", D(1), D(0), D(0),
             TakesEffect.Immediately),
         Switch("explorer.allfolders", SettingGroup.FileExplorer, "Show all folders in the navigation pane", Advanced, "NavPaneShowAllFolders", D(1), D(0), D(0),
@@ -104,7 +121,8 @@ public static class TweakCatalog
         // ---- Appearance ----
         Choice("appearance.apps", SettingGroup.Appearance, "App mode", Personalize, "AppsUseLightTheme", D(1), TakesEffect.Immediately,
             [("Light", D(1)), ("Dark", D(0))]),
-        Choice("appearance.windows", SettingGroup.Appearance, "Windows mode", Personalize, "SystemUsesLightTheme", D(1), TakesEffect.Immediately,
+        // Without a value Windows draws the taskbar and Start dark (apps, above, default to light).
+        Choice("appearance.windows", SettingGroup.Appearance, "Windows mode", Personalize, "SystemUsesLightTheme", D(0), TakesEffect.Immediately,
             [("Light", D(1)), ("Dark", D(0))]),
         Switch("appearance.transparency", SettingGroup.Appearance, "Transparency effects", Personalize, "EnableTransparency", D(1), D(0), D(1), TakesEffect.Immediately),
         Switch("appearance.accentstart", SettingGroup.Appearance, "Accent color on Start and taskbar", Personalize, "ColorPrevalence", D(1), D(0), D(0), TakesEffect.Immediately),
@@ -137,14 +155,18 @@ public static class TweakCatalog
             [new(Mouse, "MouseSpeed", S("1"), S("1"), S("1")), new(Mouse, "MouseThreshold1", S("6"), S("6"), S("6")), new(Mouse, "MouseThreshold2", S("10"), S("10"), S("10"))],
             [], 0, "TW", [new SettingChoice("Off", [S("0"), S("0"), S("0")]), new SettingChoice("On", [S("1"), S("6"), S("10")])], IsSwitch: true),
         Switch("input.inactivescroll", SettingGroup.Input, "Scroll inactive windows when hovering over them", Desktop, "MouseWheelRouting", D(2), D(0), D(2), TakesEffect.SignOut),
-        Switch("input.stickykeys", SettingGroup.Input, "Sticky Keys pop-up (press Shift five times)", Accessibility + @"\StickyKeys", "Flags", S("510"), S("506"), S("510"),
+        // Windows' defaults when nothing is stored: 510, 126 and 62 (shortcut on, the features themselves off).
+        Flag("input.stickykeys", SettingGroup.Input, "Sticky Keys shortcut (press Shift five times)", Accessibility + @"\StickyKeys", "Flags", ShortcutBit, "510",
             TakesEffect.SignOut),
-        Switch("input.filterkeys", SettingGroup.Input, "Filter Keys pop-up (hold right Shift)", Accessibility + @"\Keyboard Response", "Flags", S("126"), S("122"), S("126"),
+        Flag("input.filterkeys", SettingGroup.Input, "Filter Keys shortcut (hold right Shift for eight seconds)", Accessibility + @"\Keyboard Response", "Flags", ShortcutBit, "126",
             TakesEffect.SignOut),
-        Switch("input.togglekeys", SettingGroup.Input, "Toggle Keys pop-up (hold Num Lock)", Accessibility + @"\ToggleKeys", "Flags", S("62"), S("58"), S("62"), TakesEffect.SignOut),
+        Flag("input.togglekeys", SettingGroup.Input, "Toggle Keys shortcut (hold Num Lock for five seconds)", Accessibility + @"\ToggleKeys", "Flags", ShortcutBit, "62",
+            TakesEffect.SignOut),
 
         // ---- Gaming (Multitasking page) ----
-        Switch("gaming.gamebar", SettingGroup.Gaming, "Game Bar (Win+G)", GameBar, "UseNexusForGameBarEnabled", D(1), D(0), D(1), TakesEffect.Immediately),
+        // UseNexusForGameBarEnabled is Settings' "Allow your controller to open Game Bar"; it does not govern Win+G.
+        Switch("gaming.gamebar", SettingGroup.Gaming, "Open Game Bar with the controller's Xbox button", GameBar, "UseNexusForGameBarEnabled", D(1), D(0), D(1),
+            TakesEffect.Immediately),
         Switch("gaming.gamemode", SettingGroup.Gaming, "Game Mode", GameBar, "AutoGameModeEnabled", D(1), D(0), D(1), TakesEffect.Immediately),
         // Windows Settings writes both values together: the capture service's own switch and the per-user app capture switch.
         new("gaming.captures", SettingGroup.Gaming, "Game clips and screenshots (Win+Alt+R)", "", "", TakesEffect.Immediately, false,

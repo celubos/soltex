@@ -17,11 +17,27 @@ public sealed class PowerToolsPanel : UserControl
         [(WindowZonesLayout.Off, "Off"), (WindowZonesLayout.TwoColumns, "Two columns"), (WindowZonesLayout.ThreeColumns, "Three columns"),
          (WindowZonesLayout.Grid, "Four quarters"), (WindowZonesLayout.Focus, "Wide center")];
 
+    /// <summary>One remap's row. Rows are filled in place when settings change, so the list a key is being chosen in keeps focus.</summary>
+    private sealed class RemapParts
+    {
+        public required Border Row { get; init; }
+        public required ComboBox From { get; init; }
+        public required ComboBox To { get; init; }
+        public required Button Remove { get; init; }
+        public KeyRemap Remap { get; set; } = new(0, 0);
+        /// <summary>No target chosen yet (From == To): "Acts as" starts with a "Choose a key" item.</summary>
+        public bool? Unset { get; set; }
+        public int Offset => Unset == true ? 2 : 1;
+    }
+
     private readonly ShellContext context;
     private readonly CheckBox textExtractor;
     private readonly TextBlock textExtractorNote;
     private readonly ComboBox zones;
+    private readonly Border renameRow, remapRow;
+    private readonly Button addRemap;
     private readonly StackPanel remaps = new();
+    private readonly List<RemapParts> remapRows = [];
     private bool loading;
 
     internal PowerToolsPanel(ShellContext context)
@@ -39,21 +55,25 @@ public sealed class PowerToolsPanel : UserControl
         textExtractor.Unchecked += (_, _) => Update(s => s with { TextExtractorShortcut = false });
         body.Children.Add(Row("Text extractor", TextExtractorNote, textExtractor, out textExtractorNote));
 
-        zones = new ComboBox { MinWidth = 200, ItemsSource = Layouts.Select(l => l.Label).ToArray() };
+        // The same width as the lists on the Windows settings pages.
+        zones = new ComboBox { Width = CustomizePage.ChoiceWidth, ItemsSource = Layouts.Select(l => l.Label).ToArray() };
         AutomationProperties.SetName(zones, "Window zones");
         zones.SelectionChanged += (_, _) => { if (zones.SelectedIndex >= 0) Update(s => s with { WindowZones = Layouts[zones.SelectedIndex].Layout }); };
         body.Children.Add(Row("Window zones", "Hold Shift while dragging a window, then drop it in a zone", zones, out _));
 
-        Button rename = new() { Content = "Open" };
+        // Opens a window that asks what to rename, so it ends with "…" like the other buttons that ask first.
+        Button rename = new() { Content = "Open…" };
         AutomationProperties.SetName(rename, "Open batch rename");
         rename.Click += (_, _) => new BatchRenameWindow { Owner = context.Owner }.Show();
-        body.Children.Add(Row("Batch rename", "Find and replace in many file names at once, with a preview and undo", rename, out _));
+        renameRow = Row("Batch rename", "Find and replace in many file names at once, with a preview and undo", rename, out _);
+        body.Children.Add(renameRow);
 
         // A new row does nothing until both keys are chosen: From == To is never remapped.
-        Button add = new() { Content = "Add a remap" };
-        AutomationProperties.SetName(add, "Add a key remap");
-        add.Click += (_, _) => Update(s => { int key = FirstFree(s); return s with { KeyRemaps = [.. s.KeyRemaps, new KeyRemap(key, key)] }; });
-        body.Children.Add(Row("Key remapping", "Make a key act as another key, or turn it off", add, out _));
+        addRemap = new Button { Content = "Add a remap" };
+        AutomationProperties.SetName(addRemap, "Add a key remap");
+        addRemap.Click += (_, _) => Update(s => { int key = FirstFree(s); return s with { KeyRemaps = [.. s.KeyRemaps, new KeyRemap(key, key)] }; });
+        remapRow = Row("Key remapping", "Make a key act as another key, or turn it off", addRemap, out _);
+        body.Children.Add(remapRow);
         body.Children.Add(remaps);
         Content = body;
         context.Services.Settings.Changed += _ => Dispatcher.InvokeAsync(Refresh);
@@ -64,6 +84,12 @@ public sealed class PowerToolsPanel : UserControl
 
     internal CheckBox TextExtractorSwitch => textExtractor;
     internal ComboBox ZonesList => zones;
+    /// <summary>The batch rename row (search reveals it).</summary>
+    internal Border RenameRow => renameRow;
+    /// <summary>The key remapping row with its Add button (search reveals it).</summary>
+    internal Border RemapRow => remapRow;
+    /// <summary>Each remap's "Key to remap" list, top to bottom.</summary>
+    internal IReadOnlyList<ComboBox> RemapFromLists => [.. remapRows.Select(r => r.From)];
 
     internal void Refresh()
     {
@@ -73,8 +99,23 @@ public sealed class PowerToolsPanel : UserControl
             AppSettings s = context.Services.Settings.Current;
             textExtractor.IsChecked = s.TextExtractorShortcut;
             zones.SelectedIndex = Math.Max(0, Array.FindIndex(Layouts, l => l.Layout == s.WindowZones));
-            remaps.Children.Clear();
-            foreach (KeyRemap remap in s.KeyRemaps) remaps.Children.Add(RemapRow(remap));
+            // Rows are added or removed at the end and the rest filled in place: a row being edited is never rebuilt.
+            while (remapRows.Count > s.KeyRemaps.Count)
+            {
+                RemapParts last = remapRows[^1];
+                bool hadFocus = FocusSnapshot.HasFocus(last.Row);
+                remapRows.RemoveAt(remapRows.Count - 1);
+                remaps.Children.Remove(last.Row);
+                // The removed row's place goes to the row above it, or back to Add a remap.
+                if (hadFocus) (remapRows.Count > 0 ? (UIElement)remapRows[^1].Remove : addRemap).Focus();
+            }
+            while (remapRows.Count < s.KeyRemaps.Count)
+            {
+                RemapParts parts = NewRemapRow();
+                remapRows.Add(parts);
+                remaps.Children.Add(parts.Row);
+            }
+            for (int i = 0; i < remapRows.Count; i++) Fill(remapRows[i], s.KeyRemaps[i]);
         }
         finally { loading = false; }
     }
@@ -86,24 +127,44 @@ public sealed class PowerToolsPanel : UserControl
     private static int FirstFree(AppSettings s) =>
         KeyRemapper.Keys.Select(k => k.Key).Where(k => !KeyRemapper.IsModifier(k)).FirstOrDefault(k => s.KeyRemaps.All(r => r.From != k), 0x14);
 
-    private Border RemapRow(KeyRemap remap)
+    private static readonly string[] KeyNames = [.. KeyRemapper.Keys.Select(k => k.Name)];
+
+    /// <summary>Shows a saved remap in its row (called with <see cref="loading"/> set, so nothing is saved back).</summary>
+    private static void Fill(RemapParts parts, KeyRemap remap)
     {
-        // Until a target is chosen the row is inactive (From == To) and "Acts as" starts with a "Choose a key" item.
+        parts.Remap = remap;
         bool unset = remap.From == remap.To;
-        int offset = unset ? 2 : 1;
-        string[] names = [.. KeyRemapper.Keys.Select(k => k.Name)];
-        string[] targets = unset ? [ChooseKey, "Turned off", .. names] : ["Turned off", .. names];
-        ComboBox from = new() { MinWidth = 150, ItemsSource = names, SelectedIndex = KeyIndex(remap.From) };
-        ComboBox to = new()
+        if (parts.Unset != unset)
         {
-            MinWidth = 150, ItemsSource = targets, Margin = new Thickness(8, 0, 0, 0),
-            SelectedIndex = unset ? 0 : remap.To == 0 ? 0 : KeyIndex(remap.To) + offset
-        };
+            parts.Unset = unset;
+            string[] targets = unset ? [ChooseKey, "Turned off", .. KeyNames] : ["Turned off", .. KeyNames];
+            parts.To.ItemsSource = targets;
+        }
+        parts.From.SelectedIndex = KeyIndex(remap.From);
+        parts.To.SelectedIndex = unset ? 0 : remap.To == 0 ? 0 : KeyIndex(remap.To) + parts.Offset;
+    }
+
+    private RemapParts NewRemapRow()
+    {
+        ComboBox from = new() { MinWidth = 150, ItemsSource = KeyNames };
+        ComboBox to = new() { MinWidth = 150, Margin = new Thickness(8, 0, 0, 0) };
         AutomationProperties.SetName(from, "Key to remap");
         AutomationProperties.SetName(to, "Acts as");
+        Button remove = new() { Content = "Remove", Style = (Style)FindResource("Studio.GhostButton"), Margin = new Thickness(8, 0, 0, 0) };
+        AutomationProperties.SetName(remove, "Remove key remap");
+        StackPanel line = new() { Orientation = Orientation.Horizontal };
+        line.Children.Add(from);
+        line.Children.Add(new TextBlock { Text = "→", Style = (Style)FindResource("Shell.Body"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) });
+        line.Children.Add(to);
+        line.Children.Add(remove);
+        RemapParts parts = new() { Row = new Border { Style = (Style)FindResource("Studio.Row"), Child = line, Margin = new Thickness(24, 0, 0, 0) }, From = from, To = to, Remove = remove };
+
         void Save()
         {
             if (loading || from.SelectedIndex < 0 || to.SelectedIndex < 0) return;
+            KeyRemap remap = parts.Remap;
+            bool unset = parts.Unset == true;
+            int offset = parts.Offset;
             (int fromKey, string fromName) = KeyRemapper.Keys[from.SelectedIndex];
             int toKey = unset && to.SelectedIndex == 0 ? fromKey
                 : to.SelectedIndex == offset - 1 ? 0
@@ -120,22 +181,17 @@ public sealed class PowerToolsPanel : UserControl
         }
         from.SelectionChanged += (_, _) => Save();
         to.SelectionChanged += (_, _) => Save();
-        Button remove = new() { Content = "Remove", Style = (Style)FindResource("Studio.GhostButton"), Margin = new Thickness(8, 0, 0, 0) };
-        AutomationProperties.SetName(remove, "Remove key remap");
-        remove.Click += (_, _) => Update(s => s with { KeyRemaps = [.. s.KeyRemaps.Where(r => r != remap)] });
-        StackPanel line = new() { Orientation = Orientation.Horizontal };
-        line.Children.Add(from);
-        line.Children.Add(new TextBlock { Text = "→", Style = (Style)FindResource("Shell.Body"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) });
-        line.Children.Add(to);
-        line.Children.Add(remove);
-        return new Border { Style = (Style)FindResource("Studio.Row"), Child = line, Margin = new Thickness(24, 0, 0, 0) };
+        remove.Click += (_, _) => { KeyRemap remap = parts.Remap; Update(s => s with { KeyRemaps = [.. s.KeyRemaps.Where(r => r != remap)] }); };
+        return parts;
     }
 
     private static int KeyIndex(int key) => Math.Max(0, KeyRemapper.Keys.ToList().FindIndex(k => k.Key == key));
 
+    /// <summary>Saves a change; when the settings file can't be written, says so and shows the saved choices again.</summary>
     private void Update(Func<AppSettings, AppSettings> change)
     {
-        if (!loading) context.Services.Settings.Update(change);
+        if (loading) return;
+        if (!PageSettings.TrySave(context, change)) Refresh();
     }
 
     private Border Row(string title, string note, Control control, out TextBlock noteText)

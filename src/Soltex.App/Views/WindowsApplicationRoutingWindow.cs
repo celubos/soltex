@@ -28,8 +28,9 @@ public sealed class WindowsApplicationRoutingWindow : Window
     private Task? _operation, _shutdown;
     private bool _closing, _closed, _routeChecked;
     private string? _journal;
-    private sealed record RouteChoice(string? Id, string Label);
-    private sealed record HistoryChoice(string Path, string Label);
+    // ToString is what a screen reader announces for a list item.
+    private sealed record RouteChoice(string? Id, string Label) { public override string ToString() => Label; }
+    private sealed record HistoryChoice(string Path, string Label) { public override string ToString() => Label; }
 
     public WindowsApplicationRoutingWindow(AudioSessionInfo selected, IReadOnlyList<AudioSessionEndpoint> endpoints, string directory)
     {
@@ -40,8 +41,8 @@ public sealed class WindowsApplicationRoutingWindow : Window
         SetResourceReference(BackgroundProperty, "SolidBackgroundFillColorBaseBrush");
         SetResourceReference(ForegroundProperty, "TextFillColorPrimaryBrush");
         _choices = [new(null, "Windows default")];
-        _choices.AddRange(endpoints.Select(e => new RouteChoice(e.Id,
-            endpoints.Count(other => other.Name == e.Name) > 1 ? e.Name + " · " + e.Id[^Math.Min(9, e.Id.Length)..] : e.Name)));
+        // Devices that share a name are numbered "(2)", "(3)" like the rest of the app, never labelled with internal IDs.
+        _choices.AddRange(endpoints.Select(e => new RouteChoice(e.Id, e.Name + Soltex.Audio.UI.DeviceNames.DuplicateSuffix(endpoints, e, endpoint => endpoint.Name))));
         _target.ItemsSource = _choices; _target.SelectedIndex = 0;
         System.Windows.Automation.AutomationProperties.SetName(_target, "Output for " + selected.Name);
         var panel = new StackPanel { Margin = new Thickness(24) };

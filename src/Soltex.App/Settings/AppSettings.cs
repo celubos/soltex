@@ -212,15 +212,20 @@ public sealed record AppSettings
 }
 
 /// <summary>
-/// Taskbar states as a JSON object keyed by state name, written in state order. Names this version does not know (a
-/// state added by a newer version) are skipped instead of failing the whole settings file.
+/// Taskbar states as a JSON object keyed by state name, written in state order. Read leniently: a name this version does
+/// not know (a state added by a newer version), or a look it cannot read (say, a style added by a newer version), skips
+/// only that state, which then keeps its starting look; the other states and every other setting still load.
 /// </summary>
 internal sealed class TaskbarStatesJsonConverter : JsonConverter<IReadOnlyDictionary<TaskbarState, TaskbarStateLook>>
 {
     public override IReadOnlyDictionary<TaskbarState, TaskbarStateLook>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         if (reader.TokenType == JsonTokenType.Null) return null;
-        if (reader.TokenType != JsonTokenType.StartObject) throw new JsonException("Taskbar states must be an object.");
+        if (reader.TokenType != JsonTokenType.StartObject)
+        {
+            reader.Skip(); // not an object: every state keeps its starting look
+            return null;
+        }
         Dictionary<TaskbarState, TaskbarStateLook> states = [];
         while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
         {
@@ -231,7 +236,16 @@ internal sealed class TaskbarStatesJsonConverter : JsonConverter<IReadOnlyDictio
                 reader.Skip();
                 continue;
             }
-            if (JsonSerializer.Deserialize<TaskbarStateLook>(ref reader, options) is { } look) states[state] = look;
+            // Read the whole value first, so a look that cannot be converted leaves the reader past it.
+            using JsonDocument value = JsonDocument.ParseValue(ref reader);
+            try
+            {
+                if (value.RootElement.Deserialize<TaskbarStateLook>(options) is { } look) states[state] = look;
+            }
+            catch (JsonException)
+            {
+                // A look from a newer version: this state keeps its starting look.
+            }
         }
         return states;
     }

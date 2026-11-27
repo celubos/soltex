@@ -98,7 +98,7 @@ public sealed class DesktopService : IDisposable
             {
                 window = new DesktopWidgetWindow(widget, onDesktop);
                 DesktopWidgetKind kind = widget.Kind;
-                window.BoundsCommitted += bounds => settings.Update(s => s with
+                window.BoundsCommitted += bounds => TrySave(s => s with
                 {
                     DesktopWidgets = [.. s.DesktopWidgets.Select(w => w.Kind == kind ? w with { Left = bounds.Left, Top = bounds.Top } : w)]
                 });
@@ -116,7 +116,26 @@ public sealed class DesktopService : IDisposable
         a with { Items = [] } == b with { Items = [] } && a.Items.SequenceEqual(b.Items, StringComparer.OrdinalIgnoreCase);
 
     private void SaveGroup(string id, Func<DesktopGroup, DesktopGroup> change) =>
-        settings.Update(s => s with { DesktopGroups = [.. s.DesktopGroups.Select(g => g.Id == id ? change(g) : g)] });
+        TrySave(s => s with { DesktopGroups = [.. s.DesktopGroups.Select(g => g.Id == id ? change(g) : g)] });
+
+    /// <summary>
+    /// Raised when a change made on the desktop (a move, resize, roll-up, drop or removal) could not be saved because the
+    /// settings file can't be written. Groups and widgets keep showing the saved state, except that a moved or resized
+    /// surface stays where it was put until the app restarts (moving it back could push a rescued surface off screen).
+    /// </summary>
+    public event Action<string>? SaveFailed;
+
+    /// <summary>Saves a change made on the desktop; a settings file that can't be written is reported, never thrown into the window's event.</summary>
+    private void TrySave(Func<AppSettings, AppSettings> change)
+    {
+        try { settings.Update(change); }
+        catch (Exception error) when (error is System.IO.IOException or UnauthorizedAccessException)
+        {
+            string message = "A change to a desktop group or widget could not be saved: " + error.Message;
+            System.Diagnostics.Trace.WriteLine(message);
+            SaveFailed?.Invoke(message);
+        }
+    }
 
     private static void Retire(DesktopSurfaceWindow window)
     {

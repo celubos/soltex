@@ -10,6 +10,8 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Soltex.Audio.Engine.Tests" />
+    <!-- MMCSS scheduler seam for the owned worker thread checks. -->
+    <InternalsVisibleTo Include="Soltex.Audio.OwnedEndpoints.Tests" />
   </ItemGroup>
   <ItemGroup>
     <Compile Remove="Program.cs" />

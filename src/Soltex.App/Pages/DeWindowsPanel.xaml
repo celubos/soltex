@@ -1,20 +1,21 @@
 <UserControl x:Class="Soltex.App.Pages.DeWindowsPanel"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:audio="clr-namespace:Soltex.Audio.UI;assembly=Soltex.Audio.UI"
+             xmlns:controls="clr-namespace:Soltex.App.Controls">
     <Border Style="{StaticResource Shell.Card}" AutomationProperties.Name="De-Windows">
         <StackPanel>
-            <DockPanel>
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button x:Name="UndoAllButton" Content="Undo…" Margin="0,0,8,0" Click="UndoAll_Click"
-                            AutomationProperties.Name="Undo the De-Windows changes" />
-                    <Button x:Name="ReviewButton" Style="{StaticResource Studio.PrimaryButton}" Content="Review…" Click="Review_Click"
-                            AutomationProperties.Name="Review the De-Windows changes" />
-                </StackPanel>
+            <!-- The buttons move below the summary when the page is narrow. -->
+            <audio:ResponsiveRow MinPrimaryWidth="200" Spacing="8">
                 <StackPanel VerticalAlignment="Center">
                     <TextBlock Style="{StaticResource Shell.CardTitle}" Text="De-Windows" />
-                    <TextBlock x:Name="Summary" Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock x:Name="Summary" Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" controls:LiveRegion.IsLive="True" />
                 </StackPanel>
-            </DockPanel>
+                <Button x:Name="UndoAllButton" Content="Undo…" VerticalAlignment="Center" Click="UndoAll_Click"
+                        AutomationProperties.Name="Undo the De-Windows changes" />
+                <Button x:Name="ReviewButton" Style="{StaticResource Studio.PrimaryButton}" Content="Review…" VerticalAlignment="Center" Click="Review_Click"
+                        AutomationProperties.Name="Review the De-Windows changes" />
+            </audio:ResponsiveRow>
             <StackPanel x:Name="PlanPanel" Visibility="Collapsed" Margin="0,16,0,0">
                 <ItemsControl x:Name="PlanList" Focusable="False" AutomationProperties.Name="Changes that will be made">
                     <ItemsControl.ItemTemplate>
@@ -23,10 +24,10 @@
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
-                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                    <Button x:Name="ApplyPlanButton" Style="{StaticResource Studio.PrimaryButton}" Content="Apply" Margin="0,0,8,0" Click="ApplyPlan_Click" />
-                    <Button x:Name="CancelPlanButton" Content="Cancel" Click="CancelPlan_Click" />
-                </StackPanel>
+                <WrapPanel Margin="0,12,0,0">
+                    <Button x:Name="ApplyPlanButton" Style="{StaticResource Studio.PrimaryButton}" Content="Apply" Margin="0,0,8,8" Click="ApplyPlan_Click" />
+                    <Button x:Name="CancelPlanButton" Content="Cancel" Margin="0,0,8,8" Click="CancelPlan_Click" />
+                </WrapPanel>
             </StackPanel>
             <ProgressBar x:Name="Busy" IsIndeterminate="True" Height="3" Margin="0,12,0,0" Visibility="Collapsed" AutomationProperties.Name="Applying changes" />
         </StackPanel>

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using Soltex.App.Settings;
@@ -192,6 +193,177 @@ internal static class ToolsChecks
                 && list.Single(a => a.Name == "Driver panel").Enabled, "The 32-bit entry's state must come from StartupApproved\\Run32.");
         }
         finally { Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(@"Software\Soltex\StartupTest", throwOnMissingSubKey: false); }
+    }
+
+    /// <summary>
+    /// "Start when I sign in to Windows" in an isolated key: Task Manager's switch (StartupApproved\Run) is read with the
+    /// Run value, and turning the app on here turns it back on there.
+    /// </summary>
+    public static void SuiteStartupFollowsTaskManager()
+    {
+        string path = @"Software\Soltex\SuiteStartupTest\" + Guid.NewGuid().ToString("N");
+        const string Command = "\"C:\\Test\\Soltex.exe\" --tray";
+        try
+        {
+            using Microsoft.Win32.RegistryKey root = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(path);
+            byte[]? Approved()
+            {
+                using Microsoft.Win32.RegistryKey? key = root.OpenSubKey(SuiteStartupRegistration.ApprovedKey);
+                return key?.GetValue(SuiteStartupRegistration.ValueName) as byte[];
+            }
+            True(SuiteStartupRegistration.State(root, Command) == SuiteStartupState.Off, "A new profile does not start at sign-in.");
+            SuiteStartupRegistration.SetEnabled(true, root, Command);
+            True(SuiteStartupRegistration.IsEnabled(root, Command) && Approved() is null, "Turning it on writes the Run value only.");
+
+            // Task Manager turns it off without removing the Run value.
+            using (Microsoft.Win32.RegistryKey approved = root.CreateSubKey(SuiteStartupRegistration.ApprovedKey))
+                approved.SetValue(SuiteStartupRegistration.ValueName, TurnedOff, Microsoft.Win32.RegistryValueKind.Binary);
+            True(SuiteStartupRegistration.State(root, Command) == SuiteStartupState.TurnedOffInTaskManager && !SuiteStartupRegistration.IsEnabled(root, Command),
+                "Turned off in Task Manager must show as off.");
+            SuiteStartupRegistration.SetEnabled(true, root, Command);
+            True(SuiteStartupRegistration.IsEnabled(root, Command) && Approved() is [0x02, ..] data && data.Length == 12,
+                "Turning it on again must also turn it back on in Task Manager (0x02).");
+
+            SuiteStartupRegistration.SetEnabled(false, root, Command);
+            using (Microsoft.Win32.RegistryKey? run = root.OpenSubKey(SuiteStartupRegistration.RunKey))
+                True(run?.GetValue(SuiteStartupRegistration.ValueName) is null && Approved() is null, "Turning it off removes the Run value and Task Manager's switch for it.");
+
+            // Another copy's entry (a different path) is neither shown as this app's nor removed.
+            using (Microsoft.Win32.RegistryKey run = root.CreateSubKey(SuiteStartupRegistration.RunKey))
+                run.SetValue(SuiteStartupRegistration.ValueName, "\"D:\\Other\\Soltex.exe\" --tray");
+            SuiteStartupRegistration.SetEnabled(false, root, Command);
+            using (Microsoft.Win32.RegistryKey? run = root.OpenSubKey(SuiteStartupRegistration.RunKey))
+                True(SuiteStartupRegistration.State(root, Command) == SuiteStartupState.Off && run?.GetValue(SuiteStartupRegistration.ValueName) is string,
+                    "Another copy's sign-in entry must be left alone.");
+        }
+        finally { Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(@"Software\Soltex\SuiteStartupTest", throwOnMissingSubKey: false); }
+    }
+
+    /// <summary>Search finds the sign-in switch as the hint words it, setup export and import, and lands on the Tools rows.</summary>
+    public static void SearchFindsSignInSetupAndToolRows()
+    {
+        Shell.CommandIndex index = new();
+        index.Replace(Enum.GetValues<Destination>().SelectMany(Pages.StaticSearch.For));
+        foreach (string query in new[] { "start at sign-in", "start at sign in", "Start when I sign in" })
+            True(index.Find(query) is [{ Destination: Destination.Settings, Anchor: "startup" }, ..],
+                $"\"{query}\" must find Start when I sign in to Windows first, not " + string.Join(", ", index.Find(query).Select(e => e.Title)));
+        foreach (string query in new[] { "export", "import setup", "backup" })
+            True(index.Find(query) is [{ Destination: Destination.Settings, Anchor: "setup" }, ..], $"\"{query}\" must find setup export and import.");
+        True(index.Find("startup apps") is [{ Destination: Destination.Tools, Anchor: "startup" }, ..], "Startup apps must still be found.");
+
+        using PageShell shell = new();
+        Pages.ToolsPage tools = shell.Open<Pages.ToolsPage>(Destination.Tools);
+        Pages.PowerToolsPanel more = DesktopChecks.Descendants(tools).OfType<Pages.PowerToolsPanel>().Single();
+        shell.Window.Navigate(Destination.Tools, "rename");
+        Pump();
+        Button open = DesktopChecks.Descendants(more.RenameRow).OfType<Button>().Single();
+        True(DesktopChecks.Focused(shell.Window) == open && open.Content as string == "Open…", "Batch rename must reveal its own row and focus Open….");
+        shell.Window.Navigate(Destination.Tools, "keys");
+        Pump();
+        Button add = DesktopChecks.Descendants(more.RemapRow).OfType<Button>().Single();
+        True(DesktopChecks.Focused(shell.Window) == add, "Key remapping must reveal its own row and focus Add a remap.");
+        shell.Window.Navigate(Destination.Tools, "quarantine");
+        Pump();
+        True(!tools.QuarantineList.IsVisible && DesktopChecks.Focused(shell.Window) == tools.OpenImports,
+            "With nothing in quarantine, search must land on the section's button rather than a hidden list.");
+    }
+
+    /// <summary>Key remaps and startup apps are updated in place, so a list or switch being used keeps focus.</summary>
+    public static void RemapsAndStartupAppsUpdateInPlace()
+    {
+        using PageShell shell = new();
+        Pages.ToolsPage tools = shell.Open<Pages.ToolsPage>(Destination.Tools);
+        Pages.PowerToolsPanel more = DesktopChecks.Descendants(tools).OfType<Pages.PowerToolsPanel>().Single();
+        Button add = DesktopChecks.Descendants(more.RemapRow).OfType<Button>().Single();
+        DesktopChecks.Invoke(add);
+        Pump();
+        ComboBox first = more.RemapFromLists.Single();
+        first.Focus();
+        first.SelectedIndex = KeyRemapper.Keys.ToList().FindIndex(k => k.Key == 0x13); // Pause
+        Pump();
+        True(shell.Services.Settings.Current.KeyRemaps is [{ From: 0x13 }], "Choosing the key was not saved.");
+        True(more.RemapFromLists.Single() == first && DesktopChecks.Focused(shell.Window) == first, "Saving a remap must not rebuild its row.");
+        DesktopChecks.Invoke(add);
+        Pump();
+        True(more.RemapFromLists.Count == 2 && more.RemapFromLists[0] == first, "Adding a remap must keep the rows already there.");
+        Button[] remove = [.. DesktopChecks.Descendants(more).OfType<Button>().Where(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Remove key remap")];
+        remove[1].Focus();
+        DesktopChecks.Invoke(remove[1]);
+        Pump();
+        True(more.RemapFromLists.Single() == first && DesktopChecks.Focused(shell.Window) == remove[0],
+            "Removing the last remap must move the keyboard to the row above: " + DesktopChecks.Focused(shell.Window));
+
+        string id = Guid.NewGuid().ToString("N");
+        string folder = Path.Combine(Path.GetTempPath(), "soltex-startup-panel-" + id);
+        Directory.CreateDirectory(folder);
+        try
+        {
+            using Microsoft.Win32.RegistryKey user = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Soltex\StartupTest\" + id + @"\user"),
+                machine = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Soltex\StartupTest\" + id + @"\machine");
+            using (Microsoft.Win32.RegistryKey run = user.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) run.SetValue("Chat", "C:\\Chat\\chat.exe");
+            using (Microsoft.Win32.RegistryKey run = machine.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) run.SetValue("Driver panel", "C:\\Driver\\panel.exe");
+            StartupApps apps = new(user, machine, folder, Path.Combine(folder, "none"));
+            Pages.StartupAppsPanel panel = new(shell.Context, apps);
+            CheckBox chat = panel.SwitchFor("Chat") ?? throw new InvalidOperationException("Chat is not listed.");
+            True(chat.IsChecked == true && LogicalTexts(panel).Contains(Pages.StartupAppsPanel.OnlyYou) && LogicalTexts(panel).Contains(Pages.StartupAppsPanel.EveryUser),
+                "Rows must say plainly who an app starts for: " + string.Join(" | ", LogicalTexts(panel)));
+            apps.SetEnabled(apps.List().Single(a => a.Name == "Chat"), false); // as Task Manager would
+            panel.Refresh();
+            True(panel.SwitchFor("Chat") == chat && chat.IsChecked == false, "A changed app must be shown in place, keeping its switch.");
+            using (Microsoft.Win32.RegistryKey run = user.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) run.SetValue("Editor", "C:\\Editor\\editor.exe");
+            panel.Refresh();
+            True(panel.SwitchFor("Editor") is not null && panel.SwitchFor("Chat") is { IsChecked: false }, "A new app must appear when the list is read again.");
+        }
+        finally
+        {
+            Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(@"Software\Soltex\StartupTest", throwOnMissingSubKey: false);
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    /// <summary>A settings file that can't be written: Tools, Desktop and Appearance say so and show the saved state, without crashing.</summary>
+    public static void FailedSettingsSavesShowTheSavedState()
+    {
+        using PageShell shell = new();
+        Pages.ToolsPage tools = shell.Open<Pages.ToolsPage>(Destination.Tools);
+        Pages.PowerToolsPanel more = DesktopChecks.Descendants(tools).OfType<Pages.PowerToolsPanel>().Single();
+        Pages.DesktopPage desktop = shell.Open<Pages.DesktopPage>(Destination.Desktop);
+        Pages.CustomizePage appearance = shell.Open<Pages.CustomizePage>(Destination.Appearance);
+        Personalize.ExtrasPanel extras = DesktopChecks.Descendants(appearance).OfType<Personalize.ExtrasPanel>().Single();
+        CheckBox schedule = DesktopChecks.Descendants(extras).OfType<CheckBox>().Single(c => System.Windows.Automation.AutomationProperties.GetName(c) == "Switch between light and dark by time of day");
+        shell.BreakSettingsFolder();
+        int notices = shell.Services.Notices.Count(n => n.Message.StartsWith("Your change could not be saved", StringComparison.Ordinal));
+
+        shell.Open<Pages.ToolsPage>(Destination.Tools);
+        bool onTop = tools.AlwaysOnTopSwitch.IsChecked == true;
+        DesktopChecks.ToggleThroughAutomation(tools.AlwaysOnTopSwitch);
+        int zones = more.ZonesList.SelectedIndex;
+        more.ZonesList.SelectedIndex = (zones + 1) % more.ZonesList.Items.Count;
+        Pump();
+        True(tools.AlwaysOnTopSwitch.IsChecked == onTop && more.ZonesList.SelectedIndex == zones, "Tools must show the saved choices again when saving fails.");
+
+        shell.Open<Pages.DesktopPage>(Destination.Desktop);
+        DesktopChecks.ToggleThroughAutomation(desktop.ArrangeSwitch);
+        Pump();
+        True(desktop.ArrangeSwitch.IsChecked == false && !shell.Services.Settings.Current.DesktopArrange, "The Desktop page must show the saved state again when saving fails.");
+
+        shell.Open<Pages.CustomizePage>(Destination.Appearance);
+        DesktopChecks.ToggleThroughAutomation(schedule);
+        Pump();
+        True(schedule.IsChecked == false && !shell.Services.Settings.Current.DarkModeSchedule, "Automatic dark mode must show the saved state again when saving fails.");
+        int now = shell.Services.Notices.Count(n => n.Message.StartsWith("Your change could not be saved", StringComparison.Ordinal));
+        True(now - notices >= 4, $"Each failed save must say so ({now - notices} notices for four failures).");
+    }
+
+    private static List<string> LogicalTexts(DependencyObject root)
+    {
+        List<string> found = [];
+        foreach (object child in LogicalTreeHelper.GetChildren(root))
+        {
+            if (child is TextBlock { Text: { } text }) found.Add(text);
+            if (child is DependencyObject node) found.AddRange(LogicalTexts(node));
+        }
+        return found;
     }
 
     private static readonly string[] SampleNames = ["IMG_001.jpg", "IMG_002.jpg", "notes.txt", "img_003.JPG"];

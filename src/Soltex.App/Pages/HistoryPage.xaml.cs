@@ -23,15 +23,19 @@ public partial class HistoryPage : UserControl, IShellPage
 
     private readonly ShellContext context;
     private readonly PageAnchors anchors = new();
-    private bool shown;
+    private bool shown, busy, raisingCalm;
 
     internal HistoryPage(ShellContext context)
     {
         this.context = context;
         InitializeComponent();
-        anchors.Add("top", UndoAllButton);
-        context.Services.CalmChanged += () => Dispatcher.InvokeAsync(() => { if (shown) Refresh(); });
-        context.Services.SystemChanged += () => Dispatcher.InvokeAsync(() => { if (shown) Refresh(); });
+        anchors.Add("top", UndoAllButton, Intro);
+        // This page's own undos refresh once when they finish; changes from elsewhere refresh it when idle.
+        context.Services.CalmChanged += () =>
+        {
+            if (!raisingCalm) Dispatcher.InvokeAsync(() => { if (shown && !busy) Refresh(); });
+        };
+        context.Services.SystemChanged += () => Dispatcher.InvokeAsync(() => { if (shown && !busy) Refresh(); });
     }
 
     public Destination Destination => Destination.History;
@@ -80,42 +84,83 @@ public partial class HistoryPage : UserControl, IShellPage
         SystemItem? item = SystemCatalog.All.FirstOrDefault(i => i.Id == entry.SettingId);
         return entry.Summary switch
         {
-            "Changed" => "Changed by Full De-Windows. Undo it on Home.",
-            "Removed" => "Removed by Full De-Windows. " + (item is null ? "Can't be undone." : SystemCatalog.ReinstallHint(item) ?? "Can't be undone."),
-            _ => "Full De-Windows: " + entry.Summary
+            "Changed" => "Changed by Full De‑Windows. Undo it on Home › Full De‑Windows.",
+            "Removed" => "Removed by Full De‑Windows. " + (item is null ? "Can't be undone." : SystemCatalog.ReinstallHint(item) ?? "Can't be undone."),
+            _ => "Full De‑Windows: " + entry.Summary
         };
+    }
+
+    /// <summary>The Undo buttons shown in the list, top to bottom.</summary>
+    internal IReadOnlyList<Button> UndoButtons()
+    {
+        ChangeList.UpdateLayout();
+        List<Button> found = [];
+        for (int i = 0; i < ChangeList.Items.Count; i++)
+        {
+            if (ChangeList.ItemContainerGenerator.ContainerFromIndex(i) is not DependencyObject container) continue;
+            if (FindButton(container) is { IsVisible: true } button) found.Add(button);
+        }
+        return found;
+    }
+
+    private static Button? FindButton(DependencyObject root)
+    {
+        if (root is Button button) return button;
+        for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+            if (FindButton(System.Windows.Media.VisualTreeHelper.GetChild(root, i)) is { } found) return found;
+        return null;
     }
 
     private void Undo_Click(object sender, RoutedEventArgs e) => Dispatcher.Handle(() => UndoAsync(sender));
 
     private async Task UndoAsync(object sender)
     {
-        if (sender is not Button { Tag: string id } button) return;
+        // A running undo blocks the others in this handler; no button is disabled, so the pressed one keeps focus.
+        if (busy || sender is not Button { Tag: string id } button) return;
         SettingDefinition? definition = CalmCatalog.All.FirstOrDefault(d => d.Id == id);
         if (definition is null) return;
-        button.IsEnabled = false;
-        UndoResult result = await Task.Run(() => context.Services.Calm.Undo(definition));
+        FocusSnapshot focus = FocusSnapshot.Take(button);
+        int position = UndoButtons().ToList().IndexOf(button);
+        busy = true;
+        UndoResult result;
+        try { result = await Task.Run(() => context.Services.Calm.Undo(definition)); }
+        finally { Finish(); }
         context.ShowNotice(result.Outcome == UndoOutcome.Failed ? NoticeSeverity.Caution : NoticeSeverity.Success, definition.Title + ": " + result.Message);
-        context.Services.RaiseCalmChanged();
-        Refresh();
+        // The list is shown again and the used button is gone: the keyboard moves to the next Undo in the list.
+        IReadOnlyList<Button> left = UndoButtons();
+        focus.Restore(this, [.. left.Skip(Math.Max(0, position)), .. left.Take(Math.Max(0, position)).Reverse(), UndoAllButton, Summary, EmptyText]);
     }
 
     private void UndoAll_Click(object sender, RoutedEventArgs e) => Dispatcher.Handle(UndoAllAsync);
 
     private async Task UndoAllAsync()
     {
+        if (busy) return;
         IReadOnlyList<SettingDefinition> undoable = context.Services.Calm.UndoableSettings(CalmCatalog.All);
         if (undoable.Count == 0) return;
         if (MessageBox.Show(context.Owner,
                 "Undo " + Count(undoable.Count, "change") + "? Anything you or another app changed since stays as it is.",
                 "Undo all", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
-        UndoAllButton.IsEnabled = false;
-        IReadOnlyList<UndoResult> results = await Task.Run(() => context.Services.Calm.UndoMany(undoable));
+        FocusSnapshot focus = FocusSnapshot.Take(UndoAllButton);
+        busy = true;
+        IReadOnlyList<UndoResult> results;
+        try { results = await Task.Run(() => context.Services.Calm.UndoMany(undoable)); }
+        finally { Finish(); }
         int restored = results.Count(r => r.Outcome == UndoOutcome.Restored);
         int failed = results.Count(r => r.Outcome == UndoOutcome.Failed);
         context.ShowNotice(failed > 0 ? NoticeSeverity.Caution : NoticeSeverity.Success,
             restored.ToString(CultureInfo.CurrentCulture) + " undone." + (failed > 0 ? " " + failed.ToString(CultureInfo.CurrentCulture) + " could not be undone; see the list." : ""));
-        context.Services.RaiseCalmChanged();
+        // Undo all stays focused while something is left to undo; otherwise the keyboard rests on the summary.
+        focus.Restore(this, [.. UndoButtons(), Summary, EmptyText]);
+    }
+
+    /// <summary>Ends an undo: other pages refresh, this one shows the list again once.</summary>
+    private void Finish()
+    {
+        busy = false;
+        raisingCalm = true;
+        try { context.Services.RaiseCalmChanged(); }
+        finally { raisingCalm = false; }
         Refresh();
     }
 }

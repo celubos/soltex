@@ -18,6 +18,17 @@ public static class AudioTheme
         target.Resources.MergedDictionaries.Add(new ResourceDictionary
         { Source = new Uri("/Soltex.Audio.UI;component/Themes/Audio.xaml", UriKind.Relative) });
     }
+
+    /// <summary>
+    /// Ticked check boxes under <paramref name="target"/> use the host's accent (its Studio.AccentBrush) instead of the
+    /// Windows accent colour the Fluent theme uses, following the host's light and dark modes. For host views that are
+    /// not themed as a whole by <see cref="Apply"/>.
+    /// </summary>
+    public static void UseHostCheckBoxAccent(FrameworkElement target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        HostThemeBridge.AttachCheckBoxAccent(target);
+    }
 }
 
 /// <summary>
@@ -70,7 +81,17 @@ internal static class HostThemeBridge
         ("ChannelMediaBrush", "Studio.Channel.Media"),
         ("ChannelAuxBrush", "Studio.Channel.Aux"),
         ("ChannelMicBrush", "Studio.Channel.Microphone"),
-        ("FaderStyle", "Studio.Fader")
+        ("FaderStyle", "Studio.Fader"),
+        // The host's check boxes come from its Fluent theme, which paints a ticked box in the Windows accent colour (a
+        // grey accent reads as disabled). Ticked boxes in the audio surface use the host's own accent instead.
+        ("CheckBoxCheckBackgroundFillChecked", "Studio.AccentBrush"),
+        ("CheckBoxCheckBackgroundFillCheckedPointerOver", "Studio.AccentTextBrush"),
+        ("CheckBoxCheckBackgroundFillCheckedPressed", "Studio.AccentBrush"),
+        ("CheckBoxCheckBackgroundStrokeChecked", "Studio.AccentBrush"),
+        ("CheckBoxCheckBackgroundStrokeCheckedPointerOver", "Studio.AccentTextBrush"),
+        ("CheckBoxCheckBackgroundStrokeCheckedPressed", "Studio.AccentBrush"),
+        ("CheckBoxCheckGlyphForeground", "Studio.OnAccentBrush"),
+        ("CheckBoxCheckGlyphForegroundPressed", "Studio.OnAccentBrush")
     ];
 
     private static readonly DependencyProperty[] Properties = Map
@@ -86,6 +107,14 @@ internal static class HostThemeBridge
     {
         ArgumentNullException.ThrowIfNull(target);
         for (int i = 0; i < Map.Length; i++) target.SetResourceReference(Properties[i], Map[i].Host);
+    }
+
+    /// <summary>Only the check box keys: ticked boxes use the host's accent.</summary>
+    public static void AttachCheckBoxAccent(FrameworkElement target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        for (int i = 0; i < Map.Length; i++)
+            if (Map[i].Audio.StartsWith("CheckBox", StringComparison.Ordinal)) target.SetResourceReference(Properties[i], Map[i].Host);
     }
 
     private static void HostResourceChanged(DependencyObject owner, DependencyPropertyChangedEventArgs e)

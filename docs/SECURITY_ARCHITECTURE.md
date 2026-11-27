@@ -1,7 +1,7 @@
 # Security architecture
 
 Soltex is a security **companion**, not an antivirus engine. It uses the protection already registered with Windows,
-shows its state honestly, and puts its own controls around the places where Soltex reads files, changes Windows, or
+shows its state as Windows reports it (unknown when Windows cannot say), and puts its own controls around the places where Soltex reads files, changes Windows, or
 starts other programs. It adds no file-system filter, resident scanner or cloud service.
 
 - Microsoft Defender, or another provider registered with Windows, supplies real-time protection.
@@ -55,7 +55,7 @@ Calling these APIs does not register Soltex as an antivirus provider, and Soltex
 | Boundary | Design |
 | --- | --- |
 | Main app | Runs as the user, unelevated. Per-user changes go only to `HKEY_CURRENT_USER`. |
-| Elevated helper (`Soltex.exe --system`) | Started through UAC for each administrator change. Reads a request from `%LOCALAPPDATA%\Soltex\System` that names catalogue entries by id; unknown ids, unexpected file names and redirected folders are rejected. It runs no commands or paths taken from the request, journals previous values, writes a result and exits. |
+| Elevated helper (`Soltex.exe --system`) | Started through UAC for each administrator change. Reads a request from `%LOCALAPPDATA%\Soltex\System` that names catalogue entries by id; unknown ids, unexpected file names and redirected folders are rejected. It runs no commands or paths taken from the request, journals previous values in `%ProgramData%\Soltex\System` (changeable only by administrators), writes a result and exits. |
 | Taskbar helper (`SoltexTaskbar.dll`) | Loaded into the user's own Explorer through a temporary thread hook and the XAML diagnostics API. It runs with the user's rights only, imports only Windows system DLLs, reads its settings from `HKCU\Software\Soltex\Taskbar`, and restores every value it changed when the look is set back to the Windows default. |
 | Audio helper (`Soltex.Audio.Host.Service.exe`) | Unelevated. Controlled over a current-user named pipe with a per-launch token, a frame size limit and a fixed operation list; exits when its parent exits. |
 | Audio broker and driver | Source only. The broker would run as a LocalSystem service and the driver is unsigned; no build installs, registers or starts either. See `src/Soltex.Audio.Broker/README.md`. |

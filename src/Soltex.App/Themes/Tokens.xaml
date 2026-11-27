@@ -217,9 +217,16 @@
     <Color x:Key="StudioDarkStrokeStrong">#323B4F</Color>
     <Color x:Key="StudioDarkText">#EEF1F7</Color>
     <Color x:Key="StudioDarkTextSecondary">#A2ABBD</Color>
-    <Color x:Key="StudioDarkTextTertiary">#6B7588</Color>
+    <!-- At least 4.5:1 on the base, rail, cards and raised surfaces, so small captions stay readable. -->
+    <Color x:Key="StudioDarkTextTertiary">#848EA1</Color>
     <Color x:Key="StudioDarkHover">#0FFFFFFF</Color>
     <Color x:Key="StudioDarkSelected">#1A8B5CF6</Color>
+    <!-- Selected rows in plain lists (no pill beside them), so the tint itself must show. -->
+    <Color x:Key="StudioDarkSelectedStrong">#338B5CF6</Color>
+    <Color x:Key="StudioDarkSelectedStrongHover">#428B5CF6</Color>
+    <!-- A switch that is on but cannot be changed: muted violet track, light knob (6:1 between them). -->
+    <Color x:Key="StudioDarkSwitchOnDisabled">#463C78</Color>
+    <Color x:Key="StudioDarkSwitchKnobOnDisabled">#CFC8EA</Color>
     <Color x:Key="StudioDarkSmoke">#B3050609</Color>
     <Color x:Key="StudioDarkGlowViolet">#408B5CF6</Color>
     <Color x:Key="StudioDarkGlowCyan">#2622D3EE</Color>
@@ -240,9 +247,14 @@
     <Color x:Key="StudioLightStrokeStrong">#C9CFDC</Color>
     <Color x:Key="StudioLightText">#0E1220</Color>
     <Color x:Key="StudioLightTextSecondary">#4A5367</Color>
-    <Color x:Key="StudioLightTextTertiary">#7A8396</Color>
+    <!-- At least 4.5:1 on white cards, the base and the rail. -->
+    <Color x:Key="StudioLightTextTertiary">#5F687B</Color>
     <Color x:Key="StudioLightHover">#0A0E1220</Color>
     <Color x:Key="StudioLightSelected">#147C3AED</Color>
+    <Color x:Key="StudioLightSelectedStrong">#267C3AED</Color>
+    <Color x:Key="StudioLightSelectedStrongHover">#337C3AED</Color>
+    <!-- On but cannot be changed: muted violet track with a white knob (3.5:1 against the knob and the card). -->
+    <Color x:Key="StudioLightSwitchOnDisabled">#8F7FC9</Color>
     <Color x:Key="StudioLightSmoke">#660E1220</Color>
     <Color x:Key="StudioLightGlowViolet">#267C3AED</Color>
     <Color x:Key="StudioLightGlowCyan">#1A0891B2</Color>
@@ -258,6 +270,7 @@
     <Color x:Key="StudioAccentCyan">#22D3EE</Color>
     <Color x:Key="StudioAccentCyanDeep">#0891B2</Color>
     <Color x:Key="StudioOnAccent">#FFFFFF</Color>
+    <Color x:Key="StudioOnAccentPressed">#B3FFFFFF</Color>
     <Color x:Key="StudioSuccess">#34D399</Color>
     <Color x:Key="StudioSuccessDeep">#059669</Color>
     <Color x:Key="StudioCaution">#FBBF24</Color>
@@ -272,4 +285,10 @@
     <Color x:Key="StudioChannelMedia">#38BDF8</Color>
     <Color x:Key="StudioChannelAux">#A78BFA</Color>
     <Color x:Key="StudioChannelMaster">#E2E8F0</Color>
+    <!-- Light theme channel colours: the same hues, dark enough for text on white and the light base (at least 4.5:1). -->
+    <Color x:Key="StudioChannelMicDeep">#BE185D</Color>
+    <Color x:Key="StudioChannelGameDeep">#C2410C</Color>
+    <Color x:Key="StudioChannelChatDeep">#047857</Color>
+    <Color x:Key="StudioChannelMediaDeep">#0369A1</Color>
+    <Color x:Key="StudioChannelAuxDeep">#7C3AED</Color>
 </ResourceDictionary>

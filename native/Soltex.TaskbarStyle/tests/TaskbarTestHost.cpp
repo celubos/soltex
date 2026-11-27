@@ -1,15 +1,17 @@
 // Test host for the taskbar look helper: two hidden, off-screen windows (stand-ins for two taskbars, 1200x48 and 800x48,
 // window classes SoltexTaskbarTestHost and SoltexTaskbarTestHost2), each hosting system XAML (the same Windows.UI.Xaml the
-// taskbar uses) with a copy of the taskbar's background structure:
-//   Grid > Grid#TaskbarBackground > Grid > Rectangle#BackgroundFill, Rectangle#BackgroundStroke
+// taskbar uses, one DesktopWindowXamlSource per window) with a copy of the taskbar's background structure:
+//   Grid > Border#BackgroundHost > Grid#TaskbarBackground > Grid > Rectangle#BackgroundFill, Rectangle#BackgroundStroke
 // The first island's root Grid is named TaskbarFrame (as Taskbar.TaskbarFrame is in Explorer); the second has no frame,
-// so the helper sizes it by its topmost element. Tests inject the helper into this process instead of Explorer and read
-// the real brushes back through the XAML API. The process is DPI-unaware, so window pixels are DIPs.
+// so the helper's size fallback sizes it by its topmost element. Tests inject the helper into this process instead of
+// Explorer and read the real brushes back through the XAML API. The process is DPI-unaware, so window pixels are DIPs.
 //
 // stdin commands, for the first island unless followed by " 2": "fill" (prints the BackgroundFill and BackgroundStroke
 // brushes; acrylic as source, tint, tint opacity and fallback colour), "pixel" (renders the window and prints the centre
 // pixel), "probe" (opacity, visibility and width of the style probes Inside and Outside), "size" (the root's laid-out size,
-// "size=<w>x<h>"); "resize <island> <width> <height>" (resizes that window and its island, prints "resized"); "quit".
+// "size=<w>x<h>"), "detach"/"attach" (takes Grid#TaskbarBackground out of the tree and puts the same objects back; XAML
+// reports the branch put back child first); "resize <island> <width> <height>" (resizes that window and its island,
+// prints "resized"); "quit".
 // stdout: "ready <pid> <thread> <window 1> <window 2>" (window handles in decimal), then one line per command.
 
 #define WIN32_LEAN_AND_MEAN
@@ -81,10 +83,10 @@ constexpr int FindNameSlot = 6 + 45; // IInspectable (6) + IFrameworkElement.Fin
 // Style rule probes (top-left, away from the centre pixel the brush tests read), then a template part whose CornerRadius
 // is a TemplateBinding, like the taskbar's button backgrounds.
 #define BODY \
-    L"<Grid x:Name='TaskbarBackground'><Grid>" \
+    L"<Border x:Name='BackgroundHost'><Grid x:Name='TaskbarBackground'><Grid>" \
     L"<Rectangle x:Name='BackgroundFill' Fill='#FF202020' />" \
     L"<Rectangle x:Name='BackgroundStroke' Fill='#FF404040' Height='1' VerticalAlignment='Top' />" \
-    L"</Grid></Grid>" \
+    L"</Grid></Grid></Border>" \
     L"<StackPanel x:Name='StyleScope' HorizontalAlignment='Left' VerticalAlignment='Top'>" \
     L"<Border x:Name='Inside' Width='40' Height='4' Background='#FF00FF00' /></StackPanel>" \
     L"<Border x:Name='Outside' Width='40' Height='4' HorizontalAlignment='Right' VerticalAlignment='Top' Background='#FF0000FF' />" \
@@ -107,6 +109,8 @@ struct Island
     IInspectable *source, *root;
     IShape *fill, *stroke;
     IInspectable *inside, *outside, *templated;
+    IInspectable *backgroundHost; // the Border holding Grid#TaskbarBackground
+    IInspectable *detached;       // that Grid while "detach" has taken it out of the tree, else null
 };
 constexpr int IslandCount = 2;
 Island g_islands[IslandCount];
@@ -114,6 +118,7 @@ constexpr IID IidVisualTreeHelperStatics = {0xe75758c4, 0xd25d, 0x4b1d, {0x97, 0
 constexpr IID IidDependencyObject = {0x5c526665, 0xf60e, 0x4912, {0xaf, 0x59, 0x5f, 0xe0, 0x68, 0x0f, 0x08, 0x9d}};
 constexpr IID IidBorder = {0x797c4539, 0x45bd, 0x4633, {0xa0, 0x44, 0xbf, 0xb0, 0x2e, 0xf5, 0x17, 0x0f}};
 constexpr int GetChildSlot = 6 + 4, CornerRadiusSlot = 6 + 6; // VisualTreeHelper.GetChild, IBorder.get_CornerRadius
+constexpr int BorderGetChildSlot = 6 + 10, BorderPutChildSlot = 6 + 11; // IBorder.get_Child/put_Child
 struct XamlCornerRadius
 {
     double TopLeft, TopRight, BottomRight, BottomLeft;
@@ -298,7 +303,40 @@ void PrintPixel(HWND window)
     printf("pixel=%s#%02X%02X%02X\n", rendered ? "" : "unrendered:", GetRValue(pixel), GetGValue(pixel), GetBValue(pixel));
 }
 
-enum Command : WPARAM { FillCommand = 1, PixelCommand, ProbeCommand, SizeCommand, ResizeCommand };
+// "detach": takes Grid#TaskbarBackground (and the rectangles in it) out of the visual tree, keeping the objects;
+// "attach": puts the same Grid back. Prints "detached"/"attached", or "error ..." when it cannot.
+void MoveBackground(Island &island, bool attach)
+{
+    void *border = nullptr;
+    if (FAILED(island.backgroundHost->QueryInterface(IidBorder, &border)))
+    {
+        printf("error border\n");
+        return;
+    }
+    void **table = *static_cast<void ***>(border);
+    using GetChild = HRESULT(STDMETHODCALLTYPE *)(void *, IInspectable **);
+    using PutChild = HRESULT(STDMETHODCALLTYPE *)(void *, IInspectable *);
+    HRESULT hr = S_OK;
+    if (!attach && !island.detached)
+    {
+        hr = reinterpret_cast<GetChild>(table[BorderGetChildSlot])(border, &island.detached);
+        if (SUCCEEDED(hr)) hr = reinterpret_cast<PutChild>(table[BorderPutChildSlot])(border, nullptr);
+    }
+    else if (attach && island.detached)
+    {
+        hr = reinterpret_cast<PutChild>(table[BorderPutChildSlot])(border, island.detached);
+        if (SUCCEEDED(hr))
+        {
+            island.detached->Release();
+            island.detached = nullptr;
+        }
+    }
+    static_cast<IUnknown *>(border)->Release();
+    if (FAILED(hr)) printf("error %s 0x%08lX\n", attach ? "attach" : "detach", static_cast<unsigned long>(hr));
+    else printf("%s\n", attach ? "attached" : "detached");
+}
+
+enum Command : WPARAM { FillCommand = 1, PixelCommand, ProbeCommand, SizeCommand, ResizeCommand, DetachCommand, AttachCommand };
 
 // lParam: the island index in bits 0-7; for a resize, the width in bits 8-31 and the height from bit 32.
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -330,6 +368,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetWindowPos(island.content, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
             printf("resized\n");
         }
+        else if (wParam == DetachCommand || wParam == AttachCommand) MoveBackground(island, wParam == AttachCommand);
         fflush(stdout);
         return 0;
     }
@@ -356,6 +395,8 @@ DWORD WINAPI ReadCommands(void *)
         else if (strncmp(line, "pixel", 5) == 0) PostMessageW(window, CommandMessage, PixelCommand, IslandOf(line + 5));
         else if (strncmp(line, "probe", 5) == 0) PostMessageW(window, CommandMessage, ProbeCommand, IslandOf(line + 5));
         else if (strncmp(line, "size", 4) == 0) PostMessageW(window, CommandMessage, SizeCommand, IslandOf(line + 4));
+        else if (strncmp(line, "detach", 6) == 0) PostMessageW(window, CommandMessage, DetachCommand, IslandOf(line + 6));
+        else if (strncmp(line, "attach", 6) == 0) PostMessageW(window, CommandMessage, AttachCommand, IslandOf(line + 6));
         else if (strncmp(line, "resize", 6) == 0)
         {
             if (sscanf(line + 6, "%d %d %d", &island, &width, &height) == 3 && island >= 1 && island <= IslandCount && width > 0 &&
@@ -412,6 +453,7 @@ void CreateIsland(Island &island, const wchar_t *className, const wchar_t *marku
     island.inside = FindElement(island.root, L"Inside");
     island.outside = FindElement(island.root, L"Outside");
     island.templated = FindElement(island.root, L"Templated");
+    island.backgroundHost = FindElement(island.root, L"BackgroundHost");
     ShowWindow(island.window, SW_SHOWNOACTIVATE);
 }
 

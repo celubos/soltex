@@ -36,7 +36,8 @@ Soltex turns off the ads, tips and tracking in Windows, restyles the taskbar, ad
 - Update control: Windows asks before downloading updates and never restarts while you are signed in. Defender, the firewall, UAC and Windows Update itself are never turned off.
 
 **Taskbar**, inspired by [TranslucentTB](https://github.com/TranslucentTB/TranslucentTB) and [Windhawk](https://github.com/ramensoftware/windhawk) mods
-- Clear, blurred, acrylic or tinted taskbar, with its own look while a window is open or maximized, Start, Search or Task View is open, or battery saver is on.
+- A look for each state, as in TranslucentTB: on the desktop, while a window is visible or maximized, while Start, Search or Task View is open, and in battery saver. Each look is Windows default, opaque, clear, blur or acrylic, with its own color and opacity.
+- With several displays, each taskbar follows what happens on its own display, so a maximized window on one screen changes only that screen's taskbar.
 - Hide the running-app line, choose what the clock shows, larger or smaller icons, square button corners.
 - Scroll over the taskbar to change the volume.
 
@@ -52,8 +53,10 @@ Soltex turns off the ads, tips and tracking in Windows, restyles the taskbar, ad
 - Startup apps: choose what starts when you sign in.
 
 **Audio**
-- A five-channel mixer (Mic, Game, Chat, Media, Aux) with a game and chat balance.
-- Microphone chain with a ten-band EQ, noise gate, compressor and noise suppression.
+- A five-channel mixer (Mic, Game, Chat, Media, Aux) with a game and chat balance, and a separate stream mix.
+- Microphone setup in a few steps, with a 10-second test that tells you which input your voice arrives on.
+- Microphone chain with a ten-band EQ, noise gate, compressor and noise suppression, plus an optional smooth background setting and an optional safety limiter that catches peaks.
+- Audio passed between two devices is converted with a high-quality resampler that also corrects the drift between their clocks, so it does not slowly fall behind or drop out.
 - Per-app volume and output device.
 
 **And also**
@@ -62,6 +65,7 @@ Soltex turns off the ads, tips and tracking in Windows, restyles the taskbar, ad
 - If a Windows update turns something back on, Soltex tells you and offers to put it back.
 - Export your whole setup to a file and import it on another PC.
 - Search everything with Ctrl+K.
+- Fits a small window: the page list shrinks to an icon rail and pages reflow.
 
 <p align="center">
   <img src="docs/images/desktop.png" width="49%" alt="The Desktop page">
@@ -71,14 +75,22 @@ Soltex turns off the ads, tips and tracking in Windows, restyles the taskbar, ad
 ## Installation
 
 1. Download **`Soltex-<version>-win-x64-setup.exe`** from the [latest release](https://github.com/celubos/soltex/releases/latest).
-2. Run it. It installs for your account only, so no administrator rights are needed, and it can start Soltex when you sign in.
+2. Run it. It installs for your account only, so no administrator rights are needed. On a first install it offers to start Soltex when you sign in; after that, the switch in Soltex's Settings decides, and upgrades leave it as it is.
 3. Open **Soltex** from the Start menu.
 
 Prefer not to install? Download `Soltex-<version>-win-x64.zip` instead, unzip it anywhere and run `Soltex.exe`.
 
 Soltex is not code-signed yet, so Windows SmartScreen may say it "protected your PC". Choose **More info › Run anyway**. Each release lists SHA-256 checksums in `SHA256SUMS.txt` so you can check your download.
 
-To uninstall, undo any changes you want reversed in **History**, then remove Soltex from **Settings › Apps › Installed apps**. Your settings stay in `%LOCALAPPDATA%\Soltex` until you delete that folder.
+To uninstall:
+
+1. Undo any changes you want reversed in **History**.
+2. If you changed the taskbar look, open **Taskbar** in Soltex, set the look to **Windows default** and turn off the taskbar details you turned on. Otherwise the taskbar keeps its look until you sign out or restart.
+3. Remove Soltex from **Settings › Apps › Installed apps**. The uninstaller quits Soltex first. If Soltex asks whether to stop your audio, choose **Quit**; if you choose Cancel or do not answer within 20 seconds, the uninstall stops without removing anything.
+
+Your settings stay in `%LOCALAPPDATA%\Soltex` and the registry key `HKCU\Software\Soltex`, so a reinstall keeps them. To remove them too, sign out or restart first (the taskbar helper stays loaded in File Explorer until then), then delete that folder and that key.
+
+If you used **Full De-Windows**, its change history stays in `%ProgramData%\Soltex\System`, so a reinstalled Soltex can still undo those changes. Deleting that folder needs administrator rights, and afterwards Soltex can no longer undo the Full De-Windows changes; undo them first if you want them reversed.
 
 ### System requirements
 
@@ -90,11 +102,11 @@ To uninstall, undo any changes you want reversed in **History**, then remove Sol
 - Soltex lives in the tray. Closing the window keeps it running; choose **Quit** from the tray icon to exit.
 - Press **Ctrl+K** in the window to find any setting.
 - Everything is off until you turn it on. To undo a change, open **History**.
-- Settings are stored in `%LOCALAPPDATA%\Soltex`.
+- Settings are stored in `%LOCALAPPDATA%\Soltex`; the history of Full De-Windows (administrator) changes is in `%ProgramData%\Soltex\System`.
 
 ## Building from source
 
-You need Windows 10 or 11 (x64) and the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
+You need Windows 10 or 11 (x64) and the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0), version 10.0.3xx (see `global.json`).
 
 ```powershell
 git clone https://github.com/celubos/soltex.git

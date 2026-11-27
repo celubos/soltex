@@ -130,7 +130,7 @@
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
-                        <Grid Width="44" Height="24" VerticalAlignment="Center">
+                        <Grid x:Name="SwitchBox" Width="44" Height="24" VerticalAlignment="Center">
                             <Border x:Name="Track" CornerRadius="12" Background="{DynamicResource Studio.SwitchOffBrush}"
                                     BorderBrush="{DynamicResource Studio.StrokeStrongBrush}" BorderThickness="1" />
                             <Border x:Name="Knob" Width="18" Height="18" CornerRadius="9" HorizontalAlignment="Left" Margin="3,0,0,0"
@@ -175,9 +175,22 @@
                         <Trigger Property="IsKeyboardFocused" Value="True">
                             <Setter TargetName="Ring" Property="Visibility" Value="Visible" />
                         </Trigger>
+                        <!-- Off and unavailable: the whole switch fades. -->
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter Property="Opacity" Value="0.45" />
+                            <Setter TargetName="SwitchBox" Property="Opacity" Value="0.5" />
+                            <Setter TargetName="Label" Property="Opacity" Value="0.55" />
                         </Trigger>
+                        <!-- On but unavailable: still reads as on (muted violet track, solid light knob), never as a
+                             faded violet track with a grey knob. -->
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsChecked" Value="True" />
+                                <Condition Property="IsEnabled" Value="False" />
+                            </MultiTrigger.Conditions>
+                            <Setter TargetName="SwitchBox" Property="Opacity" Value="1" />
+                            <Setter TargetName="Track" Property="Background" Value="{DynamicResource Studio.SwitchOnDisabledBrush}" />
+                            <Setter TargetName="Knob" Property="Background" Value="{DynamicResource Studio.SwitchKnobOnDisabledBrush}" />
+                        </MultiTrigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
@@ -365,6 +378,7 @@
         <Setter Property="BorderThickness" Value="1" />
     </Style>
 
+    <!-- Small caption above a group. Tertiary text is at least 4.5:1 on every Studio surface (see Tokens.xaml). -->
     <Style x:Key="Studio.Eyebrow" TargetType="TextBlock">
         <Setter Property="FontSize" Value="11" />
         <Setter Property="FontWeight" Value="SemiBold" />

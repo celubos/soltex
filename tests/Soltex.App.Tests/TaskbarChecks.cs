@@ -153,9 +153,11 @@ internal static class TaskbarChecks
     }
 
     /// <summary>
-    /// A look per taskbar window (the Taskbars value): the test host's two islands stand in for two taskbars of different
-    /// sizes. Each shows its own entry, a taskbar without an entry shows the global look, clearing the entries returns
-    /// both to it, taskbars of the same size cannot be told apart (global look), and malformed entries are skipped.
+    /// A look per taskbar window (the Taskbars value): the test host's two islands stand in for two taskbars. Each shows
+    /// its own entry, matched through its island's window, so two taskbars of the same size (two displays with the same
+    /// resolution and scale) are still told apart; a taskbar without an entry shows the global look, clearing the entries
+    /// returns both to it, a background put back into the tree (XAML reports it child first) keeps following its entry
+    /// and its own original brush, and malformed entries are skipped.
     /// </summary>
     public static void HelperAppliesALookPerTaskbarWindow()
     {
@@ -166,15 +168,7 @@ internal static class TaskbarChecks
         using Process host = Process.Start(new ProcessStartInfo(hostPath) { RedirectStandardInput = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true })!;
         try
         {
-            string ready = ReadLine(host);
-            string[] parts = ready.Split(' ');
-            True(ready.StartsWith("ready ", StringComparison.Ordinal) && parts.Length >= 5, "The XAML test host did not start with two windows: " + ready + HostExit(host));
-            System.Globalization.CultureInfo invariant = System.Globalization.CultureInfo.InvariantCulture;
-            int thread = int.Parse(parts[2], invariant);
-            nint first = (nint)long.Parse(parts[3], invariant), second = (nint)long.Parse(parts[4], invariant);
-            // Matching works on laid-out sizes: start once both islands have theirs.
-            WaitSize(host, 1, 1200, 48);
-            WaitSize(host, 2, 800, 48);
+            (int thread, nint first, nint second) = TwoTaskbars(host);
             TaskbarHelper helper = new(key, @"Local\SoltexTaskbarTest" + id, work, Path.Combine(work, "helper.log"), helperPath)
             {
                 TaskbarClasses = "SoltexTaskbarTestHost,SoltexTaskbarTestHost2"
@@ -183,24 +177,24 @@ internal static class TaskbarChecks
             TaskbarLookState global = new(TaskbarLookKind.Opaque, 0xFF00AA00, Line: true);
             TaskbarWindowLook red = new(first, new(TaskbarLookKind.Clear, 0x80FF0000, Line: true));
             TaskbarWindowLook blue = new(second, new(TaskbarLookKind.Opaque, 0x400000FF, Line: false));
-            const string Global = "fill=#FF00AA00 stroke=#FF404040", Red = "fill=#80FF0000 stroke=#FF404040", Blue = "fill=#FF0000FF stroke=#00000000";
 
             // Each taskbar shows its own entry: both rectangles of both taskbars count as mapped.
             PerTaskbar(helper, host, thread, global, [red, blue], Red, Blue, 4);
             WaitPixel(host, 2, "#0000FF");
+            True(File.ReadAllText(Path.Combine(work, "helper.log")).Contains("in the island of window", StringComparison.Ordinal),
+                "The helper did not match the taskbars through their islands.");
             using (RegistryKey? settings = Registry.CurrentUser.OpenSubKey(key))
                 True(settings?.GetValue("Taskbars") is string[] written && written.SequenceEqual(
                     [$"hwnd={(long)first};look=1;color=2164195328;line=1", $"hwnd={(long)second};look=2;color=1073742079;line=0"]),
                     "Taskbars was not written in the agreed format.");
 
+            // The first taskbar's background leaves the tree and comes back (child first): it still follows its entry.
+            True(Ask(host, "detach") == "detached" && Ask(host, "attach") == "attached", "The test host could not move its background.");
+            PerTaskbar(helper, host, thread, global, [red, blue], Red, Blue, 4);
+
             // A taskbar without an entry shows the global look.
             PerTaskbar(helper, host, thread, global, [blue], Global, Blue, 2);
             WaitPixel(host, 1, "#00AA00");
-
-            // A match stays while the Taskbars value stays the same, even when the taskbars become the same size.
-            PerTaskbar(helper, host, thread, global, [red, blue], Red, Blue, 4);
-            Resize(host, 2, 1200, 48);
-            PerTaskbar(helper, host, thread, global with { Color = 0xFF008800 }, [red, blue], Red, Blue, 4);
 
             // Clearing the entries returns both taskbars to the global look.
             PerTaskbar(helper, host, thread, global, [], Global, Global, 0);
@@ -209,11 +203,14 @@ internal static class TaskbarChecks
             WaitPixel(host, 1, "#00AA00");
             WaitPixel(host, 2, "#00AA00");
 
-            // Two taskbars of the same size cannot be told apart: both keep the global look.
-            PerTaskbar(helper, host, thread, global, [red, blue], Global, Global, 0);
-            // Sizes differ again: the next pass matches both.
-            Resize(host, 2, 800, 48);
+            // Two taskbars of the same size are told apart by their windows: when they become the same size after a match,
+            // and when they are matched afresh (no entries in between drop every match) while the same size.
             PerTaskbar(helper, host, thread, global, [red, blue], Red, Blue, 4);
+            Resize(host, 2, 1200, 48);
+            PerTaskbar(helper, host, thread, global with { Color = 0xFF008800 }, [red, blue], Red, Blue, 4);
+            PerTaskbar(helper, host, thread, global, [], Global, Global, 0);
+            PerTaskbar(helper, host, thread, global, [red, blue], Red, Blue, 4);
+            Resize(host, 2, 800, 48);
 
             // Malformed entries are skipped (bad number, look out of range, missing field, no fields at all) and unknown
             // fields are ignored. Taskbars written by hand, then the global look through the old Write, which leaves it.
@@ -252,6 +249,161 @@ internal static class TaskbarChecks
             try { Directory.Delete(work, recursive: true); }
             catch (IOException) { }
         }
+    }
+
+    private const string Global = "fill=#FF00AA00 stroke=#FF404040", Red = "fill=#80FF0000 stroke=#FF404040", Blue = "fill=#FF0000FF stroke=#00000000";
+
+    /// <summary>
+    /// The size fallback (helper loaded with "match=size", as if the islands could not name their windows): taskbars are
+    /// matched by size, a match stays while the Taskbars value stays the same even when the taskbars become the same
+    /// size, two taskbars of the same size cannot be told apart (both keep the global look, mapped=0), and once their
+    /// sizes differ the next pass matches both.
+    /// </summary>
+    public static void HelperMatchesTaskbarsBySizeWithoutTheirIsland()
+    {
+        (string hostPath, string helperPath) = NativeArtifacts();
+        string id = Guid.NewGuid().ToString("N");
+        string key = @"Software\Soltex\TaskbarTest\" + id;
+        string work = Path.Combine(Path.GetTempPath(), "soltex-taskbar-test-" + id);
+        using Process host = Process.Start(new ProcessStartInfo(hostPath) { RedirectStandardInput = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true })!;
+        try
+        {
+            (int thread, nint first, nint second) = TwoTaskbars(host);
+            TaskbarHelper helper = new(key, @"Local\SoltexTaskbarTest" + id, work, Path.Combine(work, "helper.log"), helperPath)
+            {
+                TaskbarClasses = "SoltexTaskbarTestHost,SoltexTaskbarTestHost2",
+                MatchBySize = true
+            };
+            TaskbarLookState global = new(TaskbarLookKind.Opaque, 0xFF00AA00, Line: true);
+            TaskbarWindowLook red = new(first, new(TaskbarLookKind.Clear, 0x80FF0000, Line: true));
+            TaskbarWindowLook blue = new(second, new(TaskbarLookKind.Opaque, 0x400000FF, Line: false));
+
+            PerTaskbar(helper, host, thread, global, [red, blue], Red, Blue, 4);
+            True(!File.ReadAllText(Path.Combine(work, "helper.log")).Contains("in the island of window", StringComparison.Ordinal),
+                "With match=size the helper must not ask the islands.");
+            // A match stays while the Taskbars value stays the same, even when the taskbars become the same size.
+            Resize(host, 2, 1200, 48);
+            PerTaskbar(helper, host, thread, global with { Color = 0xFF008800 }, [red, blue], Red, Blue, 4);
+            // Matched afresh while the same size: they cannot be told apart, both keep the global look.
+            PerTaskbar(helper, host, thread, global, [], Global, Global, 0);
+            PerTaskbar(helper, host, thread, global, [red, blue], Global, Global, 0);
+            // Sizes differ again: the next pass matches both.
+            Resize(host, 2, 800, 48);
+            PerTaskbar(helper, host, thread, global, [red, blue], Red, Blue, 4);
+            PerTaskbar(helper, host, thread, TaskbarLookState.Windows, [], "fill=#FF202020 stroke=#FF404040", "fill=#FF202020 stroke=#FF404040", 0);
+            True(!File.ReadAllText(Path.Combine(work, "helper.log")).Contains("hr=0x8", StringComparison.Ordinal), "The helper logged a failed call.");
+        }
+        catch (InvalidOperationException error)
+        {
+            string log = Path.Combine(work, "helper.log");
+            throw new InvalidOperationException(error.Message + (File.Exists(log) ? Environment.NewLine + File.ReadAllText(log) : ""), error);
+        }
+        finally { Close(host, key, work); }
+    }
+
+    /// <summary>
+    /// The app that wrote the settings ends (here a stand-in process that is killed, as a crash would end it): the helper
+    /// shows the resting look on every taskbar with no per-taskbar looks and says so (resting=1), until the settings name a
+    /// running app again. A process number that now belongs to a program started at another time counts as ended too.
+    /// </summary>
+    public static void HelperRestsWhenItsAppEnds()
+    {
+        (string hostPath, string helperPath) = NativeArtifacts();
+        string id = Guid.NewGuid().ToString("N");
+        string key = @"Software\Soltex\TaskbarTest\" + id;
+        string work = Path.Combine(Path.GetTempPath(), "soltex-taskbar-test-" + id);
+        using Process host = Process.Start(new ProcessStartInfo(hostPath) { RedirectStandardInput = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true })!;
+        // The stand-in app: waits for input that never comes.
+        using Process app = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"))
+        {
+            RedirectStandardInput = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+        })!;
+        try
+        {
+            (int thread, nint first, nint second) = TwoTaskbars(host);
+            string eventBase = @"Local\SoltexTaskbarTest" + id, log = Path.Combine(work, "helper.log");
+            TaskbarLookState resting = new(TaskbarLookKind.Opaque, 0xFF336699, Line: false);
+            const string Rest = "fill=#FF336699 stroke=#00000000";
+            TaskbarHelper owned = new(key, eventBase, work, log, helperPath) { TaskbarClasses = "SoltexTaskbarTestHost,SoltexTaskbarTestHost2", Owner = app.Id, Resting = resting };
+            TaskbarLookState global = new(TaskbarLookKind.Opaque, 0xFF00AA00, Line: true);
+            TaskbarWindowLook[] perTaskbar = [new(first, new(TaskbarLookKind.Clear, 0x80FF0000, Line: true)), new(second, new(TaskbarLookKind.Opaque, 0x400000FF, Line: false))];
+
+            PerTaskbar(owned, host, thread, global, perTaskbar, Red, Blue, 4);
+            True(owned.ReadStatus() is { Resting: false }, "The helper rests while its app runs: " + owned.ReadStatus());
+            using (RegistryKey? settings = Registry.CurrentUser.OpenSubKey(key))
+                True(settings?.GetValue("Owner") is int named && named == app.Id && settings.GetValue("OwnerStart") is long start && start != 0
+                    && settings.GetValue("RestLook") is int look && look == (int)TaskbarLookKind.Opaque, "The owner and resting look were not written.");
+
+            app.Kill();
+            True(app.WaitForExit(5000), "The stand-in app did not end.");
+            WaitResting(owned, true, "after its app ended");
+            True(owned.ReadMappedCount() == 0, "Resting must drop the per-taskbar looks: " + owned.ReadStatus());
+            True(Ask(host, "fill") == Rest && Ask(host, "fill 2") == Rest, "Both taskbars must show the resting look: " + Ask(host, "fill") + " | " + Ask(host, "fill 2"));
+
+            // A running app (this test) writes again: its looks are back.
+            TaskbarHelper current = new(key, eventBase, work, log, helperPath) { TaskbarClasses = "SoltexTaskbarTestHost,SoltexTaskbarTestHost2", Resting = resting };
+            PerTaskbar(current, host, thread, global, perTaskbar, Red, Blue, 4);
+            True(current.ReadStatus() is { Resting: false }, "A running app's settings must end the rest: " + current.ReadStatus());
+
+            // This process's number with another start time: a different program now, so the app has ended.
+            current.Write(global, null, perTaskbar);
+            using (RegistryKey settings = Registry.CurrentUser.CreateSubKey(key)) settings.SetValue("OwnerStart", 12345L, RegistryValueKind.QWord);
+            current.Signal(host.Id);
+            WaitResting(current, true, "for a reused process number");
+            True(Ask(host, "fill") == Rest && Ask(host, "fill 2") == Rest, "A reused process number must rest too.");
+
+            PerTaskbar(current, host, thread, TaskbarLookState.Windows, [], "fill=#FF202020 stroke=#FF404040", "fill=#FF202020 stroke=#FF404040", 0);
+            True(!File.ReadAllText(log).Contains("hr=0x8", StringComparison.Ordinal), "The helper logged a failed call.");
+        }
+        catch (InvalidOperationException error)
+        {
+            string log = Path.Combine(work, "helper.log");
+            throw new InvalidOperationException(error.Message + (File.Exists(log) ? Environment.NewLine + File.ReadAllText(log) : ""), error);
+        }
+        finally
+        {
+            if (!app.HasExited) app.Kill();
+            Close(host, key, work);
+        }
+    }
+
+    private static void WaitResting(TaskbarHelper helper, bool resting, string when)
+    {
+        TaskbarHelperStatus? status = null;
+        for (int wait = 0; wait < 100; wait++)
+        {
+            if ((status = helper.ReadStatus()) is { } seen && seen.Resting == resting) break;
+            Thread.Sleep(50);
+        }
+        True(status?.Resting == resting, $"The helper did not {(resting ? "rest" : "stop resting")} {when}: {status}");
+    }
+
+    /// <summary>Waits for the test host's two islands to be laid out (1200x48 and 800x48) and returns its XAML thread and windows.</summary>
+    private static (int Thread, nint First, nint Second) TwoTaskbars(Process host)
+    {
+        string ready = ReadLine(host);
+        string[] parts = ready.Split(' ');
+        True(ready.StartsWith("ready ", StringComparison.Ordinal) && parts.Length >= 5, "The XAML test host did not start with two windows: " + ready + HostExit(host));
+        System.Globalization.CultureInfo invariant = System.Globalization.CultureInfo.InvariantCulture;
+        // Size matching works on laid-out sizes: start once both islands have theirs.
+        WaitSize(host, 1, 1200, 48);
+        WaitSize(host, 2, 800, 48);
+        return (int.Parse(parts[2], invariant), (nint)long.Parse(parts[3], invariant), (nint)long.Parse(parts[4], invariant));
+    }
+
+    /// <summary>Quits the test host and removes the test's registry key and folder.</summary>
+    private static void Close(Process host, string key, string work)
+    {
+        if (!host.HasExited)
+        {
+            host.StandardInput.WriteLine("quit");
+            if (!host.WaitForExit(5000)) host.Kill();
+        }
+        Registry.CurrentUser.DeleteSubKeyTree(key, throwOnMissingSubKey: false);
+        using (RegistryKey? parent = Registry.CurrentUser.OpenSubKey(@"Software\Soltex\TaskbarTest"))
+            if (parent is { SubKeyCount: 0, ValueCount: 0 }) Registry.CurrentUser.DeleteSubKey(@"Software\Soltex\TaskbarTest", throwOnMissingSubKey: false);
+        try { Directory.Delete(work, recursive: true); }
+        catch (IOException) { }
     }
 
     /// <summary>Writes the global look with per-taskbar entries, signals (or loads) the helper and checks both islands.</summary>

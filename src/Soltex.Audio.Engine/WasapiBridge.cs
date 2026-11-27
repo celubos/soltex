@@ -103,6 +103,8 @@ public sealed class WasapiBridge : IDisposable
             capture.DataAvailable += OnDataAvailable;
             capture.RecordingStopped += OnStopped;
             render.PlaybackStopped += OnStopped;
+            // Each stream releases its thread's MMCSS registration when it stops (NAudio raises these on the stream thread).
+            AudioThreadScheduling.ReleaseOnStop(capture); AudioThreadScheduling.ReleaseOnStop(render);
         }
         catch
         {

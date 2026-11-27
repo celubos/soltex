@@ -20,7 +20,7 @@ namespace Soltex.Audio.UI;
 public partial class EngineControlWindow : Window
 {
     public static IReadOnlyList<EqFilterType> FilterTypes { get; } = Enum.GetValues<EqFilterType>();
-    private sealed record EndpointChoice(string Id, string Name);
+    private sealed record EndpointChoice(string Id, string Name) { public override string ToString() => Name; }
     private readonly ObservableCollection<BandEditor> bands = [];
     private readonly BlockingCollection<Action> commands = new();
     private readonly Thread worker;

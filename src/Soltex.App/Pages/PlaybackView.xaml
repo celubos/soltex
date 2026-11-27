@@ -36,6 +36,27 @@
         <DataTemplate x:Key="TrimmedLabel">
             <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
         </DataTemplate>
+        <!-- The strips' boxes are narrow: closed, they show the device's own name ("Headphones", "CABLE-A Output"); the open
+             list and the tooltip keep the full name with its hardware. -->
+        <DataTemplate x:Key="CompactLabel">
+            <TextBlock x:Name="Label" Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ComboBoxItem}, FallbackValue={x:Null}}" Value="{x:Null}">
+                    <Setter TargetName="Label" Property="Text" Value="{Binding Compact}" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+        <!-- The strips' Mute, Sound and Setup share one weight. Mute is a toggle (lit when muted, like a desk's mute key),
+             so its label stays "Mute"; the state line above says "Muted". -->
+        <Style x:Key="StripMute" TargetType="CheckBox" BasedOn="{StaticResource Studio.TogglePill}">
+            <Setter Property="Content" Value="Mute" />
+        </Style>
+        <Style x:Key="StripButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="MinHeight" Value="0" />
+        </Style>
 
         <!-- A playback channel: identity, state, fader + meter, level, routing, sound. -->
         <DataTemplate x:Key="ChannelStrip">
@@ -61,19 +82,19 @@
                             <controls:EqCurve Height="26" Settings="{Binding Dsp}" Stroke="{Binding Bus, Converter={StaticResource BusBrush}}"
                                               Guide="{DynamicResource Studio.StrokeBrush}" Margin="0,0,0,10" ToolTip="Equalizer shape" />
                             <UniformGrid Columns="2">
-                                <CheckBox Style="{StaticResource Studio.TogglePill}" Content="Mute" IsChecked="{Binding Mute}" Margin="0,0,4,0"
+                                <CheckBox Style="{StaticResource StripMute}" IsChecked="{Binding Mute}" Margin="0,0,4,0"
                                           AutomationProperties.Name="{Binding Title, StringFormat='Mute {0}'}" />
-                                <Button Content="Sound" Margin="4,0,0,0" Padding="8,6" MinHeight="0" Click="Sound_Click"
+                                <Button Style="{StaticResource StripButton}" Content="Sound" Margin="4,0,0,0" Click="Sound_Click"
                                         AutomationProperties.Name="{Binding Title, StringFormat='Adjust {0} sound'}" ToolTip="Equalizer, noise and stereo for this channel" />
                             </UniformGrid>
                         </StackPanel>
                         <StackPanel DockPanel.Dock="Bottom">
                             <TextBlock Style="{StaticResource StripLabel}" Text="Source" />
-                            <ComboBox Style="{StaticResource Studio.CompactCombo}" ItemsSource="{Binding CaptureChoices}" ItemTemplate="{StaticResource TrimmedLabel}" SelectedValuePath="Id"
+                            <ComboBox Style="{StaticResource Studio.CompactCombo}" ItemsSource="{Binding CaptureChoices}" ItemTemplate="{StaticResource CompactLabel}" SelectedValuePath="Id"
                                       SelectedValue="{Binding CaptureEndpointId, Mode=TwoWay}" ToolTip="{Binding SelectedItem.Label, RelativeSource={RelativeSource Self}}"
                                       AutomationProperties.Name="{Binding Title, StringFormat='Source for {0}'}" />
                             <TextBlock Style="{StaticResource StripLabel}" Text="Plays on" />
-                            <ComboBox Style="{StaticResource Studio.CompactCombo}" ItemsSource="{Binding RenderChoices}" ItemTemplate="{StaticResource TrimmedLabel}" SelectedValuePath="Id"
+                            <ComboBox Style="{StaticResource Studio.CompactCombo}" ItemsSource="{Binding RenderChoices}" ItemTemplate="{StaticResource CompactLabel}" SelectedValuePath="Id"
                                       SelectedValue="{Binding RenderEndpointId, Mode=TwoWay}" ToolTip="{Binding SelectedItem.Label, RelativeSource={RelativeSource Self}}"
                                       AutomationProperties.Name="{Binding Title, StringFormat='Output for {0}'}" />
                         </StackPanel>
@@ -108,6 +129,16 @@
                     <Setter TargetName="StateDot" Property="Fill" Value="{DynamicResource Studio.CriticalBrush}" />
                     <Setter TargetName="StateLine" Property="Foreground" Value="{DynamicResource Studio.CriticalBrush}" />
                 </DataTrigger>
+                <!-- "Muted" is the state word everywhere in Audio (the microphone, Sonar's strips); a channel that is off says Off. -->
+                <MultiDataTrigger>
+                    <MultiDataTrigger.Conditions>
+                        <Condition Binding="{Binding Mute}" Value="True" />
+                        <Condition Binding="{Binding State}" Value="Running" />
+                    </MultiDataTrigger.Conditions>
+                    <Setter TargetName="StateLine" Property="Text" Value="Muted" />
+                    <Setter TargetName="StateDot" Property="Fill" Value="{DynamicResource Studio.CautionBrush}" />
+                    <Setter TargetName="StateLine" Property="Foreground" Value="{DynamicResource Studio.CautionBrush}" />
+                </MultiDataTrigger>
                 <DataTrigger Binding="{Binding Enabled}" Value="False">
                     <Setter TargetName="StateLine" Property="Text" Value="Off" />
                     <Setter TargetName="StateDot" Property="Fill" Value="{DynamicResource Studio.TrackBrush}" />
@@ -138,15 +169,15 @@
                             <controls:EqCurve Height="26" Settings="{Binding Dsp}" Stroke="{DynamicResource Studio.Channel.Microphone}" Guide="{DynamicResource Studio.StrokeBrush}"
                                               Margin="0,0,0,10" ToolTip="Equalizer shape" />
                             <UniformGrid Columns="2">
-                                <CheckBox Style="{StaticResource Studio.TogglePill}" Content="Mute" IsChecked="{Binding Mute}" Margin="0,0,4,0" AutomationProperties.Name="Mute microphone" />
-                                <Button Content="Setup" Margin="4,0,0,0" Padding="8,6" MinHeight="0" Click="MicSetup_Click" AutomationProperties.Name="Open microphone setup"
+                                <CheckBox Style="{StaticResource StripMute}" IsChecked="{Binding Mute}" Margin="0,0,4,0" AutomationProperties.Name="Mute microphone" />
+                                <Button Style="{StaticResource StripButton}" Content="Setup" Margin="4,0,0,0" Click="MicSetup_Click" AutomationProperties.Name="Open microphone setup"
                                         ToolTip="Choose the microphone, test it and pick its sound" />
                             </UniformGrid>
                         </StackPanel>
                         <StackPanel DockPanel.Dock="Bottom">
                             <TextBlock Style="{StaticResource StripLabel}" Text="Apps hear it as" />
                             <Border Style="{StaticResource Studio.Chip}" HorizontalAlignment="Stretch" Padding="9,6" MinHeight="30"
-                                    ToolTip="{Binding Mic.Receiving, RelativeSource={RelativeSource AncestorType=pages:PlaybackView}}">
+                                    ToolTip="{Binding Mic.ReceivingDetail, RelativeSource={RelativeSource AncestorType=pages:PlaybackView}}">
                                 <TextBlock FontSize="12" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Foreground="{DynamicResource Studio.TextBrush}"
                                            Text="{Binding Mic.Receiving, RelativeSource={RelativeSource AncestorType=pages:PlaybackView}}" />
                             </Border>
@@ -188,13 +219,14 @@
         <!-- Section heading: what this is, whether audio runs, and the one main action. -->
         <audio:ResponsiveRow MinPrimaryWidth="220" Margin="0,0,0,16">
             <StackPanel VerticalAlignment="Center">
-                <TextBlock Style="{StaticResource Shell.SectionTitle}" Margin="0" Text="Mixer" />
+                <!-- The tab already says Mixer; the heading names what is below it. -->
+                <TextBlock Style="{StaticResource Shell.SectionTitle}" Margin="0" Text="Channels" />
                 <TextBlock Style="{StaticResource Shell.Secondary}" Margin="0,4,0,0"
                            Text="Each channel has its own source, output and sound. New sources and outputs wait until you apply them." />
             </StackPanel>
             <Border x:Name="StateBadge" CornerRadius="10" Padding="10,4" VerticalAlignment="Center" Background="{DynamicResource SubtleFillColorSecondaryBrush}">
                 <TextBlock x:Name="StateText" Style="{StaticResource Shell.Body}" FontWeight="SemiBold" TextWrapping="NoWrap" Text="Connecting…"
-                           AutomationProperties.HelpText="Audio state" AutomationProperties.LiveSetting="Polite" />
+                           AutomationProperties.HelpText="Audio state" controls:LiveRegion.IsLive="True" />
             </Border>
             <Button x:Name="StartStopButton" Style="{StaticResource Studio.PrimaryButton}" Content="Start audio" MinWidth="128" VerticalAlignment="Center"
                     Click="StartStopButton_Click" />
@@ -261,7 +293,7 @@
             <audio:ResponsiveRow MinPrimaryWidth="220">
                 <StackPanel VerticalAlignment="Center">
                     <TextBlock Style="{StaticResource Shell.Body}" FontWeight="SemiBold" Text="Audio isn't connected" />
-                    <TextBlock x:Name="OfflineReason" Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock x:Name="OfflineReason" Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" controls:LiveRegion.IsLive="True" />
                 </StackPanel>
                 <Button x:Name="RetryButton" Content="Try again" Click="RetryButton_Click" VerticalAlignment="Center" AutomationProperties.Name="Try connecting to audio again" />
             </audio:ResponsiveRow>
@@ -280,12 +312,12 @@
         <ItemsControl x:Name="ChannelList" Focusable="False" ItemTemplateSelector="{StaticResource StripSelector}" AutomationProperties.Name="Channels" Margin="0,0,0,16">
             <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate>
-                    <audio:AdaptiveGrid MinColumnWidth="164" MaxColumnWidth="280" ColumnSpacing="12" RowSpacing="12" />
+                    <audio:AdaptiveGrid MinColumnWidth="164" ColumnSpacing="12" RowSpacing="12" />
                 </ItemsPanelTemplate>
             </ItemsControl.ItemsPanel>
         </ItemsControl>
 
-        <TextBlock x:Name="StatusLine" Style="{StaticResource Shell.Secondary}" Margin="2,0,0,12" AutomationProperties.LiveSetting="Polite" />
+        <TextBlock x:Name="StatusLine" Style="{StaticResource Shell.Secondary}" Margin="2,0,0,12" controls:LiveRegion.IsLive="True" />
         <WrapPanel>
             <Button Content="Stream mix…" Margin="0,0,8,8" Click="StreamMix_Click" AutomationProperties.Name="Separate mix for streaming"
                     ToolTip="A second mix for OBS or other streaming apps" />

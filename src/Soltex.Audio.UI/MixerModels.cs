@@ -18,9 +18,17 @@ internal abstract class ObservableModel : INotifyPropertyChanged
 
 internal sealed record DeviceChoice(string Id, string Label)
 {
-    public string ShortLabel => Label.Length > 27 ? Label[..24] + "…" : Label;
+    /// <summary>The shorter name a narrow box shows when it is closed; null keeps the full label.</summary>
+    public string? CompactLabel { get; init; }
+    public string Compact => CompactLabel ?? Label;
+    /// <summary>What a screen reader announces for the list item.</summary>
+    public override string ToString() => Label;
 }
-internal sealed record RouteChoice(string Id, string Name);
+internal sealed record RouteChoice(string Id, string Name)
+{
+    /// <summary>What a screen reader announces for the list item.</summary>
+    public override string ToString() => Name;
+}
 
 internal sealed class ChannelModel(string id, string name, string role, string number) : ObservableModel
 {
@@ -43,7 +51,10 @@ internal sealed class ChannelModel(string id, string name, string role, string n
     public double Level { get => _level; set { if (Set(ref _level, value)) Changed(nameof(LevelText)); } }
     public string LevelText => Level.ToString("0", CultureInfo.InvariantCulture);
     public bool Muted { get => _muted; set { if (Set(ref _muted, value)) { Changed(nameof(MuteLabel)); Changed(nameof(MuteAccessibleName)); } } }
-    public string MuteLabel => Muted ? "Muted" : "Mute";
+    /// <summary>The button says what it does; the strip's status line says "Muted".</summary>
+    public string MuteLabel => Muted ? "Unmute" : "Mute";
+    /// <summary>The device list was rebuilt, which clears a box's selection: show the current device again.</summary>
+    public void RefreshDevice() => Changed(nameof(DeviceId));
     public string Status { get => _status; set => Set(ref _status, value); }
     public double Peak { get => _peak; set { if (Set(ref _peak, value)) Changed(nameof(PeakText)); } }
     public string PeakText => Peak < 0 ? "—" : Peak < 0.001 ? "−∞" : (20 * Math.Log10(Peak)).ToString("0", CultureInfo.InvariantCulture);
@@ -68,6 +79,11 @@ internal sealed class ApplicationModel(string key, uint processId, string name, 
     public string? RouteId { get => _routeId; set => Set(ref _routeId, value); }
     public string Status { get => _status; set => Set(ref _status, value); }
     public string AccessibleName => "Channel for " + Name;
+    private bool _isLast;
+    /// <summary>The last row draws no divider; the card's own edge closes the list.</summary>
+    public bool IsLast { get => _isLast; set => Set(ref _isLast, value); }
+    /// <summary>The channel list was rebuilt, which clears the box's selection: show the current channel again.</summary>
+    public void RefreshRoute() => Changed(nameof(RouteId));
 }
 
 internal sealed class MixerModel

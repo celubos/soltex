@@ -91,24 +91,30 @@ public partial class PlaybackView : UserControl
             StartStopButton.Content = running ? "Stop audio" : "Start audio";
             StartStopButton.IsEnabled = workspace.IsHostInitialized && (running || workspace.CanStart);
             ShowState();
-            // Not connected (the engine is missing, or did not answer): the reason and a retry, instead of dead controls.
-            bool offline = !workspace.IsHostInitialized && workspace.StatusText.StartsWith("Audio ", StringComparison.Ordinal) &&
-                workspace.StatusText != "Connecting to audio…";
+            // Not connected (the engine is missing, did not answer, or stopped answering): the reason and a retry, instead
+            // of dead controls or the last state shown as if it were still true.
+            bool offline = workspace.ConnectionLost || (!workspace.IsHostInitialized && workspace.StatusText.StartsWith("Audio ", StringComparison.Ordinal) &&
+                workspace.StatusText != "Connecting to audio…");
             OfflineBar.Visibility = offline ? Visibility.Visible : Visibility.Collapsed;
             OfflineReason.Text = offline ? workspace.StatusText : "";
             if (localStatus is not null && DateTime.UtcNow >= localUntil) localStatus = null;
-            // While edits are staged the staged bar already says what to do, so routine status is hidden.
-            // A failed or refused change is still shown, or the click would seem to do nothing.
-            StatusLine.Text = offline ? "" : localStatus ?? (workspace.LastOperationFailed || !workspace.RoutingStaged ? workspace.StatusText : "");
+            // While edits are staged the staged bar already says what to do, so routine status is hidden, and so is
+            // "Audio is running.", which only repeats the Running badge. A failed or refused change is still shown, or the
+            // click would seem to do nothing.
+            string status = workspace.LastOperationFailed || !workspace.RoutingStaged ? workspace.StatusText : "";
+            if (status == IndependentMixerWorkspace.RunningStatus) status = "";
+            StatusLine.Text = offline ? "" : localStatus ?? status;
             if (workspace.LatestSnapshot is { } snapshot)
             {
                 MicrophonePathModel model = MicrophonePath.Describe(snapshot);
                 // The strip is narrow: short words when nothing usable is chosen; the tooltips have the full text.
                 bool chosen = snapshot.Profile.Channels.FirstOrDefault(c => c.Bus == AudioBus.Microphone)?.CaptureEndpointId is not null;
-                Mic.Update(model.StateText, model.Explanation,
-                    model.SourceAvailable ? model.SourceName : chosen ? "Not connected" : "Not chosen", model.SourceName + " · " + model.SourceDetail,
-                    model.ReceivingInputName ?? "Not set up",
-                    (Brush)FindResource(model.State switch
+                bool lost = workspace.ConnectionLost;
+                // The chips show the device's own name ("CABLE Output"); their tooltips keep the full name.
+                Mic.Update(lost ? "Not connected" : model.StateText, lost ? workspace.StatusText : model.Explanation,
+                    model.SourceAvailable ? DeviceNames.WithoutHardware(model.SourceName) : chosen ? "Not connected" : "Not chosen", model.SourceName + " · " + model.SourceDetail,
+                    model.ReceivingInputName is { } receiving ? DeviceNames.WithoutHardware(receiving) : "Not set up", model.ReceivingInputName ?? "Not set up",
+                    (Brush)FindResource(lost ? "Studio.TextTertiaryBrush" : model.State switch
                     {
                         MicrophonePathState.Running => "Studio.SuccessBrush",
                         MicrophonePathState.Problem => "Studio.CriticalBrush",
@@ -172,6 +178,8 @@ public partial class PlaybackView : UserControl
             _ => ("Stopped", "SubtleFillColorSecondaryBrush")
         };
         if (workspace.LatestSnapshot is null && workspace.LastOperationFailed) (text, background) = ("Not connected", "SystemFillColorCriticalBackgroundBrush");
+        // The engine stopped answering: the last state may no longer be true, so it isn't shown as "Running".
+        if (workspace.ConnectionLost) (text, background) = ("Not connected", "SystemFillColorCriticalBackgroundBrush");
         StateText.Text = text;
         StateBadge.SetResourceReference(Border.BackgroundProperty, background);
     }
@@ -304,13 +312,16 @@ public sealed class MicStripInfo : INotifyPropertyChanged
     public string Source { get; private set; } = "—";
     public string SourceDetail { get; private set; } = "";
     public string Receiving { get; private set; } = "—";
+    /// <summary>The full name of the input other apps choose (the chip may show a shorter one).</summary>
+    public string ReceivingDetail { get; private set; } = "—";
     public Brush? StateBrush { get; private set; }
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    internal void Update(string state, string explanation, string source, string sourceDetail, string receiving, Brush stateBrush)
+    internal void Update(string state, string explanation, string source, string sourceDetail, string receiving, string receivingDetail, Brush stateBrush)
     {
-        if (State == state && Explanation == explanation && Source == source && SourceDetail == sourceDetail && Receiving == receiving && ReferenceEquals(StateBrush, stateBrush)) return;
-        (State, Explanation, Source, SourceDetail, Receiving, StateBrush) = (state, explanation, source, sourceDetail, receiving, stateBrush);
+        if (State == state && Explanation == explanation && Source == source && SourceDetail == sourceDetail && Receiving == receiving &&
+            ReceivingDetail == receivingDetail && ReferenceEquals(StateBrush, stateBrush)) return;
+        (State, Explanation, Source, SourceDetail, Receiving, ReceivingDetail, StateBrush) = (state, explanation, source, sourceDetail, receiving, receivingDetail, stateBrush);
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(string.Empty));
     }
 }

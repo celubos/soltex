@@ -19,15 +19,23 @@
 // the app signals the named event "<event>.<process id>". Taskbars gives single taskbars their own look, one entry per
 // taskbar window: "hwnd=<decimal HWND>;look=<0-4>;color=<decimal ARGB>;line=<0|1>" (unknown fields ignored, malformed
 // entries skipped); every other taskbar shows Look/Color/Line. Report: Status ("targets= applied= look= hr= styled=
-// styleApplied= styleHr= request= mapped="), Targets, HelperVersion, HelperProcess. "request" echoes the Request value of
-// the settings the pass applied, so the app can tell a report about its own change from one written by an earlier pass;
-// "mapped" counts the background rectangles that showed a Taskbars entry's look.
+// styleApplied= styleHr= request= mapped= resting="), Targets, HelperVersion, HelperProcess. "request" echoes the Request
+// value of the settings the pass applied, so the app can tell a report about its own change from one written by an
+// earlier pass; "mapped" counts the background rectangles that showed a Taskbars entry's look.
 //
-// Which taskbar window a rectangle belongs to: XAML does not say, so the helper compares sizes. It traces the rectangle up
-// the visual tree to its Taskbar.TaskbarFrame (or, without one, the topmost known FrameworkElement), reads that element's
-// ActualWidth/ActualHeight and looks for the one Shell_TrayWnd/Shell_SecondaryTrayWnd of this process whose size in DIPs
-// matches within 2 DIPs. No match, or several (two displays with the same taskbar size), leaves the global look. A match
-// is kept until the Taskbars value changes or the window goes away; a rectangle added later is matched on its first pass.
+// The app that wrote the settings: Owner (its process id), OwnerStart (its creation time, a FILETIME as REG_QWORD) and the
+// look to rest at without it, RestLook/RestColor/RestLine. The worker waits on that process; when it ends (it quit or
+// crashed) every pass shows the resting look with no Taskbars entries, until the settings name another owner. So a look
+// meant to last only while the app watches (Start open, a maximized window) never sticks. "resting=1" reports it.
+//
+// Which taskbar window a rectangle belongs to: each taskbar is its own XAML island, the root of its tree a
+// DesktopWindowXamlSource. The helper traces the rectangle up to that root and asks it for its window
+// (IDesktopWindowXamlSourceNative::get_WindowHandle); the island window's top-level ancestor is the Shell_TrayWnd or
+// Shell_SecondaryTrayWnd it is drawn in. Without an island root (or with "match=size", for tests) it compares sizes: the
+// rectangle's Taskbar.TaskbarFrame (or, without one, its topmost known FrameworkElement) against the one taskbar window of
+// this process whose size in DIPs matches within 2 DIPs; no match, or several (two displays with the same taskbar size),
+// leaves the global look. A size match is kept until the Taskbars value changes or the window goes away; a match through
+// the island is kept until the window goes away.
 
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0A00 // Windows 10 declarations (GetDpiForWindow); the XAML taskbar is Windows 11 only
@@ -37,6 +45,7 @@
 #include <roapi.h>
 #include <winstring.h>
 #include <xamlom.h>
+#include <windows.ui.xaml.hosting.desktopwindowxamlsource.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,7 +53,9 @@
 
 namespace {
 
-constexpr DWORD HelperVersion = 3; // 3: Taskbars (a look per taskbar window) and "mapped=" in Status
+// 3: Taskbars (a look per taskbar window) and "mapped=" in Status. 4: taskbars matched through their island's window,
+// the owner's resting look ("resting=" in Status).
+constexpr DWORD HelperVersion = 4;
 
 // {053DF8EC-D4D0-4868-BC22-F1EEFC050065}
 constexpr CLSID ClsidTap = {0x053df8ec, 0xd4d0, 0x4868, {0xbc, 0x22, 0xf1, 0xee, 0xfc, 0x05, 0x00, 0x65}};
@@ -131,6 +142,7 @@ struct Config
     wchar_t dump[MAX_PATH] = L""; // write the visual tree seen at attach time here (types and names only)
     wchar_t taskbarClasses[256] = L""; // more window classes that count as taskbars, comma-separated (the test host's)
     bool verbose = false;
+    bool matchBySize = false; // "match=size": never ask the island for its window (tests of the size fallback)
 };
 
 // One style rule. Empty under/type/name match anything, but a rule needs a type or a name.
@@ -166,9 +178,10 @@ struct Target
     unsigned fillIndex;
     IInspectable *original; // held, so XAML cannot release the original brush while ours is shown
     HRESULT result;         // last pass
-    HWND window;            // the taskbar window it was matched to, or null (kept while the Taskbars value stays the same)
-    unsigned long long mapKey; // the Taskbars value (hash) that match was made under
+    HWND window;            // the taskbar window it was matched to, or null
+    unsigned long long mapKey; // the Taskbars value (hash) a size match was made under
     bool mapped;            // the last pass showed a Taskbars entry's look
+    bool byIsland;          // window came from its island (kept while the window exists), not from its size
 };
 
 // The parent of an element in the visual tree, so a background rectangle can be traced up to its taskbar.
@@ -176,7 +189,8 @@ struct Link
 {
     InstanceHandle handle, parent;
     bool used, deleted;
-    bool frame; // Taskbar.TaskbarFrame (or named TaskbarFrame, as in the test host)
+    bool frame;  // Taskbar.TaskbarFrame (or named TaskbarFrame, as in the test host)
+    bool source; // a DesktopWindowXamlSource: the root of a XAML island, which knows its window
 };
 
 // One element a style rule applies to.
@@ -201,8 +215,16 @@ struct Dispatcher
 };
 
 constexpr int NodeCapacity = 16384, MaxTargets = 32, MaxDepth = 4, MaxDispatchers = 8, MaxRules = 48, MaxAnchors = 16, MaxStyled = 1024;
-constexpr int LinkCapacity = NodeCapacity, MaxChain = 64, MaxSizeCandidates = 8, MaxWindowLooks = 16, MaxTaskbarWindows = 16;
+constexpr int LinkCapacity = NodeCapacity, MaxChain = 256, MaxSizeCandidates = 8, MaxWindowLooks = 16, MaxTaskbarWindows = 16;
 constexpr DWORD MaxTaskbarsBytes = 64 * 1024;
+constexpr wchar_t IslandType[] = L"Windows.UI.Xaml.Hosting.DesktopWindowXamlSource";
+
+// The app that owns the settings (Owner, OwnerStart).
+struct Owner
+{
+    DWORD process;
+    unsigned long long start; // creation time (FILETIME), 0 when not given
+};
 
 Config g_config;
 HMODULE g_module;
@@ -228,6 +250,9 @@ IXamlDiagnostics *g_diagnostics;
 IVisualTreeService *g_tree;
 IVisualTreeService3 *g_advise; // worker thread only
 HANDLE g_settingsEvent, g_wake;
+Owner g_gone;          // an owner that has ended (under g_lock): while the settings still name it, passes rest
+HANDLE g_ownerProcess; // worker thread only: the owner waited on, or null
+Owner g_watched;       // worker thread only: the owner g_ownerProcess belongs to (or that could not be opened)
 volatile LONG g_started;
 char *g_dumpBuffer; // UTF-8 lines while the first tree walk runs
 size_t g_dumpLength, g_dumpCapacity;
@@ -290,25 +315,52 @@ void ParseConfig(const wchar_t *data)
             else if (name == 4 && wcsncmp(data, L"dump", 4) == 0) copy(g_config.dump, ARRAYSIZE(g_config.dump));
             else if (name == 7 && wcsncmp(data, L"verbose", 7) == 0) g_config.verbose = valueLength == 1 && equals[1] == L'1';
             else if (name == 14 && wcsncmp(data, L"taskbarClasses", 14) == 0) copy(g_config.taskbarClasses, ARRAYSIZE(g_config.taskbarClasses));
+            else if (name == 5 && wcsncmp(data, L"match", 5) == 0) g_config.matchBySize = valueLength == 4 && wcsncmp(equals + 1, L"size", 4) == 0;
         }
         if (!end) break;
         data = end + 1;
     }
 }
 
-Settings ReadSettings()
+// The global look (Look, Color, Line), or the resting look (RestLook, RestColor, RestLine; Windows' look when missing).
+Settings ReadSettings(bool resting = false)
 {
     Settings settings;
     DWORD value, size = sizeof value;
-    if (RegGetValueW(HKEY_CURRENT_USER, g_config.key, L"Look", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS && value <= LookBlur)
+    if (RegGetValueW(HKEY_CURRENT_USER, g_config.key, resting ? L"RestLook" : L"Look", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS &&
+        value <= LookBlur)
         settings.look = value;
     size = sizeof value;
-    if (RegGetValueW(HKEY_CURRENT_USER, g_config.key, L"Color", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS)
+    if (RegGetValueW(HKEY_CURRENT_USER, g_config.key, resting ? L"RestColor" : L"Color", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS)
         settings.color = value;
     size = sizeof value;
-    if (RegGetValueW(HKEY_CURRENT_USER, g_config.key, L"Line", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS)
+    if (RegGetValueW(HKEY_CURRENT_USER, g_config.key, resting ? L"RestLine" : L"Line", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS)
         settings.line = value != 0;
     return settings;
+}
+
+// The app named in the settings (Owner, OwnerStart); process 0 when none.
+Owner ReadOwner()
+{
+    Owner owner{};
+    DWORD size = sizeof owner.process;
+    if (RegGetValueW(HKEY_CURRENT_USER, g_config.key, L"Owner", RRF_RT_REG_DWORD, nullptr, &owner.process, &size) != ERROR_SUCCESS) return {};
+    size = sizeof owner.start;
+    if (RegGetValueW(HKEY_CURRENT_USER, g_config.key, L"OwnerStart", RRF_RT_REG_QWORD, nullptr, &owner.start, &size) != ERROR_SUCCESS) owner.start = 0;
+    return owner;
+}
+
+bool SameOwner(const Owner &a, const Owner &b) { return a.process == b.process && a.start == b.start; }
+
+// True while the settings still name an owner that has ended: passes then show the resting look.
+bool Resting()
+{
+    Owner owner = ReadOwner();
+    if (!owner.process) return false;
+    AcquireSRWLockShared(&g_lock);
+    bool gone = SameOwner(owner, g_gone);
+    ReleaseSRWLockShared(&g_lock);
+    return gone;
 }
 
 // Reads the Styles value as a double-NUL-terminated list into text (empty list on failure).
@@ -469,7 +521,7 @@ int ReadWindowLooks(WindowLook *looks, unsigned long long *key)
     return count;
 }
 
-void WriteStatus(DWORD look, DWORD request)
+void WriteStatus(DWORD look, DWORD request, bool resting)
 {
     int targets = 0, applied = 0, styled = 0, styleApplied = 0, mapped = 0;
     HRESULT result = S_OK, styleResult = S_OK;
@@ -491,10 +543,11 @@ void WriteStatus(DWORD look, DWORD request)
 
     HKEY key;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, g_config.key, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return;
-    wchar_t status[224];
-    _snwprintf(status, ARRAYSIZE(status), L"targets=%d applied=%d look=%lu hr=0x%08lX styled=%d styleApplied=%d styleHr=0x%08lX request=%lu mapped=%d",
-               targets, applied, look, static_cast<unsigned long>(result), styled, styleApplied, static_cast<unsigned long>(styleResult), request,
-               mapped);
+    wchar_t status[240];
+    _snwprintf(status, ARRAYSIZE(status),
+               L"targets=%d applied=%d look=%lu hr=0x%08lX styled=%d styleApplied=%d styleHr=0x%08lX request=%lu mapped=%d resting=%d", targets,
+               applied, look, static_cast<unsigned long>(result), styled, styleApplied, static_cast<unsigned long>(styleResult), request, mapped,
+               resting ? 1 : 0);
     status[ARRAYSIZE(status) - 1] = 0;
     DWORD version = HelperVersion, process = GetCurrentProcessId(), count = static_cast<DWORD>(targets);
     RegSetValueExW(key, L"Targets", 0, REG_DWORD, reinterpret_cast<const BYTE *>(&count), sizeof count);
@@ -565,14 +618,16 @@ Link *FindLink(InstanceHandle handle)
     return nullptr;
 }
 
-void PutLink(InstanceHandle handle, InstanceHandle parent, bool frame) // handle is not in the table yet
+void PutLink(const Link &value) // value.handle is not in the table yet
 {
-    for (size_t i = 0, slot = Slot(handle); i < LinkCapacity; i++, slot = (slot + 1) & (LinkCapacity - 1))
+    for (size_t i = 0, slot = Slot(value.handle); i < LinkCapacity; i++, slot = (slot + 1) & (LinkCapacity - 1))
     {
         Link &link = g_links[slot];
         if (link.used) continue;
         if (link.deleted) g_linkDeleted--;
-        link = {handle, parent, true, false, frame};
+        link = value;
+        link.used = true;
+        link.deleted = false;
         g_linkCount++;
         return;
     }
@@ -589,22 +644,11 @@ void CompactLinks()
         if (link.used && count < g_linkCount) live[count++] = link;
     memset(g_links, 0, sizeof g_links);
     g_linkCount = g_linkDeleted = 0;
-    for (int i = 0; i < count; i++) PutLink(live[i].handle, live[i].parent, live[i].frame);
+    for (int i = 0; i < count; i++) PutLink(live[i]);
     HeapFree(GetProcessHeap(), 0, live);
 }
 
-void SetLink(InstanceHandle handle, InstanceHandle parent, bool frame)
-{
-    if (Link *link = FindLink(handle))
-    {
-        link->parent = parent;
-        link->frame = frame;
-        return;
-    }
-    if (g_linkCount + g_linkDeleted >= LinkCapacity * 7 / 8) CompactLinks();
-    if (g_linkCount >= LinkCapacity * 3 / 4) return; // full enough: rectangles below an untracked element keep the global look
-    PutLink(handle, parent, frame);
-}
+int g_removedSincePrune; // elements removed since the last PruneOrphans: only removals can leave orphans
 
 void RemoveLink(InstanceHandle handle)
 {
@@ -614,7 +658,50 @@ void RemoveLink(InstanceHandle handle)
         link->deleted = true;
         g_linkCount--;
         g_linkDeleted++;
+        g_removedSincePrune++;
     }
+}
+
+// If Explorer reports only the top element of a removed branch, the elements below it keep their links (and nodes) with a
+// parent that is gone. Before the table counts as full, such orphans are dropped, one level per sweep, until none is left.
+void PruneOrphans()
+{
+    if (g_removedSincePrune == 0) return; // nothing was removed since the last sweep, so there is nothing new to find
+    g_removedSincePrune = 0;
+    int before = g_linkCount;
+    for (int sweep = 0; sweep < MaxChain; sweep++)
+    {
+        int removed = 0;
+        for (Link &link : g_links)
+        {
+            if (!link.used || !link.parent || FindLink(link.parent)) continue;
+            InstanceHandle handle = link.handle;
+            link.used = false;
+            link.deleted = true;
+            g_linkCount--;
+            g_linkDeleted++;
+            RemoveNode(handle);
+            removed++;
+        }
+        if (removed == 0) break;
+    }
+    CompactLinks();
+    Log(L"visual tree table pruned: %d of %d links were left over from removed elements", before - g_linkCount, before);
+}
+
+void SetLink(InstanceHandle handle, InstanceHandle parent, bool frame, bool source)
+{
+    if (Link *link = FindLink(handle))
+    {
+        link->parent = parent;
+        link->frame = frame;
+        link->source = source;
+        return;
+    }
+    if (g_linkCount >= LinkCapacity * 3 / 4) PruneOrphans();
+    else if (g_linkCount + g_linkDeleted >= LinkCapacity * 7 / 8) CompactLinks();
+    if (g_linkCount >= LinkCapacity * 3 / 4) return; // full enough: rectangles below an untracked element keep the global look
+    PutLink({handle, parent, true, false, frame, source});
 }
 
 // Elements whose size can stand for the taskbar a target is drawn in: its nearest Taskbar.TaskbarFrame, or else its
@@ -640,11 +727,162 @@ int SizeCandidates(InstanceHandle target, InstanceHandle *candidates)
     return count;
 }
 
+// The root of the XAML island a target is drawn in: its nearest DesktopWindowXamlSource ancestor, else its topmost known
+// ancestor (which may still turn out to be one). Under g_lock.
+InstanceHandle IslandOf(InstanceHandle target)
+{
+    InstanceHandle top = 0;
+    for (int depth = 0; target && depth < MaxChain; depth++)
+    {
+        const Link *link = FindLink(target);
+        if (!link) break;
+        if (link->source) return target;
+        top = target;
+        target = link->parent;
+    }
+    return top;
+}
+
+// True when every ancestor of element up to a tree root is known (so what it is under is known). Under g_lock.
+bool Rooted(InstanceHandle element)
+{
+    for (int depth = 0; element && depth < MaxChain; depth++)
+    {
+        const Link *link = FindLink(element);
+        if (!link) return false;
+        element = link->parent;
+    }
+    return element == 0;
+}
+
+// True when ancestor is element or one of its known ancestors. Under g_lock.
+bool Within(InstanceHandle element, InstanceHandle ancestor)
+{
+    for (int depth = 0; element && depth < MaxChain; depth++)
+    {
+        if (element == ancestor) return true;
+        const Link *link = FindLink(element);
+        if (!link) return false;
+        element = link->parent;
+    }
+    return false;
+}
+
 int FindTarget(InstanceHandle handle)
 {
     for (int i = 0; i < g_targetCount; i++)
         if (g_targets[i].handle == handle) return i;
     return -1;
+}
+
+// A background rectangle that left the tree, with what is needed to put its own brush back should it return. XAML keeps
+// the Fill it had (possibly ours) while it is out of the tree, so a returning rectangle must not take that as its original.
+struct Saved
+{
+    InstanceHandle handle;
+    DWORD thread;
+    bool stroke, inspected, modified, originalHandle, originalLocal;
+    unsigned fillIndex;
+    IInspectable *original;
+};
+
+// A background rectangle added before its parent: XAML puts a removed branch back child first, so whether it is under
+// Taskbar.TaskbarBackground is known only once the rest of the branch is in.
+struct Pending
+{
+    InstanceHandle handle;
+    DWORD thread;
+    bool stroke;
+};
+
+constexpr int MaxSaved = 32, MaxPending = 16;
+Saved g_saved[MaxSaved];
+int g_savedCount;
+Pending g_pending[MaxPending];
+int g_pendingCount;
+
+// Under g_lock, on the target's own thread (removals arrive there), so the held brush may be released here.
+void SaveTarget(const Target &target)
+{
+    if (!target.inspected || !target.modified) // still shows its own Fill: inspected afresh should it return
+    {
+        if (target.original) target.original->Release();
+        return;
+    }
+    if (g_savedCount == MaxSaved)
+    {
+        int oldest = -1; // the oldest entry of this thread makes room; another thread's brush must not be released here
+        for (int i = 0; i < g_savedCount && oldest < 0; i++)
+            if (g_saved[i].thread == target.thread) oldest = i;
+        if (oldest < 0)
+        {
+            if (target.original) target.original->Release();
+            return;
+        }
+        if (g_saved[oldest].original) g_saved[oldest].original->Release();
+        memmove(&g_saved[oldest], &g_saved[oldest + 1], sizeof(Saved) * static_cast<size_t>(g_savedCount - oldest - 1));
+        g_savedCount--;
+    }
+    g_saved[g_savedCount++] = {target.handle, target.thread, target.stroke, target.inspected, target.modified, target.originalHandle, target.originalLocal,
+                               target.fillIndex, target.original};
+}
+
+// Starts tracking a background rectangle (under g_lock); one that left the tree earlier gets its saved original back.
+bool AddTarget(InstanceHandle handle, DWORD thread, bool stroke)
+{
+    if (FindTarget(handle) >= 0 || g_targetCount >= MaxTargets) return false;
+    Target target = {handle, thread, stroke, false, false, false, false, 0, nullptr, S_OK, nullptr, 0, false, false};
+    for (int i = 0; i < g_savedCount; i++)
+    {
+        const Saved &saved = g_saved[i];
+        if (saved.handle != handle || saved.thread != thread) continue;
+        target.inspected = saved.inspected;
+        target.modified = saved.modified;
+        target.originalHandle = saved.originalHandle;
+        target.originalLocal = saved.originalLocal;
+        target.fillIndex = saved.fillIndex;
+        target.original = saved.original; // ownership moves back to the target
+        memmove(&g_saved[i], &g_saved[i + 1], sizeof(Saved) * static_cast<size_t>(g_savedCount - i - 1));
+        g_savedCount--;
+        break;
+    }
+    g_targets[g_targetCount++] = target;
+    return true;
+}
+
+// Pending rectangles whose branch is now complete: those within MaxDepth below Taskbar.TaskbarBackground become targets,
+// those in a complete branch without it are dropped. Under g_lock. True when a target was added.
+bool ResolvePending()
+{
+    bool added = false;
+    for (int i = g_pendingCount - 1; i >= 0; i--)
+    {
+        const Pending pending = g_pending[i];
+        bool decided = false, target = false;
+        InstanceHandle handle = pending.handle;
+        for (int depth = 0; depth <= MaxChain; depth++)
+        {
+            const Link *link = FindLink(handle);
+            if (!link) break; // the branch is not complete yet
+            const Node *node = depth > 0 ? FindNode(handle) : nullptr;
+            if (node && node->background == 0)
+            {
+                decided = true;
+                target = depth <= MaxDepth;
+                break;
+            }
+            if (!link->parent)
+            {
+                decided = true; // reached the root without passing Taskbar.TaskbarBackground
+                break;
+            }
+            handle = link->parent;
+        }
+        if (!decided) continue;
+        if (target) added |= AddTarget(pending.handle, pending.thread, pending.stroke);
+        g_pending[i] = g_pending[--g_pendingCount];
+    }
+    return added;
 }
 
 int FindStyled(InstanceHandle handle, int rule)
@@ -785,7 +1023,8 @@ public:
         if (g_dumpBuffer || g_config.dump[0]) AppendDump(relation, element, mutation);
         if (mutation == Add)
         {
-            SetLink(element.Handle, relation.Parent, Same(element.Type, L"Taskbar.TaskbarFrame") || Same(element.Name, L"TaskbarFrame"));
+            SetLink(element.Handle, relation.Parent, Same(element.Type, L"Taskbar.TaskbarFrame") || Same(element.Name, L"TaskbarFrame"),
+                    Same(element.Type, IslandType));
             const Node *parent = FindNode(relation.Parent);
             unsigned mask = parent ? parent->mask : 0;
             short background = parent && parent->background >= 0 && parent->background < MaxDepth ? static_cast<short>(parent->background + 1) : -1;
@@ -795,12 +1034,13 @@ public:
             if ((mask || background >= 0) && !FindNode(element.Handle)) InsertNode(element.Handle, mask, background);
 
             bool stroke = Same(element.Name, L"BackgroundStroke");
-            if (background > 0 && (stroke || Same(element.Name, L"BackgroundFill")) && Same(element.Type, L"Windows.UI.Xaml.Shapes.Rectangle") &&
-                FindTarget(element.Handle) < 0 && g_targetCount < MaxTargets)
+            if ((stroke || Same(element.Name, L"BackgroundFill")) && Same(element.Type, L"Windows.UI.Xaml.Shapes.Rectangle"))
             {
-                g_targets[g_targetCount++] = {element.Handle, thread, stroke, false, false, false, false, 0, nullptr, S_OK, nullptr, 0, false};
-                wake = matched = true;
+                if (background > 0) wake = matched = AddTarget(element.Handle, thread, stroke);
+                else if (!Rooted(relation.Parent) && g_pendingCount < MaxPending && FindTarget(element.Handle) < 0)
+                    g_pending[g_pendingCount++] = {element.Handle, thread, stroke}; // its branch is being put back child first
             }
+            if (g_pendingCount > 0 && ResolvePending()) wake = matched = true;
             for (int r = 0; r < g_ruleCount; r++)
             {
                 if (!Matches(g_rules[r], element.Type, element.Name, mask) || FindStyled(element.Handle, r) >= 0 || g_styledCount >= MaxStyled) continue;
@@ -810,14 +1050,19 @@ public:
         }
         else if (mutation == Remove)
         {
+            // The rectangle itself, or a branch it is in (in case only the top of a removed branch is reported; system XAML
+            // reports every element): either way it has left the tree. Removals arrive on the owning thread, so only this
+            // thread's targets can be affected, and their held brushes may be released or kept here.
+            for (int i = g_targetCount - 1; i >= 0; i--)
+            {
+                if (g_targets[i].thread != thread || !Within(g_targets[i].handle, element.Handle)) continue;
+                SaveTarget(g_targets[i]);
+                g_targets[i] = g_targets[--g_targetCount];
+            }
+            for (int i = g_pendingCount - 1; i >= 0; i--)
+                if (g_pending[i].handle == element.Handle) g_pending[i] = g_pending[--g_pendingCount];
             RemoveLink(element.Handle);
             RemoveNode(element.Handle);
-            int target = FindTarget(element.Handle);
-            if (target >= 0)
-            {
-                if (g_targets[target].original) g_targets[target].original->Release(); // removals arrive on the owning thread
-                g_targets[target] = g_targets[--g_targetCount];
-            }
             for (int i = g_styledCount - 1; i >= 0; i--)
             {
                 if (g_styled[i].handle != element.Handle) continue;
@@ -1257,6 +1502,24 @@ bool CandidateSize(const InstanceHandle *candidates, int count, double *width, d
     return false;
 }
 
+// The taskbar window an island is drawn in: the island root (a DesktopWindowXamlSource) knows its own window, a child of
+// the taskbar window. Null when the handle is not an island root or its window is not a taskbar of this process.
+HWND IslandWindow(InstanceHandle island, const WindowSearch &search)
+{
+    if (!island) return nullptr;
+    IInspectable *object = nullptr;
+    if (FAILED(g_diagnostics->GetIInspectableFromHandle(island, &object)) || !object) return nullptr;
+    IDesktopWindowXamlSourceNative *native = nullptr;
+    HRESULT hr = object->QueryInterface(__uuidof(IDesktopWindowXamlSourceNative), reinterpret_cast<void **>(&native));
+    object->Release();
+    if (FAILED(hr)) return nullptr;
+    HWND content = nullptr;
+    hr = native->get_WindowHandle(&content);
+    native->Release();
+    HWND window = SUCCEEDED(hr) && content ? GetAncestor(content, GA_ROOT) : nullptr;
+    return window && Listed(window, search) ? window : nullptr;
+}
+
 const WindowLook *FindWindowLook(const WindowLook *looks, int count, HWND window)
 {
     DWORD value = static_cast<DWORD>(reinterpret_cast<UINT_PTR>(window));
@@ -1271,14 +1534,18 @@ const WindowLook *FindWindowLook(const WindowLook *looks, int count, HWND window
 bool ApplyTargets(DWORD thread, const Settings &settings, const WindowLook *looks, int lookCount, unsigned long long lookKey)
 {
     Target work[MaxTargets];
-    InstanceHandle candidates[MaxTargets][MaxSizeCandidates];
+    InstanceHandle candidates[MaxTargets][MaxSizeCandidates], islands[MaxTargets] = {};
     int candidateCounts[MaxTargets] = {};
     int count = 0;
     AcquireSRWLockShared(&g_lock);
     for (int i = 0; i < g_targetCount; i++)
     {
         if (g_targets[i].thread != thread) continue;
-        if (lookCount > 0) candidateCounts[count] = SizeCandidates(g_targets[i].handle, candidates[count]);
+        if (lookCount > 0)
+        {
+            candidateCounts[count] = SizeCandidates(g_targets[i].handle, candidates[count]);
+            islands[count] = IslandOf(g_targets[i].handle);
+        }
         work[count++] = g_targets[i];
     }
     ReleaseSRWLockShared(&g_lock);
@@ -1289,13 +1556,19 @@ bool ApplyTargets(DWORD thread, const Settings &settings, const WindowLook *look
     for (int i = 0; i < count; i++)
     {
         Target &target = work[i];
-        // A match stays while the Taskbars value is the same and its window is still there, so a later resize that
-        // makes two taskbars the same size does not undo it. Otherwise match by size now.
-        if (target.window && (target.mapKey != lookKey || !Listed(target.window, search))) target.window = nullptr;
+        // A match stays while its window is still there (and, for a size match, while the Taskbars value is the same, so
+        // a later resize that makes two taskbars the same size does not undo it).
+        if (target.window && (!Listed(target.window, search) || (!target.byIsland && target.mapKey != lookKey))) target.window = nullptr;
         if (!target.window && search.count > 0)
         {
+            // The island knows its window; only without one is the size compared.
+            target.window = g_config.matchBySize ? nullptr : IslandWindow(islands[i], search);
+            target.byIsland = target.window != nullptr;
             double width = 0, height = 0;
-            if (CandidateSize(candidates[i], candidateCounts[i], &width, &height))
+            if (target.byIsland)
+                Log(L"%ls in the island of window %lu (%d taskbar windows)", target.stroke ? L"stroke" : L"fill",
+                    static_cast<unsigned long>(reinterpret_cast<UINT_PTR>(target.window)), search.count);
+            else if (CandidateSize(candidates[i], candidateCounts[i], &width, &height))
             {
                 if (width < 1 || height < 1) unsized = true;
                 else target.window = MatchWindow(width, height, search);
@@ -1393,13 +1666,15 @@ bool ApplyOnThisThread()
 {
     DWORD thread = GetCurrentThreadId();
     DWORD request = static_cast<DWORD>(g_request); // the rules in place when this pass starts
-    Settings settings = ReadSettings();
+    // Without its owner the look rests: no state looks, no taskbar of its own.
+    bool resting = Resting();
+    Settings settings = ReadSettings(resting);
     WindowLook looks[MaxWindowLooks];
     unsigned long long lookKey = 0;
-    int lookCount = ReadWindowLooks(looks, &lookKey);
+    int lookCount = resting ? 0 : ReadWindowLooks(looks, &lookKey);
     bool unsized = ApplyTargets(thread, settings, looks, lookCount, lookKey);
     ApplyStyles(thread);
-    WriteStatus(settings.look, request);
+    WriteStatus(settings.look, request, resting);
     return unsized;
 }
 
@@ -1413,7 +1688,57 @@ void PostToXamlThreads()
     for (int i = 0; i < g_dispatcherCount; i++) windows[count++] = g_dispatchers[i].window;
     ReleaseSRWLockShared(&g_lock);
     for (int i = 0; i < count; i++) PostMessageW(windows[i], ApplyMessage, 0, 0);
-    if (count == 0) WriteStatus(ReadSettings().look, static_cast<DWORD>(g_request)); // nothing found yet: report zero targets
+    if (count == 0) // nothing found yet: report zero targets
+    {
+        bool resting = Resting();
+        WriteStatus(ReadSettings(resting).look, static_cast<DWORD>(g_request), resting);
+    }
+}
+
+// ---- the owner (worker thread) ----
+
+void OwnerGone(const Owner &owner, const wchar_t *why)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    g_gone = owner;
+    ReleaseSRWLockExclusive(&g_lock);
+    Log(L"the app (process %lu) %ls: the resting look applies", owner.process, why);
+}
+
+unsigned long long FileTimeValue(const FILETIME &time) { return static_cast<unsigned long long>(time.dwHighDateTime) << 32 | time.dwLowDateTime; }
+
+// Waits on the app the settings name, if that changed. A process that no longer runs, or whose number now belongs to a
+// program started at another time, has already ended. One that cannot be opened is not watched.
+void WatchOwner()
+{
+    Owner owner = ReadOwner();
+    if (SameOwner(owner, g_watched)) return;
+    if (g_ownerProcess) CloseHandle(g_ownerProcess);
+    g_ownerProcess = nullptr;
+    g_watched = owner;
+    if (!owner.process) return;
+    HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, owner.process);
+    if (!process)
+    {
+        DWORD error = GetLastError();
+        if (error == ERROR_INVALID_PARAMETER) OwnerGone(owner, L"is not running");
+        else Log(L"the app (process %lu) cannot be watched: error %lu", owner.process, error);
+        return;
+    }
+    FILETIME created{}, exited, kernel, user;
+    if (owner.start && GetProcessTimes(process, &created, &exited, &kernel, &user) && FileTimeValue(created) != owner.start)
+    {
+        CloseHandle(process);
+        OwnerGone(owner, L"is not running (its number belongs to another program)");
+        return;
+    }
+    if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0)
+    {
+        CloseHandle(process);
+        OwnerGone(owner, L"has ended");
+        return;
+    }
+    g_ownerProcess = process;
 }
 
 void FlushDump()
@@ -1512,10 +1837,19 @@ DWORD WINAPI Worker(void *)
         ReportFailure(hr);
         return 0;
     }
-    HANDLE waits[2] = {g_settingsEvent, g_wake};
     for (;;)
     {
-        DWORD result = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+        HANDLE waits[3] = {g_settingsEvent, g_wake, g_ownerProcess};
+        DWORD result = WaitForMultipleObjects(g_ownerProcess ? 3 : 2, waits, FALSE, INFINITE);
+        if (result == WAIT_OBJECT_0 + 2)
+        {
+            // The app quit or crashed: rest, so a look meant only while it watches does not stick.
+            CloseHandle(g_ownerProcess);
+            g_ownerProcess = nullptr;
+            OwnerGone(g_watched, L"has ended");
+            PostToXamlThreads();
+            continue;
+        }
         if (result != WAIT_OBJECT_0 && result != WAIT_OBJECT_0 + 1) return 0;
         Sleep(30); // let a burst of tree changes settle into one pass
         if (result == WAIT_OBJECT_0)
@@ -1525,6 +1859,9 @@ DWORD WINAPI Worker(void *)
             if (RulesChanged(text)) ReplaceRules(text);
             InterlockedExchange(&g_request, static_cast<LONG>(request));
         }
+        // On tree changes too: a copy of the helper the app no longer signals (an older build) still follows the owner,
+        // so it rests exactly when the current one does.
+        WatchOwner();
         PostToXamlThreads();
     }
 }

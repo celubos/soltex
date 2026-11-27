@@ -11,14 +11,17 @@ internal sealed class IndependentMixerMicrophoneWindow : Window
     private readonly TextBlock measurement = new() { TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock outputStatus = new() { TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock returnHint = new() { TextWrapping = TextWrapping.Wrap };
-    private readonly Button test = new() { Content = "Test input for 15 seconds", Margin = new Thickness(0, 10, 8, 10) };
+    private readonly Button test = new() { Content = "Test input for " + MicrophonePath.TestDurationText, Margin = new Thickness(0, 10, 8, 10) };
     private readonly Func<string?, Task> testInput;
     private readonly IReadOnlyList<HostEndpoint> endpoints;
+    private readonly TimeSpan testDuration;
+    private CancellationTokenSource? autoStop;
     private bool closing;
     public HostChannelProfile Profile { get; private set; }
-    internal IndependentMixerMicrophoneWindow(HostChannelProfile profile, IReadOnlyList<HostEndpoint> devices, Func<string?, Task> testInput)
+    /// <param name="testDuration">How long a test listens before this window stops it; <see cref="MicrophonePath.TestDuration"/> unless a test needs it shorter.</param>
+    internal IndependentMixerMicrophoneWindow(HostChannelProfile profile, IReadOnlyList<HostEndpoint> devices, Func<string?, Task> testInput, TimeSpan? testDuration = null)
     {
-        Profile = profile; endpoints = devices; this.testInput = testInput;
+        Profile = profile; endpoints = devices; this.testInput = testInput; this.testDuration = testDuration ?? MicrophonePath.TestDuration;
         Title = "Set up your microphone"; Width = 680; Height = 660; MinWidth = 540; MinHeight = 500;
         WindowStartupLocation = WindowStartupLocation.CenterOwner; AudioTheme.Apply(this);
         SetResourceReference(BackgroundProperty, "CanvasBrush"); SetResourceReference(ForegroundProperty, "TextBrush");
@@ -37,7 +40,7 @@ internal sealed class IndependentMixerMicrophoneWindow : Window
         StackPanel actions = new() { Orientation = Orientation.Horizontal }; body.Children.Add(actions); actions.Children.Add(test);
         Button stop = new() { Content = "Stop input test", Margin = new Thickness(0, 10, 0, 10) }; actions.Children.Add(stop);
         body.Children.Add(measurement);
-        measurement.Text = "Test opens only this capture input. Nothing plays, no audio file is saved, and the test stops after 15 seconds.";
+        measurement.Text = "Test opens only this capture input. Nothing plays, no audio file is saved, and the test stops after " + MicrophonePath.TestDurationText + ".";
         AddText(body, "2 · Choose the hardware input", 17);
         SetupChoice(inputChannel, [new("all", "All inputs (keep the source channels)"), new("0", "Input 1 → centered voice"), new("1", "Input 2 → centered voice")], profile.Dsp.InputChannel?.ToString(CultureInfo.InvariantCulture) ?? "all");
         body.Children.Add(inputChannel);
@@ -51,12 +54,12 @@ internal sealed class IndependentMixerMicrophoneWindow : Window
         {
             if (input.SelectedValue is not string id) { measurement.Text = "Choose an available capture input first."; return; }
             test.IsEnabled = false;
-            try { await testInput(id); }
+            try { await testInput(id); StopAfterTestDuration(); }
             catch (Exception error) { measurement.Text = "Input test unavailable: " + error.Message; }
             finally { if (!closing) test.IsEnabled = true; }
         };
-        stop.Click += async (_, _) => { try { await testInput(null); } catch (Exception error) { measurement.Text = error.Message; } };
-        input.SelectionChanged += async (_, _) => { try { await testInput(null); } catch (Exception error) { measurement.Text = error.Message; } };
+        stop.Click += async (_, _) => { CancelAutoStop(); try { await testInput(null); } catch (Exception error) { measurement.Text = error.Message; } };
+        input.SelectionChanged += async (_, _) => { CancelAutoStop(); try { await testInput(null); } catch (Exception error) { measurement.Text = error.Message; } };
         save.Click += (_, _) =>
         {
             if (input.SelectedValue is not string source || destination.SelectedValue is not string target)
@@ -68,7 +71,30 @@ internal sealed class IndependentMixerMicrophoneWindow : Window
                 Dsp = profile.Dsp with { InputChannel = inputChannel.SelectedValue is string selected && selected != "all" ? int.Parse(selected, CultureInfo.InvariantCulture) : null } };
             DialogResult = true;
         };
-        Closed += async (_, _) => { closing = true; try { await testInput(null); } catch (Exception) { /* Host also bounds every probe to 15 seconds. */ } };
+        Closed += async (_, _) => { closing = true; CancelAutoStop(); try { await testInput(null); } catch (Exception) { /* The host also bounds every probe as a backstop. */ } };
+    }
+
+    /// <summary>
+    /// The window ends the test after <see cref="testDuration"/>, so the length the button and note name is the length
+    /// it runs (the host's own limit on a probe is only a longer backstop).
+    /// </summary>
+    private async void StopAfterTestDuration()
+    {
+        CancelAutoStop();
+        using var cancel = new CancellationTokenSource();
+        autoStop = cancel;
+        try { await Task.Delay(testDuration, cancel.Token); }
+        catch (OperationCanceledException) { return; }
+        finally { if (ReferenceEquals(autoStop, cancel)) autoStop = null; }
+        if (closing) return;
+        try { await testInput(null); }
+        catch (Exception error) { measurement.Text = "The input test could not stop: " + error.Message; }
+    }
+
+    private void CancelAutoStop()
+    {
+        autoStop?.Cancel();
+        autoStop = null;
     }
     private static bool IsSonar(HostEndpoint e) => e.Name.Contains("Sonar", StringComparison.OrdinalIgnoreCase);
     private static IndependentEndpointChoice Choice(HostEndpoint endpoint, IReadOnlyList<HostEndpoint> devices) => new(endpoint.Id,

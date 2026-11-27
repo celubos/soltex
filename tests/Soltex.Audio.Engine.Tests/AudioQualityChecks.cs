@@ -73,17 +73,21 @@ internal static class AudioQualityChecks
                 new(10, 24, 0.1, EqFilterType.LowShelf), new(rate * 0.49, 0, 20, EqFilterType.LowPass), new(10, 0, 20, EqFilterType.HighPass),
                 new(rate * 0.49, 0, 20, EqFilterType.Notch), new(rate * 0.25, -24, 20), new(rate * 0.1, 24, 20, EqFilterType.HighShelf), new(100, 24, 20, EqFilterType.LowShelf) };
             foreach (var band in extremes) { var c = BiquadCoefficients.Shape(band, rate); Check(Math.Abs(c.A2) < 1 && Math.Abs(c.A1) < 1 + c.A2, $"Unstable extreme {band}"); }
-            var p = new PcmDspProcessor(rate, 1, Unity with { Bands = extremes, HeadroomDb = -30 });
+            var p = new PcmDspProcessor(rate, 1, Unity with { Bands = extremes, HeadroomDb = -30, GainDb = -40 });
             var noise = Noise(rate / 2, 0.05, 3);
             for (int jump = 0; jump < 40; jump++)
             {
                 p.Process(noise.AsSpan((jump % 10) * (noise.Length / 10), noise.Length / 10));
                 var bands = Enumerable.Range(0, 10).Select(_ => new EqBand(10 * Math.Pow(rate * 0.049, random.NextDouble()), random.NextDouble() * 48 - 24,
                     0.1 * Math.Pow(200, random.NextDouble()), (EqFilterType)random.Next(6), random.Next(5) == 0)).ToArray();
-                p.UpdateSettings(Unity with { Bands = bands, HeadroomDb = -30 });
+                p.UpdateSettings(Unity with { Bands = bands, HeadroomDb = -30, GainDb = -40 });
             }
             var tail = Noise(rate, 0.05, 9); p.Process(tail);
-            Check(tail.All(float.IsFinite) && tail.Max(Math.Abs) <= 0.98f, $"EQ at {rate} Hz diverged under extreme jumps");
+            // The output is always sanitized and clamped, so judge divergence by the counters: no non-finite or runaway
+            // value was ever replaced, and nothing reached the output ceiling. -70 dB of gain leaves room for the loudest
+            // legitimate random design (stacked +24 dB resonant shelves); an unstable filter grows without bound and still trips it.
+            Check(p.SanitizedSamples == 0 && p.LimitedSamples == 0,
+                $"EQ at {rate} Hz diverged under extreme jumps: {p.SanitizedSamples} sanitized, {p.LimitedSamples} at the ceiling");
         }
     }
 
@@ -158,14 +162,18 @@ internal static class AudioQualityChecks
         for (int block = 20; block < 40; block++) head.Read(output, block * 960, 960);
         Check(head.Silenced && output.Skip(21 * 960).All(x => x == 0), "Fade-out did not reach silence");
         Check(MaxSecondDifference(output, 2, 19 * 480, 40 * 480) / 0.5 < Math.Pow(10, -50 / 20.0), "Render stop is not faded out");
-        // The drift-compensating converter primes for 20 ms, then fades in.
-        var bus = new BoundedFloatBus(Rate, 1, Rate / 5);
+        // The drift-compensating converter primes until one read plus one packet (and its fade reserve) is queued, then
+        // fades in. Packets arrive 10 ms apart on a virtual clock.
+        var clock = new VirtualClock();
+        var bus = new BoundedFloatBus(Rate, 1, Rate / 5, clock);
         var resampler = new AdaptiveResamplingSampleProvider(bus, Rate, bus);
         var crest = new float[480]; Array.Fill(crest, 0.5f);
         var read = new float[480];
-        bus.Write(crest); resampler.Read(read, 0, 480);
+        clock.Ticks = 1; bus.Write(crest);
+        clock.Ticks = 5_000_000; resampler.Read(read, 0, 480);
         Check(read.All(x => x == 0) && resampler.InsertedSilenceFrames == 480, "Converter started before its preroll");
-        bus.Write(crest); bus.Write(crest); resampler.Read(read, 0, 480);
+        clock.Ticks = 10_000_000; bus.Write(crest); clock.Ticks = 20_000_000; bus.Write(crest);
+        clock.Ticks = 25_000_000; resampler.Read(read, 0, 480);
         Check(Math.Abs(read[0]) < 0.01 && Math.Abs(read[^1] - 0.5) < 1e-6, "Converter start is not a fade-in to the signal");
     }
 
@@ -220,10 +228,29 @@ internal static class AudioQualityChecks
             var tone = Tone(100, 0.89 * 2, Rate * 2, Rate);
             var q = new PcmDspProcessor(Rate, 1, Unity with { OutputCeiling = 0.89, Limiter = new(on) }); q.Process(tone);
             double thd = ThdN(tone, 100, Rate, Rate, Rate);
-            Check(tone.Max(Math.Abs) <= 0.89f, "Ceiling exceeded");
             if (on) Check(thd < -35 && TruePeak(tone) <= 0.89 * 1.005, $"Limited overload THD+N {thd:F1} dB, true peak {TruePeak(tone):F4}");
             else Check(thd > -20, "Hard ceiling unexpectedly clean");
         }
+        // The limiter itself must hold the ceiling: measured on its own output, before the processor's final clamp (which
+        // would hide an overshoot). Low-frequency overs give long rising-gain stretches after each crest (50-100 Hz).
+        double worstOvershoot = 0, worstTruePeak = 0;
+        foreach (bool truePeak in new[] { false, true })
+            foreach (double frequency in new[] { 50.0, 63, 80, 100 })
+                foreach (double drive in new[] { 1.2, 2, 4 })
+                {
+                    var limiter = new SafetyLimiter(Rate, 1, Unity with { OutputCeiling = 0.89, Limiter = new(true, 80, truePeak) });
+                    var x = Tone(frequency, 0.89 * drive, Rate, Rate); var frame = new double[1]; var y = new float[x.Length];
+                    double peak = 0;
+                    for (int i = 0; i < x.Length; i++) { frame[0] = x[i]; limiter.ProcessFrame(frame); y[i] = (float)frame[0]; peak = Math.Max(peak, Math.Abs(frame[0])); }
+                    worstOvershoot = Math.Max(worstOvershoot, peak / 0.89);
+                    Check(peak <= 0.89 * (1 + 1e-9), $"Limiter output {peak:F5} above the 0.89 ceiling before the final clamp ({frequency} Hz, {drive}x, true peak {truePeak})");
+                    if (truePeak)
+                    {
+                        double tp = TruePeak(y); worstTruePeak = Math.Max(worstTruePeak, tp / 0.89);
+                        Check(tp <= 0.89 * 1.005, $"Limiter true peak {tp:F5} above the ceiling ({frequency} Hz, {drive}x)");
+                    }
+                }
+        Console.WriteLine($"  Limiter alone, 50-100 Hz overs up to 4x: sample peak {worstOvershoot:F6} x ceiling, true peak {worstTruePeak:F4} x ceiling.");
         var burst = Tone(5000, 0.3, Rate, Rate); for (int i = 24000; i < 24480; i++) burst[i] *= 4;
         var r = new PcmDspProcessor(Rate, 1, Unity with { OutputCeiling = 0.89, Limiter = new(true) }); r.Process(burst);
         Check(TruePeak(burst) <= 0.89 * 1.005, $"Inter-sample peak {TruePeak(burst):F4} above the 0.89 ceiling");
@@ -350,9 +377,14 @@ internal static class AudioQualityChecks
         // A 150 ms render stall: backlog skipped with a dip, never an overflow drop or a hard edge.
         var stall = SimulateClocks(50, seconds: 30, renderStallAt: 15, captureStallAt: null);
         Check(stall.Resyncs == 1 && stall.Discarded > 0 && stall.BusDropped == 0 && stall.Clicks == 0, $"Render stall: resyncs {stall.Resyncs}, discarded {stall.Discarded}, dropped {stall.BusDropped}, clicks {stall.Clicks}");
-        // A 60 ms capture stall: concealed underrun (fade, silence, fade), then back to normal.
-        var dry = SimulateClocks(50, seconds: 30, renderStallAt: null, captureStallAt: 15);
-        Check(dry.Underruns == 1 && dry.Clicks == 0 && dry.BusDropped == 0, $"Capture stall: underruns {dry.Underruns}, clicks {dry.Clicks}");
+        // A 60 ms capture stall: concealed underrun (fade, silence, fade), then back to normal. The stall starts at every
+        // millisecond across a 10 ms packet, so the input runs out at every point of a render read, including on its
+        // boundary (where the old code had nothing left to fade) and a few frames into it (a fade of only those frames).
+        for (int offset = 0; offset < 10; offset++)
+        {
+            var dry = SimulateClocks(50, seconds: 30, renderStallAt: null, captureStallAt: 15 + offset * 0.001);
+            Check(dry.Underruns == 1 && dry.Clicks == 0 && dry.BusDropped == 0, $"Capture stall at +{offset} ms: underruns {dry.Underruns}, clicks {dry.Clicks}");
+        }
         // The previous FIFO for comparison: latency creeps at +100 ppm and drops out at -100 ppm.
         var (creepMs, _) = SimulateLegacyFifo(100, 600);
         var (_, dropouts) = SimulateLegacyFifo(-100, 600);
@@ -426,18 +458,167 @@ internal static class AudioQualityChecks
 
     internal static void RealtimeRegistrationIsSafe()
     {
-        bool first = false, second = false, registeredFlag = false, otherBefore = true; Exception? failure = null;
+        // Real MMCSS: never throws, cached per thread, released on request.
+        bool first = false, second = false, registeredFlag = false, releasedFlag = true, otherBefore = true; Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { first = AudioThreadScheduling.RegisterCurrentThread(); second = AudioThreadScheduling.RegisterCurrentThread(); registeredFlag = AudioThreadScheduling.CurrentThreadRegistered; }
+            try
+            {
+                first = AudioThreadScheduling.RegisterCurrentThread(); second = AudioThreadScheduling.RegisterCurrentThread(); registeredFlag = AudioThreadScheduling.CurrentThreadRegistered;
+                AudioThreadScheduling.ReleaseCurrentThread(); AudioThreadScheduling.ReleaseCurrentThread(); releasedFlag = AudioThreadScheduling.CurrentThreadRegistered;
+            }
             catch (Exception error) { failure = error; }
         });
         thread.Start(); thread.Join();
         var other = new Thread(() => otherBefore = AudioThreadScheduling.CurrentThreadRegistered);
         other.Start(); other.Join();
-        Check(failure is null && first == second && registeredFlag == first, "MMCSS registration threw or was not cached per thread");
+        Check(failure is null && first == second && registeredFlag == first && !releasedFlag, "MMCSS registration threw, was not cached per thread or was not released");
         Check(!otherBefore, "Registration leaked to another thread");
-        Console.WriteLine($"  MMCSS \"{AudioThreadScheduling.TaskName}\" registration on a worker thread: {(first ? "granted" : "refused (service unavailable)")}.");
+
+        // Fake scheduler: each stream start registers its capture and render threads, each stop must release them on the
+        // thread that registered (NAudio raises RecordingStopped/PlaybackStopped on the stream thread).
+        var fake = new FakeScheduler();
+        var previous = AudioThreadScheduling.Scheduler;
+        AudioThreadScheduling.Scheduler = fake;
+        try
+        {
+            OnThread(() =>
+            {
+                for (int i = 0; i < 100; i++) AudioThreadScheduling.RegisterCurrentThread();
+                Check(fake.Granted == 1, "Repeated callbacks registered a thread more than once");
+                AudioThreadScheduling.ReleaseCurrentThread(); AudioThreadScheduling.ReleaseCurrentThread();
+                Check(fake.Outstanding == 0 && fake.Reverted == 1, "Release did not revert exactly the granted handle");
+                AudioThreadScheduling.RegisterCurrentThread();
+                Check(fake.Granted == 2, "A thread could not register again after a release");
+                AudioThreadScheduling.ReleaseCurrentThread();
+            });
+            const int cycles = 200;
+            for (int cycle = 0; cycle < cycles; cycle++)
+            {
+                var capture = new FakeStream(); var render = new FakeStream();
+                AudioThreadScheduling.ReleaseOnStop((IWaveIn)capture); AudioThreadScheduling.ReleaseOnStop((IWavePlayer)render);
+                var head = new RenderHeadSampleProvider(new SilenceProvider(), realtimeThread: true);
+                var captureThread = new Thread(() =>
+                {
+                    for (int callback = 0; callback < 5; callback++) AudioThreadScheduling.RegisterCurrentThread(); // DataAvailable callbacks
+                    capture.RaiseRecordingStopped();
+                });
+                var renderThread = new Thread(() =>
+                {
+                    var buffer = new float[960];
+                    for (int callback = 0; callback < 5; callback++) head.Read(buffer, 0, buffer.Length); // the render head registers
+                    render.RaisePlaybackStopped();
+                });
+                captureThread.Start(); renderThread.Start(); captureThread.Join(); renderThread.Join();
+                Check(fake.Outstanding == 0, $"MMCSS registrations accumulate: {fake.Outstanding} still held after stop {cycle + 1}");
+            }
+            Check(fake.Granted == 2 + 2 * cycles && fake.Reverted == fake.Granted && fake.MaximumOutstanding <= 2,
+                $"Start/stop cycles: {fake.Granted} granted, {fake.Reverted} released, at most {fake.MaximumOutstanding} held at once");
+            // A refusal is counted once per thread and leaves nothing to release.
+            fake.Refuse = true;
+            long failuresBefore = AudioThreadScheduling.Failures;
+            OnThread(() =>
+            {
+                Check(!AudioThreadScheduling.RegisterCurrentThread() && !AudioThreadScheduling.RegisterCurrentThread(), "A refused registration reported success");
+                AudioThreadScheduling.ReleaseCurrentThread();
+            });
+            Check(AudioThreadScheduling.Failures == failuresBefore + 1 && fake.Outstanding == 0, "Refused registration was retried or released");
+        }
+        finally { AudioThreadScheduling.Scheduler = previous; }
+        Console.WriteLine($"  MMCSS \"{AudioThreadScheduling.TaskName}\" on a worker thread: {(first ? "granted" : "refused (service unavailable)")}; " +
+            $"200 fake start/stop cycles held at most {fake.MaximumOutstanding} registrations and released all {fake.Granted}.");
+    }
+
+    /// <summary>
+    /// The router's pacer: 10 ms waits that really last about 10 ms (not the default timer's 15.6 ms), without raising the
+    /// system timer resolution or spinning, and a stop that wakes it at once. Timer only; no audio device.
+    /// </summary>
+    internal static void RouterPacingIsHighResolutionAndIdle()
+    {
+        using var stop = new ManualResetEventSlim();
+        double meanMs = 0, cpuMs = 0; bool highResolution = false;
+        OnThread(() =>
+        {
+            using var pacer = new AudioThreadPacer(stop);
+            highResolution = pacer.IsHighResolution;
+            pacer.Wait(10); // first wait warms up the timer path
+            var process = System.Diagnostics.Process.GetCurrentProcess();
+            var cpuBefore = process.TotalProcessorTime; var clock = Stopwatch.StartNew();
+            const int waits = 50;
+            for (int i = 0; i < waits; i++) Check(!pacer.Wait(10), "Pacer reported a stop that was never requested");
+            meanMs = clock.Elapsed.TotalMilliseconds / waits;
+            process.Refresh(); cpuMs = (process.TotalProcessorTime - cpuBefore).TotalMilliseconds;
+        });
+        Check(highResolution, "The high-resolution waitable timer is unavailable on this Windows build");
+        Check(meanMs >= 9.5 && meanMs < 12.5, $"10 ms pacer waits averaged {meanMs:F2} ms");
+        Check(cpuMs < 0.2 * meanMs * 50, $"Pacing used {cpuMs:F0} ms of CPU in {meanMs * 50:F0} ms: busy waiting");
+        double stopMs = 0; bool stopped = false;
+        OnThread(() =>
+        {
+            using var pacer = new AudioThreadPacer(stop);
+            var waker = new Thread(() => { Thread.Sleep(20); stop.Set(); }); waker.Start();
+            var clock = Stopwatch.StartNew(); stopped = pacer.Wait(1000); stopMs = clock.Elapsed.TotalMilliseconds;
+            waker.Join();
+        });
+        Check(stopped && stopMs < 200, $"Stop woke a 1 s pacer wait after {stopMs:F0} ms (reported stop: {stopped})");
+        Console.WriteLine($"  10 ms router waits average {meanMs:F2} ms (default timer would give 15.6 ms), {cpuMs:F0} ms CPU over {meanMs * 50:F0} ms; stop wakes in {stopMs:F0} ms.");
+    }
+
+    /// <summary>Runs on a fresh thread (a new MMCSS identity) and rethrows its failure here.</summary>
+    private static void OnThread(Action action)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() => { try { action(); } catch (Exception error) { failure = error; } });
+        thread.Start(); thread.Join();
+        if (failure is not null) throw new InvalidOperationException(failure.Message, failure);
+    }
+
+    private sealed class FakeScheduler : AudioThreadScheduling.IScheduler
+    {
+        private readonly object sync = new();
+        private readonly HashSet<nint> held = [];
+        private long next;
+        public bool Refuse { get; set; }
+        public int Granted { get; private set; }
+        public int Reverted { get; private set; }
+        public int MaximumOutstanding { get; private set; }
+        public int Outstanding { get { lock (sync) return held.Count; } }
+        public nint Register(string taskName)
+        {
+            if (taskName != AudioThreadScheduling.TaskName) throw new InvalidOperationException("Unexpected MMCSS task");
+            if (Refuse) return 0;
+            lock (sync) { nint handle = (nint)Interlocked.Increment(ref next); held.Add(handle); Granted++; MaximumOutstanding = Math.Max(MaximumOutstanding, held.Count); return handle; }
+        }
+        public void Revert(nint handle)
+        {
+            lock (sync) { if (!held.Remove(handle)) throw new InvalidOperationException("Reverted an unknown or already reverted handle"); Reverted++; }
+        }
+    }
+
+    private sealed class FakeStream : IWaveIn, IWavePlayer
+    {
+        public WaveFormat WaveFormat { get; set; } = WaveFormat.CreateIeeeFloatWaveFormat(Rate, 2);
+        public WaveFormat OutputWaveFormat => WaveFormat;
+        public PlaybackState PlaybackState => PlaybackState.Stopped;
+        public float Volume { get; set; } = 1;
+        public event EventHandler<WaveInEventArgs>? DataAvailable { add { } remove { } }
+        public event EventHandler<StoppedEventArgs>? RecordingStopped;
+        public event EventHandler<StoppedEventArgs>? PlaybackStopped;
+        public void RaiseRecordingStopped() => RecordingStopped?.Invoke(this, new());
+        public void RaisePlaybackStopped() => PlaybackStopped?.Invoke(this, new());
+        public void StartRecording() { }
+        public void StopRecording() { }
+        public void Init(IWaveProvider waveProvider) { }
+        public void Play() { }
+        public void Stop() { }
+        public void Pause() { }
+        public void Dispose() { }
+    }
+
+    private sealed class SilenceProvider : ISampleProvider
+    {
+        public WaveFormat WaveFormat { get; } = WaveFormat.CreateIeeeFloatWaveFormat(Rate, 2);
+        public int Read(float[] buffer, int offset, int count) { Array.Clear(buffer, offset, count); return count; }
     }
 
     // ---------- helpers ----------

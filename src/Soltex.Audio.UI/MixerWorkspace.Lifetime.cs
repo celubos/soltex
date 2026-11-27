@@ -77,21 +77,31 @@ public partial class MixerWorkspace : IAsyncDisposable
         return _initialization;
     }
 
+    /// <summary>
+    /// True when the settings in <paramref name="preferencesDirectory"/> turn on something that has to run while the
+    /// mixer is not shown: the global device shortcuts (when the host offers them) or automatic output selection. A host
+    /// initializes the workspace at startup only then, without activating it, so both work before the mixer is opened;
+    /// with both off nothing starts. Reads two small files and never contacts Sonar or opens a device.
+    /// </summary>
+    public static bool NeedsBackgroundService(string preferencesDirectory, bool globalShortcuts)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(preferencesDirectory);
+        if (globalShortcuts && Preferences.Load(Path.Combine(preferencesDirectory, "preferences.json")).Shortcuts) return true;
+        return LinkedOutputPolicySettings.Load(Path.Combine(preferencesDirectory, "device-policy.json")).Enabled;
+    }
+
     private async Task InitializeCoreAsync()
     {
         _preferences = Preferences.Load(Path.Combine(_hostOptions.PreferencesDirectory, "preferences.json"));
         _outputPolicy = LinkedOutputPolicySettings.Load(Path.Combine(_hostOptions.PreferencesDirectory, "device-policy.json"));
+        _preferencesFile = new SettingsFile(Path.Combine(_hostOptions.PreferencesDirectory, "preferences.json"));
+        _policyFile = new SettingsFile(Path.Combine(_hostOptions.PreferencesDirectory, "device-policy.json"));
         LinkOutputs.IsChecked = _preferences.Linked;
         _devices = new AudioDeviceService();
         _devices.SnapshotChanged += DeviceSnapshotChanged;
         _initialized = true;
-        if (_hostOptions.EnableGlobalShortcuts && Window.GetWindow(this) is { } owner)
-        {
-            _shortcutHandle = new WindowInteropHelper(owner).Handle;
-            _windowSource = HwndSource.FromHwnd(_shortcutHandle);
-            _windowSource?.AddHook(WindowMessage);
-            RegisterShortcuts();
-        }
+        // Needs no host window: the workspace may be initialized before it is shown, or never shown at all.
+        StartShortcutWindow();
         await ConnectAsync();
         if (_disposed) return;
         UpdateStateTimer();
@@ -130,7 +140,8 @@ public partial class MixerWorkspace : IAsyncDisposable
         if (!_initialized || _disposed) return;
         if (double.IsFinite(size.Width) && size.Width > 0) _preferences.Width = size.Width;
         if (double.IsFinite(size.Height) && size.Height > 0) _preferences.Height = size.Height;
-        _ = SavePreferences();
+        // Queued at once; shutdown waits for it, so a closing window's size is still saved.
+        _ = SavePreferencesAsync();
     }
 
     public Task SelectLinkedOutputAsync(string id)
@@ -172,6 +183,7 @@ public partial class MixerWorkspace : IAsyncDisposable
         _windowSource?.RemoveHook(WindowMessage);
         if (_shortcutHandle != 0)
         { NativeHotkeys.UnregisterHotKey(_shortcutHandle, 8101); NativeHotkeys.UnregisterHotKey(_shortcutHandle, 8102); }
+        _windowSource?.Dispose(); _windowSource = null; _shortcutHandle = 0;
         if (_devices is not null) _devices.SnapshotChanged -= DeviceSnapshotChanged;
         _shutdown = ShutdownCoreAsync();
         return _shutdown;

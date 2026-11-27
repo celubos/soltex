@@ -206,6 +206,88 @@ internal static class PlaybackChecks
         }
     }
 
+    /// <summary>A running helper with measured levels that stops answering reads while <see cref="Fail"/> is set.</summary>
+    private sealed class FlakyConnection : IIndependentMixerConnection
+    {
+        private static readonly HostEndpoint[] Endpoints =
+        [
+            new("cable-out", "CABLE Output (VB-Audio Virtual Cable)", true, true) { TransportId = "vb-audio-base-cable" },
+            new("headset", "Speakers (USB Audio Interface)", false, true)
+        ];
+        private readonly AudioHostProfile profile = AudioHostProfile.CreateDefault() with
+        {
+            Channels = AudioHostProfile.CreateDefault().Channels.Select(c => c.Bus == AudioBus.Game ? c with { Enabled = true, CaptureEndpointId = "cable-out", RenderEndpointId = "headset" } : c).ToArray()
+        };
+        public bool Fail { get; set; }
+        public int Starts { get; private set; }
+        private HostSnapshot Snapshot() => new(true, profile,
+            [new HostChannelStatus(AudioBus.Game, "Running", "cable-out", "headset", "Playing.", .4f, new BridgeStatus(true, 480, 0, 0, 0, null) { OutputPeak = .5f })],
+            Endpoints, null) { StartRequested = true };
+        public Task<HostSnapshot> ConnectAsync(CancellationToken cancellationToken = default) => Task.FromResult(Snapshot());
+        public Task<HostSnapshot> ReadAsync(CancellationToken cancellationToken = default) =>
+            Fail ? Task.FromException<HostSnapshot>(new IOException("the audio engine stopped answering.")) : Task.FromResult(Snapshot());
+        public Task<HostSnapshot> ApplyAsync(AudioHostProfile next, CancellationToken cancellationToken = default) => Task.FromResult(Snapshot());
+        public Task<HostSnapshot> StartAsync(CancellationToken cancellationToken = default) { Starts++; return Task.FromResult(Snapshot()); }
+        public Task<HostSnapshot> StopAsync(CancellationToken cancellationToken = default) => Task.FromResult(Snapshot());
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// When the engine stops answering, the Mixer says "Not connected" with the reason and a retry, its meters go back to
+    /// "not measured" and the microphone strip stops saying Running; it recovers on the next answer. While running, the
+    /// status line doesn't repeat "Audio is running." under the Running badge, and state and status are live regions.
+    /// </summary>
+    public static void PlaybackShowsLostConnection()
+    {
+        FlakyConnection connection = new();
+        IndependentMixerWorkspace workspace = new();
+        Wait(workspace.InitializeAsync(connection));
+        PlaybackView view = new(workspace);
+        Window window = new()
+        {
+            Content = view, ShowInTaskbar = false, ShowActivated = false,
+            WindowStartupLocation = WindowStartupLocation.Manual, Left = -32000, Top = -32000,
+            Background = (System.Windows.Media.Brush)Application.Current.FindResource("SolidBackgroundFillColorBaseBrush")
+        };
+        RenderSmokeCapture.ConfigureWindow(window);
+        window.Show();
+        try
+        {
+            Pump();
+            IndependentMixerChannel game = workspace.Channels.Single(c => c.Bus == AudioBus.Game);
+            Program.True(view.StateText.Text == "Running" && game.Peak > 0, "The fixture must start running with a measured level.");
+            Program.True(workspace.StatusText == IndependentMixerWorkspace.RunningStatus && view.StatusLine.Text.Length == 0,
+                "'Audio is running.' must not repeat the Running badge; got: '" + view.StatusLine.Text + "'");
+            Program.True(global::Soltex.App.Controls.LiveRegion.GetIsLive(view.StateText) && global::Soltex.App.Controls.LiveRegion.GetIsLive(view.StatusLine) &&
+                global::Soltex.App.Controls.LiveRegion.GetIsLive(view.OfflineReason), "The Mixer's state, status and connection reason must be announced to screen readers.");
+
+            connection.Fail = true;
+            Wait(workspace.RefreshStateAsync());
+            Pump();
+            Program.True(workspace.ConnectionLost && view.StateText.Text == "Not connected",
+                "A lost connection must not keep showing Running; got: " + view.StateText.Text);
+            Program.True(workspace.Channels.All(c => c.Peak < 0), "Meters must go back to 'not measured' when the engine stops answering.");
+            Program.True(view.OfflineBar.Visibility == Visibility.Visible && view.OfflineReason.Text.Contains("stopped answering", StringComparison.Ordinal),
+                "The Mixer must say why and offer Try again; got: '" + view.OfflineReason.Text + "'");
+            Program.True(view.Mic.State == "Not connected", "The microphone strip must not keep its last state; got: " + view.Mic.State);
+            SaveRender(window, "playback-connection-lost-dark");
+
+            connection.Fail = false;
+            view.RetryButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+            while (workspace.ConnectionLost && DateTime.UtcNow < deadline) { Pump(); Thread.Sleep(10); }
+            Pump();
+            Program.True(!workspace.ConnectionLost && view.StateText.Text == "Running" && view.OfflineBar.Visibility == Visibility.Collapsed && game.Peak > 0,
+                "Try again must show the confirmed state and levels once the engine answers.");
+            Program.True(connection.Starts == 0, "No playback action in this test may start audio.");
+        }
+        finally
+        {
+            window.Close();
+            Wait(workspace.ShutdownAsync());
+        }
+    }
+
     private static void SaveRender(Window window, string name)
     {
         if (Environment.GetEnvironmentVariable("SOLTEX_RENDER_DIR") is not { Length: > 0 } directory) return;

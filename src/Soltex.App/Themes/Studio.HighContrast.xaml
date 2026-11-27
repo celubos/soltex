@@ -16,6 +16,12 @@
     <SolidColorBrush x:Key="Studio.TextTertiaryBrush" Color="{DynamicResource {x:Static SystemColors.GrayTextColorKey}}" />
     <SolidColorBrush x:Key="Studio.HoverBrush" Color="{DynamicResource {x:Static SystemColors.ControlColorKey}}" />
     <SolidColorBrush x:Key="Studio.SelectedBrush" Color="{DynamicResource {x:Static SystemColors.HighlightColorKey}}" />
+    <!-- Everything drawn on a selected (Highlight) row uses HighlightText, the pair Windows guarantees to be readable. -->
+    <SolidColorBrush x:Key="Studio.SelectedTextBrush" Color="{DynamicResource {x:Static SystemColors.HighlightTextColorKey}}" />
+    <SolidColorBrush x:Key="Studio.SelectedSecondaryTextBrush" Color="{DynamicResource {x:Static SystemColors.HighlightTextColorKey}}" />
+    <SolidColorBrush x:Key="Studio.SelectedPillBrush" Color="{DynamicResource {x:Static SystemColors.HighlightTextColorKey}}" />
+    <SolidColorBrush x:Key="Studio.SwitchOnDisabledBrush" Color="{DynamicResource {x:Static SystemColors.GrayTextColorKey}}" />
+    <SolidColorBrush x:Key="Studio.SwitchKnobOnDisabledBrush" Color="{DynamicResource {x:Static SystemColors.WindowColorKey}}" />
     <SolidColorBrush x:Key="Studio.AccentBrush" Color="{DynamicResource {x:Static SystemColors.HighlightColorKey}}" />
     <SolidColorBrush x:Key="Studio.AccentTextBrush" Color="{DynamicResource {x:Static SystemColors.HotTrackColorKey}}" />
     <SolidColorBrush x:Key="Studio.CyanBrush" Color="{DynamicResource {x:Static SystemColors.HotTrackColorKey}}" />

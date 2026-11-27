@@ -1,4 +1,4 @@
-<UserControl x:Class="Soltex.App.Pages.MyPcPage"
+﻿<UserControl x:Class="Soltex.App.Pages.MyPcPage"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:controls="clr-namespace:Soltex.App.Controls"
@@ -8,15 +8,17 @@
         <Style x:Key="StatLabel" TargetType="TextBlock" BasedOn="{StaticResource Shell.Secondary}">
             <Setter Property="FontSize" Value="12" />
         </Style>
+        <!-- Readings wrap rather than clip ("No connection" in a narrow column, large text). -->
         <Style x:Key="StatValue" TargetType="TextBlock" BasedOn="{StaticResource Shell.Metric}">
             <Setter Property="FontSize" Value="24" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Margin" Value="0,2,0,0" />
+            <Setter Property="TextWrapping" Value="Wrap" />
         </Style>
     </UserControl.Resources>
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
         <Grid Margin="{DynamicResource Shell.PagePadding}">
-        <Grid.ColumnDefinitions><ColumnDefinition Width="*" MaxWidth="900" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*" MaxWidth="{DynamicResource Shell.PageMaxWidth}" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
         <StackPanel>
             <TextBlock Style="{StaticResource Shell.PageTitle}" Text="Home" />
             <TextBlock x:Name="Subtitle" Style="{StaticResource Shell.PageSubtitle}" />
@@ -35,8 +37,9 @@
                                 <TextBlock x:Name="ProtectionGlyph" Style="{StaticResource Shell.Glyph}" Text="&#xE83D;" HorizontalAlignment="Center" />
                             </Border>
                             <StackPanel VerticalAlignment="Center">
-                                <TextBlock x:Name="ProtectionHeadline" Style="{StaticResource Shell.CardTitle}" Text="Checking protection…" AutomationProperties.LiveSetting="Polite" />
-                                <TextBlock x:Name="ProtectionDetail" Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" />
+                                <TextBlock x:Name="ProtectionHeadline" Style="{StaticResource Shell.CardTitle}" Text="Checking protection…" controls:LiveRegion.IsLive="True" />
+                                <!-- Collapsed while empty, so a headline alone sits centred on the tile. -->
+                                <TextBlock x:Name="ProtectionDetail" Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" Visibility="Collapsed" />
                             </StackPanel>
                         </DockPanel>
                         <Button x:Name="CheckAgain" Style="{StaticResource Studio.GhostButton}" Content="Check again" VerticalAlignment="Center" Click="CheckAgain_Click" />
@@ -64,13 +67,18 @@
             <!-- Performance -->
             <Border x:Name="PerformanceCard" Style="{StaticResource Shell.Card}" AutomationProperties.Name="Performance">
                 <StackPanel>
-                    <UniformGrid x:Name="Metrics" Columns="4" Rows="1">
+                    <!-- Four columns with room to spare, two by two when narrow (see LayoutMetrics). -->
+                    <UniformGrid x:Name="Metrics" Columns="4" SizeChanged="Metrics_SizeChanged">
                         <StackPanel Margin="0,0,16,0" AutomationProperties.Name="Processor">
                             <TextBlock Style="{StaticResource StatLabel}" Text="Processor" />
                             <TextBlock x:Name="CpuValue" Style="{StaticResource StatValue}" Text="–" />
-                            <controls:Sparkline x:Name="CpuHistory" Height="28" Margin="0,6,0,0" Minimum="0" Maximum="100"
-                                                Stroke="{DynamicResource AccentFillColorDefaultBrush}" GridBrush="{DynamicResource DividerStrokeColorDefaultBrush}"
-                                                AutomationProperties.Name="Processor use over the last two minutes" />
+                            <!-- A framed chart, so a quiet processor's low line reads as a reading rather than an underline. Shown from the second sample. -->
+                            <Border x:Name="CpuHistoryFrame" Margin="0,6,0,0" CornerRadius="4" ClipToBounds="True" Visibility="Hidden"
+                                    Background="{DynamicResource Studio.HoverBrush}">
+                                <controls:Sparkline x:Name="CpuHistory" Height="28" Minimum="0" Maximum="100"
+                                                    Stroke="{DynamicResource AccentFillColorDefaultBrush}" GridBrush="{DynamicResource DividerStrokeColorDefaultBrush}"
+                                                    AutomationProperties.Name="Processor use over the last two minutes" />
+                            </Border>
                         </StackPanel>
                         <StackPanel Margin="0,0,16,0" AutomationProperties.Name="Memory">
                             <TextBlock Style="{StaticResource StatLabel}" Text="Memory" />
@@ -89,7 +97,8 @@
                         </StackPanel>
                     </UniformGrid>
                     <DockPanel Margin="0,12,0,0">
-                        <TextBlock x:Name="PerformanceState" DockPanel.Dock="Right" Style="{StaticResource StatLabel}" VerticalAlignment="Center" />
+                        <!-- Kept clear of the Top apps header, and level with it when the list is open. -->
+                        <TextBlock x:Name="PerformanceState" DockPanel.Dock="Right" Style="{StaticResource StatLabel}" VerticalAlignment="Top" Margin="16,8,0,0" />
                         <Expander x:Name="ProcessesExpander" Header="Top apps" Expanded="ProcessesExpander_Changed" Collapsed="ProcessesExpander_Changed"
                                   AutomationProperties.Name="Apps using the most processor time">
                             <StackPanel Margin="0,6,0,0">

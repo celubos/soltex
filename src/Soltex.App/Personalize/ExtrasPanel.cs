@@ -13,6 +13,12 @@ namespace Soltex.App.Personalize;
 /// </summary>
 public sealed class ExtrasPanel : UserControl
 {
+    /// <summary>One pointer scheme in the list: Windows' name for it and how it is shown (also what screen readers say).</summary>
+    private sealed record PointerChoice(string Name, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
     private static readonly TimeSpan[] Times = [.. Enumerable.Range(0, 48).Select(i => TimeSpan.FromMinutes(30 * i))];
     private readonly ShellContext context;
     private readonly Destination destination;
@@ -47,8 +53,9 @@ public sealed class ExtrasPanel : UserControl
             schedule.Unchecked += (_, _) => Update(s => s with { DarkModeSchedule = false });
             body.Children.Add(Row("Switch between light and dark by time of day", schedule));
             string[] labels = [.. Times.Select(t => DateTime.Today.Add(t).ToString("t", CultureInfo.CurrentCulture))];
-            lightFrom = new ComboBox { MinWidth = 220, ItemsSource = labels };
-            darkFrom = new ComboBox { MinWidth = 220, ItemsSource = labels };
+            // Lists keep the width of the page's other lists, so they line up row under row.
+            lightFrom = new ComboBox { Width = Pages.CustomizePage.ChoiceWidth, ItemsSource = labels };
+            darkFrom = new ComboBox { Width = Pages.CustomizePage.ChoiceWidth, ItemsSource = labels };
             AutomationProperties.SetName(lightFrom, "Light from");
             AutomationProperties.SetName(darkFrom, "Dark from");
             lightFrom.SelectionChanged += (_, _) => SetTime(lightFrom, darkFrom, i => s => s with { LightFrom = Times[i] });
@@ -59,12 +66,19 @@ public sealed class ExtrasPanel : UserControl
             body.Children.Add(sameTimes);
 
             body.Children.Add(Section("Pointer", null));
-            pointer = new ComboBox { MinWidth = 220, ItemsSource = PointerSchemes.Names().Select(name => new ComboBoxItem { Content = PointerSchemes.Label(name), Tag = name }).ToArray() };
+            // A long scheme name is trimmed in the box; the open list and the tooltip show all of it.
+            pointer = new ComboBox
+            {
+                Width = Pages.CustomizePage.ChoiceWidth,
+                ItemsSource = PointerSchemes.Names().Select(name => new PointerChoice(name, PointerSchemes.Label(name))).ToArray(),
+                ItemTemplate = Pages.CustomizePage.TrimmedChoice(nameof(PointerChoice.Label))
+            };
             AutomationProperties.SetName(pointer, "Pointer scheme");
             pointer.SelectionChanged += (_, _) =>
             {
-                if (loading || pointer.SelectedItem is not ComboBoxItem { Tag: string name }) return;
-                if (!PointerSchemes.Apply(name)) context.ShowNotice(NoticeSeverity.Caution, "That pointer scheme could not be applied.");
+                pointer.ToolTip = (pointer.SelectedItem as PointerChoice)?.Label;
+                if (loading || pointer.SelectedItem is not PointerChoice choice) return;
+                if (!PointerSchemes.Apply(choice.Name)) context.ShowNotice(NoticeSeverity.Caution, "That pointer scheme could not be applied.");
             };
             body.Children.Add(Row("Pointer scheme", pointer));
         }
@@ -80,7 +94,7 @@ public sealed class ExtrasPanel : UserControl
 
     internal static IEnumerable<SearchEntry> EntriesFor(Destination destination) => destination switch
     {
-        Destination.Start => [new SearchEntry("Folders next to the power button", "Start", destination, "startfolders", ["Start11", "Settings", "Documents", "Downloads", "File Explorer", "Start menu folders"])],
+        Destination.Start => [new SearchEntry("Folders next to the power button", "Start", destination, "startfolders", ["Start11", "Settings", "Documents", "Downloads", "File Explorer", "Start menu folders", "user folder", "personal folder"])],
         Destination.Appearance =>
         [
             new SearchEntry("Automatic dark mode", "Appearance", destination, "darkmode", ["schedule", "night", "sunset", "light mode", "theme"]),
@@ -108,7 +122,8 @@ public sealed class ExtrasPanel : UserControl
             // Equal times would mean dark all day (a saved file can still hold them).
             sameTimes!.Visibility = s.DarkModeSchedule && lightFrom.SelectedIndex == darkFrom.SelectedIndex ? Visibility.Visible : Visibility.Collapsed;
             string current = PointerSchemes.Current();
-            pointer!.SelectedItem = pointer.Items.OfType<ComboBoxItem>().FirstOrDefault(item => item.Tag is string name && name == current);
+            pointer!.SelectedItem = pointer.Items.OfType<PointerChoice>().FirstOrDefault(choice => choice.Name == current);
+            pointer.ToolTip = (pointer.SelectedItem as PointerChoice)?.Label;
         }
         finally { loading = false; }
     }
@@ -143,10 +158,11 @@ public sealed class ExtrasPanel : UserControl
         }
     }
 
+    /// <summary>Saves a change and shows the saved state; a settings file that can't be written is reported, not thrown.</summary>
     private void Update(Func<AppSettings, AppSettings> change)
     {
         if (loading) return;
-        context.Services.Settings.Update(change);
+        Pages.PageSettings.TrySave(context, change);
         Refresh();
     }
 

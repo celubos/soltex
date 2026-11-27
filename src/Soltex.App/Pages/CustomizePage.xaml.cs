@@ -1,11 +1,13 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using Soltex.App.Settings;
 using Soltex.App.Shell;
+using Soltex.Audio.UI;
 using Soltex.Customize;
 
 namespace Soltex.App.Pages;
@@ -16,20 +18,38 @@ namespace Soltex.App.Pages;
 /// </summary>
 public partial class CustomizePage : UserControl, IShellPage
 {
-    /// <param name="SettingsUri">Windows Settings' own page for this area (null: there is none, as for File Explorer).</param>
+    /// <param name="SettingsUri">Windows Settings' own page for this area (null: there is none).</param>
     private sealed record Area(string Title, SettingGroup[] Groups, string? SettingsUri);
 
     private static readonly Dictionary<Destination, Area> Areas = new()
     {
         [Destination.Taskbar] = new("Taskbar", [SettingGroup.Taskbar], "ms-settings:taskbar"),
         [Destination.Start] = new("Start", [SettingGroup.StartAndSearch], "ms-settings:personalization-start"),
-        [Destination.Explorer] = new("File Explorer", [SettingGroup.FileExplorer], null),
+        // Windows Settings has no File Explorer page; its File Explorer options (extensions, hidden files) are under System › Advanced.
+        [Destination.Explorer] = new("File Explorer", [SettingGroup.FileExplorer], "ms-settings:developers"),
         [Destination.Appearance] = new("Appearance", [SettingGroup.Appearance, SettingGroup.DesktopIcons], "ms-settings:personalization-colors"),
         [Destination.Multitasking] = new("Multitasking", [SettingGroup.Multitasking, SettingGroup.Input, SettingGroup.Gaming], "ms-settings:multitasking"),
         [Destination.Customize] = new("Privacy", [SettingGroup.Privacy, SettingGroup.TipsAndSuggestions], "ms-settings:privacy-general"),
     };
 
     private const string AutoHideTitle = "Automatically hide the taskbar";
+    /// <summary>The width of every list on these pages, so the lists line up row under row.</summary>
+    internal const double ChoiceWidth = 220;
+
+    /// <summary>
+    /// How a list shows its choices at <see cref="ChoiceWidth"/>: a long one is trimmed in the closed box (the open list
+    /// and the box's tooltip show all of it). <paramref name="path"/> names the property shown; null shows the item itself.
+    /// </summary>
+    internal static DataTemplate TrimmedChoice(string? path = null)
+    {
+        FrameworkElementFactory text = new(typeof(TextBlock));
+        text.SetBinding(TextBlock.TextProperty, path is null ? new System.Windows.Data.Binding() : new System.Windows.Data.Binding(path));
+        text.SetValue(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
+        text.SetValue(TextBlock.TextWrappingProperty, TextWrapping.NoWrap);
+        DataTemplate template = new() { VisualTree = text };
+        template.Seal();
+        return template;
+    }
 
     /// <summary>The Windows Settings page a customize page links to, or null when it has none.</summary>
     internal static string? SettingsUriFor(Destination destination) => Areas[destination].SettingsUri;
@@ -77,29 +97,41 @@ public partial class CustomizePage : UserControl, IShellPage
     private readonly Destination destination;
     private readonly Area area;
     private readonly PageAnchors anchors = new();
+    private readonly ExplorerRestartReminder restart;
     /// <summary>Rows the automatic dark mode schedule sets by time of day while it is on.</summary>
     private static readonly string[] ScheduledIds = ["appearance.apps", "appearance.windows"];
 
     private readonly Dictionary<string, Row> rows = [];
-    /// <summary>Rows whose last change Windows refused (access denied); they say so until a change goes through.</summary>
-    private readonly HashSet<string> blocked = new(StringComparer.Ordinal);
-    private bool loading, busy, explorerRestartPending, darkModeScheduled;
+    /// <summary>
+    /// Rows whose last change Windows refused (access denied), with the choice Windows kept (null until the next refresh
+    /// reads it). They say so until a change goes through or the value changes outside this app.
+    /// </summary>
+    private readonly Dictionary<string, int?> blocked = new(StringComparer.Ordinal);
+    /// <summary>Changes asked for while another was being applied; each row keeps only its latest choice.</summary>
+    private readonly List<(SettingDefinition Definition, int Choice)> queued = [];
+    private bool loading, busy, raisingCalm, darkModeScheduled;
 
     internal CustomizePage(ShellContext context, Destination destination = Destination.Customize)
     {
         this.context = context;
         this.destination = destination;
         area = Areas[destination];
+        restart = ExplorerRestartReminder.For(context.Services);
         InitializeComponent();
         PageTitleText.Text = area.Title;
         anchors.Add("top", PageTitleText);
         if (area.SettingsUri is not null)
         {
             SettingsLinkText.Visibility = Visibility.Visible;
-            AutomationProperties.SetHelpText(SettingsLink, "Opens the " + area.Title + " page of Windows Settings");
+            AutomationProperties.SetHelpText(SettingsLink, "Opens the " + area.Title + " options in Windows Settings");
         }
         BuildRows();
-        context.Services.CalmChanged += () => Dispatcher.InvokeAsync(Refresh);
+        // This page's own changes refresh once when they finish; changes from elsewhere refresh it when idle.
+        context.Services.CalmChanged += () =>
+        {
+            if (!raisingCalm) Dispatcher.InvokeAsync(() => { if (!busy) Refresh(); });
+        };
+        restart.Changed += () => Dispatcher.InvokeAsync(ShowRestartBar);
         if (destination == Destination.Appearance)
         {
             darkModeScheduled = context.Services.Settings.Current.DarkModeSchedule;
@@ -107,7 +139,7 @@ public partial class CustomizePage : UserControl, IShellPage
             {
                 if (settings.DarkModeSchedule == darkModeScheduled) return;
                 darkModeScheduled = settings.DarkModeSchedule;
-                Refresh();
+                if (!busy) Refresh();
             });
         }
     }
@@ -119,7 +151,7 @@ public partial class CustomizePage : UserControl, IShellPage
     public bool Reveal(string anchor) => anchors.Reveal(anchor);
     public void OnShown()
     {
-        Refresh();
+        if (!busy) Refresh();
         RefreshAutoHide();
         look?.Refresh();
         details?.Refresh();
@@ -159,9 +191,10 @@ public partial class CustomizePage : UserControl, IShellPage
         }
         foreach (SettingGroup group in area.Groups)
         {
-            // A group heading that repeats the page title (Privacy on the Privacy page) is left out.
+            // Groups get a heading when the page has more than one section (other groups, or the extras below them). A
+            // heading that repeats the page title (Privacy on the Privacy page) is left out.
             string heading = CalmCatalog.GroupTitle(group);
-            if (area.Groups.Length > 1 && !string.Equals(heading, area.Title, StringComparison.Ordinal))
+            if ((area.Groups.Length > 1 || extras is not null) && !string.Equals(heading, area.Title, StringComparison.Ordinal))
                 Groups.Children.Add(SectionTitle(heading, null));
             foreach (SettingDefinition d in CalmCatalog.All.Where(x => x.Group == group))
                 Groups.Children.Add(BuildRow(d));
@@ -180,45 +213,40 @@ public partial class CustomizePage : UserControl, IShellPage
 
     private Border BuildRow(SettingDefinition d)
     {
-        Grid grid = new();
-        grid.ColumnDefinitions.Add(new ColumnDefinition());
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        // A narrow page or large text moves Undo and the control below the title instead of squeezing it.
+        ResponsiveRow layout = new() { MinPrimaryWidth = 160, Spacing = 16 };
 
         StackPanel text = new() { VerticalAlignment = VerticalAlignment.Center };
         text.Children.Add(new TextBlock { Text = d.Title, Style = (Style)FindResource("Shell.Body") });
         TextBlock note = new() { Style = (Style)FindResource("Shell.Secondary"), FontSize = 12, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 2, 0, 0) };
         text.Children.Add(note);
-        grid.Children.Add(text);
+        layout.Children.Add(text);
 
-        Button undo = new() { Content = "Undo", Tag = d, Style = (Style)FindResource("Studio.GhostButton"), Visibility = Visibility.Collapsed,
-            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 4, 0) };
+        Button undo = new() { Content = "Undo", Tag = d, Style = (Style)FindResource("Studio.GhostButton"), Visibility = Visibility.Collapsed, VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetName(undo, "Undo: " + d.Title);
         undo.Click += UndoRow_Click;
-        Grid.SetColumn(undo, 1);
-        grid.Children.Add(undo);
+        layout.Children.Add(undo);
 
         Control control;
         if (d.Options.Count == 2 && (d.IsSwitch || d.Choices is null))
         {
             // Switch: still a CheckBox (Toggle pattern); Checked/Unchecked so mouse, keyboard and UI Automation all apply.
-            CheckBox toggle = new() { Style = (Style)FindResource("Studio.Switch"), Tag = d, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) };
+            CheckBox toggle = new() { Style = (Style)FindResource("Studio.Switch"), Tag = d, VerticalAlignment = VerticalAlignment.Center };
             toggle.Checked += Toggle_Changed;
             toggle.Unchecked += Toggle_Changed;
             control = toggle;
         }
         else
         {
-            ComboBox list = new() { Tag = d, MinWidth = 220, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0),
-                ItemsSource = d.Options.Select(o => o.Label).ToArray() };
+            ComboBox list = new() { Tag = d, Width = ChoiceWidth, VerticalAlignment = VerticalAlignment.Center,
+                ItemsSource = d.Options.Select(o => o.Label).ToArray(), ItemTemplate = TrimmedChoice() };
             list.SelectionChanged += Choice_Changed;
             control = list;
         }
         AutomationProperties.SetName(control, d.Title);
-        Grid.SetColumn(control, 2);
-        grid.Children.Add(control);
+        layout.Children.Add(control);
 
-        Border row = new() { Style = (Style)FindResource("Studio.Row"), Child = grid };
+        Border row = new() { Style = (Style)FindResource("Studio.Row"), Child = layout };
         rows[d.Id] = new Row(d, control, note, undo);
         anchors.Add(d.Id, control);
         return row;
@@ -235,51 +263,126 @@ public partial class CustomizePage : UserControl, IShellPage
                 switch (row.Control)
                 {
                     case CheckBox toggle: toggle.IsChecked = state.Choice == 1; break;
-                    case ComboBox list: list.SelectedIndex = state.Choice; break;
+                    case ComboBox list:
+                        list.SelectedIndex = state.Choice;
+                        // The box trims a long choice; the tooltip has all of it.
+                        list.ToolTip = list.SelectedItem as string;
+                        break;
                 }
                 // While automatic dark mode is on it rewrites these values by time of day, so a choice here would not last.
                 bool scheduled = darkModeScheduled && ScheduledIds.Contains(state.Definition.Id, StringComparer.Ordinal);
-                row.Control.IsEnabled = state.NotApplicable is null && !busy && !scheduled;
+                // Rows stay enabled while a change runs, so the focused switch keeps focus; the running change blocks others.
+                row.Control.IsEnabled = state.NotApplicable is null && !scheduled;
                 List<string> notes = [.. state.PolicyNotes];
                 if (state.NotApplicable is { } reason) notes.Insert(0, reason);
                 if (scheduled) notes.Insert(0, "Set by automatic dark mode.");
                 else if (state.Choice < 0 && row.Control is ComboBox) notes.Add("Set to a value not listed here.");
-                bool refused = blocked.Contains(state.Definition.Id);
+                bool refused = StillBlocked(state);
                 if (refused) notes.Insert(0, ChangeEngine.BlockedByWindowsMessage);
                 SetNote(row, string.Join(" ", notes), refused);
                 row.Note.Visibility = notes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
                 row.Undo.Visibility = state.CanUndo ? Visibility.Visible : Visibility.Collapsed;
-                row.Undo.IsEnabled = !busy && !scheduled;
+                row.Undo.IsEnabled = !scheduled;
             }
-            RestartBar.Visibility = explorerRestartPending ? Visibility.Visible : Visibility.Collapsed;
+            ShowRestartBar();
         }
         finally { loading = false; }
     }
+
+    /// <summary>
+    /// True while Windows' refusal still describes the row: the value is what Windows kept when it refused. Once the value
+    /// changes outside this app (in Windows Settings, say) the refusal no longer applies and the note goes.
+    /// </summary>
+    private bool StillBlocked(SettingState state)
+    {
+        string id = state.Definition.Id;
+        if (!blocked.TryGetValue(id, out int? kept)) return false;
+        if (kept is null)
+        {
+            blocked[id] = state.Choice;
+            return true;
+        }
+        if (kept == state.Choice) return true;
+        blocked.Remove(id);
+        return false;
+    }
+
+    private void ShowRestartBar() => RestartBar.Visibility = restart.Pending ? Visibility.Visible : Visibility.Collapsed;
 
     private void Toggle_Changed(object sender, RoutedEventArgs e) => Dispatcher.Handle(() => ToggleAsync(sender));
 
     private async Task ToggleAsync(object sender)
     {
-        if (loading || busy || sender is not CheckBox { Tag: SettingDefinition definition } toggle) return;
-        await ApplyAsync(definition, toggle.IsChecked == true ? 1 : 0);
+        if (loading || sender is not CheckBox { Tag: SettingDefinition definition } toggle) return;
+        await ApplyAsync(definition, toggle.IsChecked == true ? 1 : 0, toggle);
     }
 
     private void Choice_Changed(object sender, SelectionChangedEventArgs e) => Dispatcher.Handle(() => ChoiceAsync(sender));
 
     private async Task ChoiceAsync(object sender)
     {
-        if (loading || busy || sender is not ComboBox { Tag: SettingDefinition definition, SelectedIndex: >= 0 } list) return;
-        await ApplyAsync(definition, list.SelectedIndex);
+        if (loading || sender is not ComboBox { Tag: SettingDefinition definition, SelectedIndex: >= 0 } list) return;
+        list.ToolTip = list.SelectedItem as string;
+        await ApplyAsync(definition, list.SelectedIndex, list);
     }
 
-    private async Task ApplyAsync(SettingDefinition definition, int choice)
+    /// <summary>
+    /// Applies a row's new value. The page is not refreshed or disabled before the write, so the switch keeps its new
+    /// position and the keyboard stays on it. A change asked for while another runs waits for it; then the page shows
+    /// Windows' state once.
+    /// </summary>
+    private async Task ApplyAsync(SettingDefinition definition, int choice, Control origin)
     {
-        ChangeResult result = await RunAsync(() => Engine.ApplyChoice(definition, choice));
-        // Windows guards some values from apps: the row itself says so and links to Windows Settings.
-        bool refused = result.BlockedByWindows;
-        if (refused ? blocked.Add(definition.Id) : blocked.Remove(definition.Id)) Refresh();
-        if (result.Outcome == ChangeOutcome.Applied) NoteRestart([definition]);
-        else if (!refused && result.Outcome is not ChangeOutcome.AlreadyInPlace) context.ShowNotice(NoticeSeverity.Caution, definition.Title + ": " + result.Message);
+        queued.RemoveAll(q => q.Definition.Id == definition.Id);
+        queued.Add((definition, choice));
+        if (busy) return; // the running change applies it next
+        FocusSnapshot focus = FocusSnapshot.Take(origin);
+        List<TextBlock> refused = [];
+        Begin();
+        try
+        {
+            while (queued.Count > 0)
+            {
+                (SettingDefinition next, int wanted) = queued[0];
+                queued.RemoveAt(0);
+                ChangeResult result = await Task.Run(() => Engine.ApplyChoice(next, wanted));
+                // Windows guards some values from apps: the row itself says so and links to Windows Settings.
+                if (result.BlockedByWindows)
+                {
+                    blocked[next.Id] = null;
+                    refused.Add(rows[next.Id].Note);
+                }
+                else blocked.Remove(next.Id);
+                if (result.Outcome == ChangeOutcome.Applied && next.TakesEffect == TakesEffect.ExplorerRestart) restart.Set(true);
+                else if (!result.BlockedByWindows && result.Outcome is not (ChangeOutcome.Applied or ChangeOutcome.AlreadyInPlace))
+                    context.ShowNotice(NoticeSeverity.Caution, next.Title + ": " + result.Message);
+            }
+        }
+        finally
+        {
+            queued.Clear();
+            Finish(focus);
+        }
+        // The row's note now says Windows refused; screen readers read it without the keyboard leaving the switch.
+        foreach (TextBlock note in refused) Controls.LiveRegion.Notify(note);
+    }
+
+    private void Begin()
+    {
+        busy = true;
+        Busy.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>Ends a change: other pages refresh, this one refreshes once, and the keyboard returns where it was.</summary>
+    private void Finish(FocusSnapshot focus, params UIElement?[] fallbacks)
+    {
+        busy = false;
+        Busy.Visibility = Visibility.Collapsed;
+        raisingCalm = true;
+        try { context.Services.RaiseCalmChanged(); }
+        finally { raisingCalm = false; }
+        Refresh();
+        focus.Restore(this, fallbacks);
     }
 
     /// <summary>The row's note: plain text, plus a link to Windows Settings when Windows refused the change.</summary>
@@ -291,7 +394,6 @@ public partial class CustomizePage : UserControl, IShellPage
         row.Note.Inlines.Clear();
         row.Note.Inlines.Add(new Run(text));
         if (!refused) return;
-        // File Explorer has no page of its own in Windows Settings; Settings' home lets the user search there.
         string uri = area.SettingsUri ?? "ms-settings:";
         Hyperlink open = new(new Run("Open Windows Settings"));
         AutomationProperties.SetName(open, "Open Windows Settings");
@@ -316,13 +418,16 @@ public partial class CustomizePage : UserControl, IShellPage
 
     private CheckBox? autoHide;
     private TextBlock? autoHideNote;
-    private bool autoHideLoading;
+    private bool autoHideLoading, autoHideBusy;
 
     /// <summary>The auto-hide switch on the Taskbar page (null on other pages).</summary>
     internal CheckBox? AutoHideSwitch => autoHide;
 
     /// <summary>The note under a setting's row (policies, problems, and "Windows doesn't let apps change this").</summary>
     internal TextBlock? NoteFor(string settingId) => rows.TryGetValue(settingId, out Row? row) ? row.Note : null;
+
+    /// <summary>The switch or list of a setting's row.</summary>
+    internal Control? ControlFor(string settingId) => rows.TryGetValue(settingId, out Row? row) ? row.Control : null;
 
     private Border BuildAutoHideRow()
     {
@@ -348,7 +453,7 @@ public partial class CustomizePage : UserControl, IShellPage
 
     private void RefreshAutoHide()
     {
-        if (autoHide is null) return;
+        if (autoHide is null || autoHideBusy) return;
         Dispatcher.Handle(async () => ShowAutoHide(await TaskbarCallAsync(TaskbarAutoHide.IsOn)));
     }
 
@@ -356,11 +461,16 @@ public partial class CustomizePage : UserControl, IShellPage
 
     private async Task AutoHideAsync()
     {
-        if (autoHideLoading || autoHide is null) return;
+        // While a change runs the switch stays enabled (and focused); a second press waits for Windows' answer.
+        if (autoHideLoading || autoHideBusy || autoHide is null) return;
         bool wanted = autoHide.IsChecked == true;
-        autoHide.IsEnabled = false;
-        bool? now = await TaskbarCallAsync(() => TaskbarAutoHide.Set(wanted) ? TaskbarAutoHide.IsOn() : null);
+        FocusSnapshot focus = FocusSnapshot.Take(autoHide);
+        autoHideBusy = true;
+        bool? now;
+        try { now = await TaskbarCallAsync(() => TaskbarAutoHide.Set(wanted) ? TaskbarAutoHide.IsOn() : null); }
+        finally { autoHideBusy = false; }
         ShowAutoHide(now);
+        focus.Restore(this);
         if (now is not null && now != wanted)
             context.ShowNotice(NoticeSeverity.Caution, "Windows did not change the taskbar's auto-hide. Try again, or use Windows Settings.");
     }
@@ -395,43 +505,78 @@ public partial class CustomizePage : UserControl, IShellPage
 
     private async Task UndoRowAsync(object sender)
     {
-        if (sender is not Button { Tag: SettingDefinition definition }) return;
-        UndoResult result = await RunAsync(() => Engine.Undo(definition));
-        if (result.Outcome == UndoOutcome.Restored) blocked.Remove(definition.Id);
-        if (result.Outcome == UndoOutcome.Restored) NoteRestart([definition]);
-        else context.ShowNotice(result.Outcome == UndoOutcome.Failed ? NoticeSeverity.Caution : NoticeSeverity.Information, definition.Title + ": " + result.Message);
-    }
-
-    private void NoteRestart(IEnumerable<SettingDefinition> changed)
-    {
-        if (changed.Any(d => d.TakesEffect == TakesEffect.ExplorerRestart)) explorerRestartPending = true;
-        Refresh();
-    }
-
-    private async Task<T> RunAsync<T>(Func<T> work)
-    {
-        busy = true;
-        Busy.Visibility = Visibility.Visible;
-        Refresh();
-        try { return await Task.Run(work); }
-        finally
+        if (busy || sender is not Button { Tag: SettingDefinition definition } button) return;
+        // Undo goes away once used; the keyboard moves to the row's own switch or list.
+        FocusSnapshot focus = FocusSnapshot.Take(button);
+        Begin();
+        UndoResult? result = null;
+        try
         {
-            busy = false;
-            Busy.Visibility = Visibility.Collapsed;
-            context.Services.RaiseCalmChanged();
-            Refresh();
+            result = await Task.Run(() => Engine.Undo(definition));
+            if (result.Outcome == UndoOutcome.Restored)
+            {
+                blocked.Remove(definition.Id);
+                if (definition.TakesEffect == TakesEffect.ExplorerRestart) restart.Set(true);
+            }
         }
+        finally { Finish(focus, rows[definition.Id].Control); }
+        if (result.Outcome != UndoOutcome.Restored)
+            context.ShowNotice(result.Outcome == UndoOutcome.Failed ? NoticeSeverity.Caution : NoticeSeverity.Information, definition.Title + ": " + result.Message);
     }
 
     private void RestartExplorer_Click(object sender, RoutedEventArgs e) => Dispatcher.Handle(RestartExplorerAsync);
 
     private async Task RestartExplorerAsync()
     {
-        RestartExplorer.IsEnabled = false;
-        bool ok = await ExplorerRestart.RestartAsync();
-        RestartExplorer.IsEnabled = true;
-        if (ok) explorerRestartPending = false;
-        else context.ShowNotice(NoticeSeverity.Caution, "File Explorer did not come back by itself. Press Ctrl+Shift+Esc, choose Run new task, and type explorer.");
-        Refresh();
+        if (restart.Restarting) return;
+        // The button stays enabled while File Explorer restarts (a second press waits), so the keyboard stays on it.
+        FocusSnapshot focus = FocusSnapshot.Take(RestartExplorer);
+        bool ok = await restart.RestartAsync();
+        if (!ok) context.ShowNotice(NoticeSeverity.Caution, ExplorerRestartReminder.FailedMessage);
+        ShowRestartBar();
+        // Once File Explorer is back the bar goes away; the keyboard moves to the page's first control.
+        focus.Restore(this, PageAnchors.FirstFocusable(Groups) as UIElement);
+    }
+}
+
+/// <summary>
+/// Whether a change made in this app waits for File Explorer to restart. One per running app, shared by every page and
+/// the De-Windows card's notice, so restarting File Explorer from any of them clears the reminder everywhere.
+/// </summary>
+internal sealed class ExplorerRestartReminder
+{
+    internal const string FailedMessage = "File Explorer did not come back by itself. Press Ctrl+Shift+Esc, choose Run new task, and type explorer.";
+    private static readonly ConditionalWeakTable<ShellServices, ExplorerRestartReminder> PerApp = new();
+
+    public static ExplorerRestartReminder For(ShellServices services) => PerApp.GetValue(services, _ => new ExplorerRestartReminder());
+
+    /// <summary>True after a change that shows only once File Explorer restarts, until it has restarted.</summary>
+    public bool Pending { get; private set; }
+
+    /// <summary>True while File Explorer is being restarted.</summary>
+    public bool Restarting { get; private set; }
+
+    /// <summary>Raised on the UI thread when <see cref="Pending"/> changes.</summary>
+    public event Action? Changed;
+
+    public void Set(bool pending)
+    {
+        if (Pending == pending) return;
+        Pending = pending;
+        Changed?.Invoke();
+    }
+
+    /// <summary>Restarts File Explorer (once at a time) and clears the reminder when it came back. False when it did not.</summary>
+    public async Task<bool> RestartAsync(Func<Task<bool>>? restart = null)
+    {
+        if (Restarting) return false;
+        Restarting = true;
+        try
+        {
+            bool ok = await (restart ?? ExplorerRestart.RestartAsync)();
+            if (ok) Set(false);
+            return ok;
+        }
+        finally { Restarting = false; }
     }
 }

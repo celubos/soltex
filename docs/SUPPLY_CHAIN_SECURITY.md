@@ -1,7 +1,8 @@
 # Supply-chain security
 
-Code: `src/Soltex.Security`, `src/Soltex.Update`. There is a non-installing update planner; there is no installer or
-activation step.
+Code: `src/Soltex.Security`, `src/Soltex.Update`. The update planner installs nothing, and the app has no updater or
+activation step. Releases do ship an installer: an unsigned, per-user Inno Setup `setup.exe` built in CI from the
+release zip (section 8). It does not use the planner.
 
 ## 1. Scope
 
@@ -19,7 +20,7 @@ The implemented components are:
 - `BoundedHttpsAcquirer`, `SoltexUpdatePlanner`, and `UpdatePlanningJournal`;
 - `Soltex.Security.SupplyChain.Tests`, `Soltex.Security.Hardening.Tests`, and `Soltex.Update.Tests`.
 
-These components are not a release service. Given an already configured signed descriptor and trust policy, the planner can authenticate and download bounded inert artifacts into private staging, verify them, and produce a user-visible plan. It does not install, execute, elevate, activate, repair, roll back, or uninstall software. No production Soltex certificate, metadata/release public key, TLS pin, signed trust policy, descriptor source, installer, or updater is configured.
+These components are not a release service. Given an already configured signed descriptor and trust policy, the planner can authenticate and download bounded inert artifacts into private staging, verify them, and produce a user-visible plan. It does not install, execute, elevate, activate, repair, roll back, or uninstall software. No production Soltex certificate, metadata/release public key, TLS pin, signed trust policy, descriptor source or updater is configured, and the planner is not connected to the release installer.
 
 ## 2. Threats addressed
 
@@ -264,7 +265,7 @@ The planner's deterministic preview binds product, channel, current/target versi
 
 `UpdatePlanningJournal` retains at most 128 sanitized phase records in authenticated current/last-known-good state. Recovery inspection reports unfinished attempts and existing Soltex-owned private staging tokens without displaying the token or a raw path in the WPF surface. Cleanup is explicit and bounded to tokens already authenticated in the journal.
 
-The installer phase must then provide transactional activation, rollback, repair, uninstall, crash recovery, disk-full handling, locked-file handling, reboot behavior, and retained evidence. It must not execute directly from the archive or staging directory.
+A later update-installing phase must then provide transactional activation, rollback, repair, uninstall, crash recovery, disk-full handling, locked-file handling, reboot behavior, and retained evidence. It must not execute directly from the archive or staging directory. (The release `setup.exe` is a separate, ordinary Inno Setup installer; it is not that phase.)
 
 ## 8. Build inputs
 
@@ -273,7 +274,23 @@ The installer phase must then provide transactional activation, rollback, repair
 - Native toolchains: `native/Soltex.TaskbarStyle/toolchain.lock.json` and `native/Soltex.Audio.Driver/toolchain.lock.json`
   pin each download by URL, byte size and SHA-256. The taskbar build script refuses an archive that does not match and
   checks that the built DLL imports only Windows system libraries.
-- CI: every GitHub Action is pinned to a full commit SHA.
+- CI: every GitHub Action is pinned to a full commit SHA. Checkout never keeps credentials.
+- Installer: `eng/soltex.iss` is compiled with Inno Setup 6.7.1. CI gets it through `eng/installer/get-inno-setup.ps1`,
+  which installs exactly that Chocolatey package version when it is missing (Chocolatey checks the Inno Setup download
+  against the SHA-256 recorded in that package version) and fails unless an `ISCC.exe` under Program Files or
+  Program Files (x86) reports that file version. To move to a newer Inno Setup, change the version in that script.
+  The installer is not code-signed.
+- Release workflow (`.github/workflows/release.yml`): runs when a release is published, or by hand for a tag. It
+  checks the zip against `SHA256SUMS.txt`, then reads `BUILD.json` from the zip and stops unless `SourceCommit` is the
+  tag's commit, `Version` equals the tag without its `v`, `SourceDirty` and `TestsSkipped` are false and
+  `Verification.Status` is `Passed`. The job has `contents: write`, but the token is passed only to the two steps that
+  run `gh` (download and upload); the steps that install Inno Setup, compile and run the installer do not get it.
+  Before uploading, it installs, upgrades and uninstalls the new `setup.exe`, the last two while Soltex runs
+  (`eng/installer/test-installer.ps1`). It rewrites `SHA256SUMS.txt` with LF line endings and no byte order mark, so
+  `sha256sum -c` works.
+- Release tooling also runs before a release: `package-smoke.yml` compiles the installer and runs the same install,
+  upgrade and uninstall checks; `audio.yml` builds the self-contained integrated package and makes the release zip
+  from it with `eng/make-release.ps1`.
 - The test suites cover subject/key policy matching, code-signing EKU, primary-signature verification, release
   sequence upgrade/replay/rollback/equivocation, authenticated-state tampering, cross-process locking, manifest path
   canonicalization, archive traversal/collision/link/size/ratio limits, descriptor quorum and expiry, redirects, trust
@@ -285,7 +302,7 @@ The installer phase must then provide transactional activation, rollback, repair
 This implementation is not described as:
 
 - a complete signed release system;
-- an installing updater, installer, or release service;
+- an installing updater or release service (the per-user `setup.exe` is a plain, unsigned Inno Setup installer);
 - production-ready;
 - resistant to a fully compromised user account;
 - resistant to compromised release infrastructure;

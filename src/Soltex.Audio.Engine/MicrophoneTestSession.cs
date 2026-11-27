@@ -72,7 +72,7 @@ public sealed class MicrophoneTestRecorder : IDisposable
             acquiredRecording = new QueuedPcmRecording(acquiredStream, format, settings, seconds);
             recording = acquiredRecording;
             device = acquiredDevice; capture = acquiredCapture;
-            capture.DataAvailable += DataAvailable; capture.RecordingStopped += RecordingStopped;
+            capture.DataAvailable += DataAvailable; capture.RecordingStopped += RecordingStopped; AudioThreadScheduling.ReleaseOnStop(capture);
         }
         catch
         {
@@ -165,7 +165,7 @@ public sealed class MicrophoneTestReplay : IDisposable
             acquiredRender = new WasapiOut(acquiredDevice, AudioClientShareMode.Shared, true, 40);
             acquiredRender.Init(new RenderHeadSampleProvider(new OutputCeilingSampleProvider(source, 0.25)).ToWaveProvider());
             render = acquiredRender; reader = acquiredReader; replayBuffer = acquiredBuffer; device = acquiredDevice;
-            render.PlaybackStopped += Stopped;
+            render.PlaybackStopped += Stopped; AudioThreadScheduling.ReleaseOnStop(render);
         }
         catch { acquiredRender?.Dispose(); acquiredReader?.Dispose(); acquiredBuffer?.Dispose(); acquiredDevice?.Dispose(); enumerator.Dispose(); throw; }
     }

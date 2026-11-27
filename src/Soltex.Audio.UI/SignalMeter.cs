@@ -38,7 +38,9 @@ public sealed class SignalMeter : FrameworkElement
 
     public SignalMeter()
     {
-        IsVisibleChanged += (_, _) => { if (!IsVisible) Settle(); else UpdateAnimation(); };
+        // Shown again (another tab, a restored window): start from the current level. A peak held from before the meter
+        // was hidden would otherwise show for a moment as if it were happening now.
+        IsVisibleChanged += (_, _) => { Settle(); InvalidateVisual(); };
         Unloaded += (_, _) => Settle();
     }
 

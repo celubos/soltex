@@ -55,6 +55,9 @@ internal static class MicrophoneChecks
             latest = latest with { Profile = latest.Profile with { Channels = latest.Profile.Channels.Select(c => c.Bus == profile.Bus ? profile : c).ToArray() } };
             return RefreshAsync();
         }
+        /// <summary>Set to stand in for an engine that stopped answering: <see cref="Latest"/> keeps its last state.</summary>
+        public bool ConnectionLost { get; set; }
+        public string StatusText { get; set; } = "";
     }
 
     /// <summary>A connection that has no state yet, for example because the audio engine is missing.</summary>
@@ -316,6 +319,83 @@ internal static class MicrophoneChecks
                 "A newly chosen Broadcast preset must turn the limiter on.");
         }
         finally { host.Close(); }
+    }
+
+    /// <summary>
+    /// A lost connection shows as "Not connected" with empty meters instead of the last state; levels use a true minus
+    /// sign; the once-a-second test countdown stays out of the live region (only the verdict is announced); and when the
+    /// four steps wrap, no arrow points at nothing.
+    /// </summary>
+    public static void CardShowsLostConnectionQuietCountdownAndArrows()
+    {
+        HostSnapshot stopped = InterfaceToCable(inputChannel: null);
+        HostSnapshot running = stopped with
+        {
+            Running = true, StartRequested = true,
+            Channels = [new HostChannelStatus(AudioBus.Microphone, "Running", "interface", "cable-in", "Selected destination.", .3f, new BridgeStatus(true, 0, 0, 0, 0, null) { OutputPeak = .2f })]
+        };
+        FakeSource source = new(running);
+        MicrophonePathView view = new();
+        Window window = Host(view);
+        try
+        {
+            view.Attach(source);
+            Pump();
+            Program.True(view.StateText.Text == "Running", "A running path must say Running (like the playback channels), not " + view.StateText.Text);
+            Program.True(view.InputLevel.Text.StartsWith('−') && view.InputLevel.Text.EndsWith(" dBFS peak", StringComparison.Ordinal) && !view.InputLevel.Text.Contains('-', StringComparison.Ordinal),
+                "Levels must use a true minus sign; got: " + view.InputLevel.Text);
+            Program.True(global::Soltex.App.Controls.LiveRegion.GetIsLive(view.StateText) && global::Soltex.App.Controls.LiveRegion.GetIsLive(view.Explanation) &&
+                global::Soltex.App.Controls.LiveRegion.GetIsLive(view.TestTitle) && global::Soltex.App.Controls.LiveRegion.GetIsLive(view.SetupErrorText),
+                "The card's state, explanation, test verdict and setup error must be announced to screen readers.");
+            Program.True(System.Windows.Automation.AutomationProperties.GetLiveSetting(view.TestTitle) == System.Windows.Automation.AutomationLiveSetting.Polite &&
+                !global::Soltex.App.Controls.LiveRegion.GetIsLive(view.TestCountdown), "The test title is polite and its countdown is not a live region.");
+
+            source.ConnectionLost = true;
+            source.StatusText = "Audio connection lost: the audio engine stopped answering.";
+            source.RefreshAsync().GetAwaiter().GetResult();
+            Pump();
+            Program.True(view.StateText.Text == "Not connected" && view.Explanation.Text == source.StatusText,
+                "A lost connection must say so instead of the last state; got: " + view.StateText.Text + " / " + view.Explanation.Text);
+            Program.True(view.InputMeter.Level < 0 && view.OutputMeter.Level < 0 && !view.TestButton.IsEnabled && !view.StartStopButton.IsEnabled,
+                "With the connection lost the meters show 'not measured' and nothing can be started.");
+            source.ConnectionLost = false;
+            source.RefreshAsync().GetAwaiter().GetResult();
+            Pump();
+            Program.True(view.StateText.Text == "Running" && view.InputMeter.Level > 0, "The card must come back once the connection answers again.");
+
+            List<string> titles = [];
+            bool countdownShown = false;
+            Task<MicrophoneTestResult?> test = view.RunTestAsync(TimeSpan.FromMilliseconds(1500), TimeSpan.FromMilliseconds(40));
+            DateTime deadline = DateTime.UtcNow.AddSeconds(15);
+            while (!test.IsCompleted && DateTime.UtcNow < deadline)
+            {
+                Pump();
+                titles.Add(view.TestTitle.Text);
+                countdownShown |= view.TestCountdown.Visibility == Visibility.Visible && int.TryParse(view.TestCountdown.Text, out _);
+                Thread.Sleep(10);
+            }
+            Wait(test);
+            Program.True(countdownShown, "The test must still show the seconds left.");
+            Program.True(titles.All(t => !t.StartsWith("Speak normally", StringComparison.Ordinal) || t == "Speak normally…"),
+                "The live test title must not change every second; got: " + string.Join(" | ", titles.Distinct()));
+            Program.True(view.TestCountdown.Visibility == Visibility.Collapsed, "The countdown must go away with the verdict.");
+
+            static bool Shown(UIElement arrow) => arrow.Visibility == Visibility.Visible;
+            view.Width = 430;
+            Pump(); Pump();
+            Program.True(view.Steps.Columns == 2 && Shown(view.SourceArrow) && !Shown(view.ProcessingArrow) && Shown(view.DestinationArrow),
+                "Two by two, the arrow at the end of the first row must be hidden; columns " + view.Steps.Columns);
+            view.Width = 300;
+            Pump(); Pump();
+            Program.True(view.Steps.Columns == 1 && Shown(view.SourceArrow) && Shown(view.ProcessingArrow) && Shown(view.DestinationArrow) &&
+                view.ProcessingArrow.LayoutTransform is System.Windows.Media.RotateTransform { Angle: 90 }, "In one column the arrows must point down at the next card.");
+            view.Width = double.NaN;
+            Pump(); Pump();
+            Program.True(view.Steps.Columns == 4 && Shown(view.ProcessingArrow) && view.ProcessingArrow.LayoutTransform is not System.Windows.Media.RotateTransform,
+                "In one row every arrow points right at the next card.");
+            Program.True(source.Starts == 0, "Nothing in this check may start audio.");
+        }
+        finally { window.Close(); }
     }
 
     private static T Find<T>(DependencyObject root, string name) where T : FrameworkElement

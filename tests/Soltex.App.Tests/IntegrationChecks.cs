@@ -150,7 +150,8 @@ internal static class IntegrationChecks
             firstRow.Editing = false;
             Apply(view, Snapshot(first with { Volume = 0.6, Peak = null, CanControl = false }, second with { State = AudioSessionState.Expired }));
             Check(view.Rows.Count == 1 && ReferenceEquals(view.Rows[0], firstRow), "Expired session removal disturbed the surviving row.");
-            Check(Math.Abs(firstRow.Level - 60) < 0.001 && firstRow.Peak == 0 && !firstRow.CanControl,
+            // No reading is "not measured" (-1, an empty meter), never made-up silence.
+            Check(Math.Abs(firstRow.Level - 60) < 0.001 && firstRow.Peak == -1 && !firstRow.CanControl,
                 "Completed edits must accept confirmed levels and unavailable signal/control state.");
             Check(notifications.Contains(nameof(WindowsSessionRow.Level)) && notifications.Contains(nameof(WindowsSessionRow.LevelText)),
                 "A newly accepted level must refresh both slider and numeric text bindings.");
@@ -222,6 +223,54 @@ internal static class IntegrationChecks
         }
     }
 
+    /// <summary>
+    /// The Apps tab and the app routing window: list items read as device names (a screen reader hears the item's text,
+    /// not a record dump), devices that share a name are numbered "(2)" instead of showing internal IDs, and when Windows
+    /// audio can't be read the meters go back to "not measured" instead of freezing on the last reading.
+    /// </summary>
+    public static void AudioListsReadNamesAndResetMeters()
+    {
+        var session = Session(new("physical-a", "instance-a", 123, new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)), .5, .4);
+        AudioSessionEndpoint[] endpoints =
+        [
+            new("physical-a", "Same speakers", AudioEndpointClassification.Unknown, .5, false, .3, [session]),
+            new("physical-b", "Same speakers", AudioEndpointClassification.Unknown, .5, false, 0, [])
+        ];
+        WindowsMixerView view = new();
+        try
+        {
+            Apply(view, new AudioSessionSnapshot(DateTimeOffset.UtcNow, endpoints, []));
+            string[] shown = view.DeviceSelector.Items.Cast<object>().Select(item => item.ToString() ?? "").ToArray();
+            Check(shown.SequenceEqual(["Same speakers", "Same speakers (2)"]), "Device list items must read as numbered names; got: " + string.Join(" | ", shown));
+            Check(view.EndpointPeak.Level > 0 && view.Rows.Single().Peak > 0, "The fixture must start with measured levels.");
+            view.ShowUnavailable("the audio service stopped.");
+            Check(view.EndpointPeak.Level < 0 && view.Rows.All(row => row.Peak < 0) && view.Feedback.Text.Contains("unavailable", StringComparison.Ordinal),
+                "When Windows audio can't be read the meters must show 'not measured', not the last reading.");
+            Check(Soltex.App.Controls.LiveRegion.GetIsLive(view.Feedback), "The Apps status line must be announced to screen readers.");
+            Check(Field(view, "_sessions") is null && Field(view, "_devices") is null, "Presenting made-up state must not create audio services.");
+        }
+        finally { view.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+
+        var application = Application.Current;
+        ShutdownMode previousMode = application.ShutdownMode;
+        Window? previousMainWindow = application.MainWindow;
+        application.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        WindowsApplicationRoutingWindow window = new(session, endpoints, Path.Combine(Path.GetTempPath(), "soltex-routing-names-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var target = (ComboBox)typeof(WindowsApplicationRoutingWindow).GetField("_target", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(window)!;
+            string[] routes = target.Items.Cast<object>().Select(item => item.ToString() ?? "").ToArray();
+            Check(routes.SequenceEqual(["Windows default", "Same speakers", "Same speakers (2)"]),
+                "Routing choices must read as names and number repeats instead of showing IDs; got: " + string.Join(" | ", routes));
+        }
+        finally
+        {
+            window.ShutdownAsync().GetAwaiter().GetResult();
+            application.MainWindow = previousMainWindow;
+            application.ShutdownMode = previousMode;
+        }
+    }
+
     public static void InitialDeviceSelection()
     {
         AudioSessionEndpoint virtualDefault = new("virtual-default", "Virtual default", AudioEndpointClassification.KnownVirtual, 0.5, false, 0, []);
@@ -277,6 +326,140 @@ internal static class IntegrationChecks
             Check(Equals(visibleDefault.DeviceSelector.SelectedValue, physicalB.Id), "Later default observations must not override an established view selection.");
         }
         finally { visibleDefault.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+    }
+
+    /// <summary>
+    /// --quit against a stand-in running copy: the real pipe listener and client, a thread holding the instance mutex,
+    /// and an event standing in for the copy's process exit. Also the window side: Quit counts only when the window closes.
+    /// </summary>
+    public static void QuitWaitsForTheRunningCopyToExit()
+    {
+        Check((int)QuitResult.Exited == 0 && (int)QuitResult.NotRunning == 1 && (int)QuitResult.Cancelled == 2 && (int)QuitResult.TimedOut == 3,
+            "The --quit exit codes changed; eng/soltex.iss and eng/installer/test-installer.ps1 rely on them.");
+        // A made-up profile folder gives a mutex and pipe name that no real copy uses.
+        string name = SuiteInstance.Name(Path.Combine(Path.GetTempPath(), "soltex-quit-check-" + Guid.NewGuid().ToString("N")));
+        TimeSpan budget = TimeSpan.FromSeconds(10), shortBudget = TimeSpan.FromSeconds(1);
+        // The mutex belongs to the thread that took it, so the client runs on another thread, as it would in another process.
+        QuitResult Quit(TimeSpan timeout, Func<int, TimeSpan, bool> waitForExit) =>
+            Task.Run(() => SuiteInstance.QuitRunningCopy(name, timeout, waitForExit)).GetAwaiter().GetResult();
+        static bool NeverExits(int processId, TimeSpan left) => false;
+
+        Check(Quit(budget, NeverExits) == QuitResult.NotRunning, "--quit with no copy running must report NotRunning.");
+
+        using ManualResetEventSlim taken = new(), release = new(), exited = new();
+        using CancellationTokenSource stop = new();
+        bool ownerCreated = false, accept = true;
+        Thread owner = new(() =>
+        {
+            using Mutex mutex = new(true, SuiteInstance.MutexName(name), out ownerCreated);
+            taken.Set();
+            if (!ownerCreated) return;
+            release.Wait();
+            mutex.ReleaseMutex();
+        }) { IsBackground = true };
+        System.Collections.Concurrent.ConcurrentQueue<byte> received = new();
+        Task? server = null;
+        try
+        {
+            owner.Start();
+            Check(taken.Wait(TimeSpan.FromSeconds(5)) && ownerCreated, "The stand-in copy could not take the instance mutex.");
+            server = Task.Run(() => SuiteInstance.ListenAsync(name, command =>
+            {
+                received.Enqueue(command);
+                if (command == SuiteInstance.QuitCommand && accept) exited.Set();
+                return accept;
+            }, stop.Token));
+
+            int seenProcess = 0;
+            QuitResult result = Quit(budget, (processId, left) => { seenProcess = processId; return exited.Wait(left); });
+            Check(result == QuitResult.Exited, $"--quit must report Exited once the copy has quit; got {result}.");
+            Check(seenProcess == Environment.ProcessId, "--quit must wait on the process that serves the pipe.");
+            Check(received.Contains(SuiteInstance.QuitCommand), "The running copy did not receive Quit.");
+
+            accept = false;
+            exited.Reset();
+            System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
+            result = Quit(budget, NeverExits);
+            Check(result == QuitResult.Cancelled && clock.Elapsed < budget, $"Cancel in the running copy must end --quit at once with Cancelled; got {result}.");
+
+            accept = true;
+            clock.Restart();
+            result = Quit(shortBudget, (processId, left) => { Thread.Sleep(left); return false; });
+            Check(result == QuitResult.TimedOut, $"A copy that accepts but does not exit must time out; got {result}.");
+            Check(clock.Elapsed >= shortBudget - TimeSpan.FromMilliseconds(100) && clock.Elapsed < shortBudget + TimeSpan.FromSeconds(3),
+                $"--quit must wait its whole time and no longer; it took {clock.Elapsed.TotalMilliseconds:F0} ms.");
+
+            Check(SuiteInstance.Send(name, SuiteInstance.ShowCommand, budget) && SuiteInstance.Send(name, SuiteInstance.AudioCommand, budget),
+                "Show and Audio were not delivered.");
+            Check(SpinWait.SpinUntil(() => received.Contains(SuiteInstance.ShowCommand) && received.Contains(SuiteInstance.AudioCommand), TimeSpan.FromSeconds(5)),
+                "The running copy did not receive Show and Audio.");
+
+            stop.Cancel();
+            Check(server.Wait(TimeSpan.FromSeconds(5)), "The listener did not stop.");
+            clock.Restart();
+            result = Quit(shortBudget, NeverExits);
+            Check(result == QuitResult.TimedOut && clock.Elapsed < shortBudget + TimeSpan.FromSeconds(3),
+                $"A copy that holds the lock but never answers must time out, not hang; got {result} after {clock.Elapsed.TotalMilliseconds:F0} ms.");
+
+            // A copy from before 1.1: a read-only pipe, one byte, no answer. Its exit shows as the process ending (or, without
+            // a process id, as the mutex being released).
+            exited.Reset();
+            Task older = Task.Run(async () =>
+            {
+                await using var pipe = new System.IO.Pipes.NamedPipeServerStream(name, System.IO.Pipes.PipeDirection.In, 1,
+                    System.IO.Pipes.PipeTransmissionMode.Byte, System.IO.Pipes.PipeOptions.Asynchronous | System.IO.Pipes.PipeOptions.CurrentUserOnly);
+                using CancellationTokenSource limit = new(budget);
+                await pipe.WaitForConnectionAsync(limit.Token);
+                byte[] command = new byte[1];
+                if (await pipe.ReadAsync(command, limit.Token) == 1 && command[0] == SuiteInstance.QuitCommand)
+                {
+                    exited.Set();
+                    release.Set();
+                }
+            });
+            result = Quit(budget, (processId, left) => exited.Wait(left));
+            Check(result == QuitResult.Exited, $"--quit must also end a copy from before 1.1, which never answers; got {result}.");
+            Check(older.Wait(TimeSpan.FromSeconds(5)), "The older copy's pipe did not finish.");
+            Check(owner.Join(TimeSpan.FromSeconds(5)), "The stand-in copy did not release the mutex.");
+            Check(Quit(budget, NeverExits) == QuitResult.NotRunning, "Once the copy has released the mutex, --quit must report NotRunning.");
+        }
+        finally
+        {
+            release.Set();
+            stop.Cancel();
+            server?.Wait(TimeSpan.FromSeconds(5));
+            owner.Join(TimeSpan.FromSeconds(5));
+        }
+
+        Application application = Application.Current;
+        ShutdownMode previousMode = application.ShutdownMode;
+        Window? previousMainWindow = application.MainWindow;
+        application.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        QuitCheckWindow accepting = new(closes: true), refusing = new(closes: false);
+        try
+        {
+            Check(SuiteInstance.QuitWindow(accepting) && accepting.QuitRequests == 1, "A window that starts closing must count as quitting.");
+            Check(!SuiteInstance.QuitWindow(refusing) && refusing.QuitRequests == 1, "A window that stays open (Cancel) must count as cancelled.");
+        }
+        finally
+        {
+            refusing.Close();
+            application.MainWindow = previousMainWindow;
+            application.ShutdownMode = previousMode;
+        }
+    }
+
+    /// <summary>Stands in for the shell window: Quit either closes it or, like Cancel in the audio question, leaves it open.</summary>
+    private sealed class QuitCheckWindow(bool closes) : Window, Soltex.App.Shell.ISuiteWindow
+    {
+        public int QuitRequests { get; private set; }
+        public void ShowSuite() { }
+        public void OpenAudio() { }
+        public void RequestQuit()
+        {
+            QuitRequests++;
+            if (closes) Close();
+        }
     }
 
     private static AudioSessionInfo Session(AudioSessionKey key, double volume, double peak) =>

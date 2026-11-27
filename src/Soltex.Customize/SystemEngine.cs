@@ -11,6 +11,8 @@ public interface ISystemHost
     /// <summary>Start type, or null when the service is not installed.</summary>
     int? ServiceStart(string service);
     void SetServiceStart(string service, int startType);
+    /// <summary>Starts a service now (one that is already running counts as started). Hosts that cannot start services say so.</summary>
+    void StartService(string service) => throw new InvalidOperationException("Services cannot be started from here.");
     /// <summary>Enabled state, or null when the task does not exist.</summary>
     bool? TaskEnabled(string taskPath);
     void SetTaskEnabled(string taskPath, bool enabled);
@@ -164,6 +166,9 @@ public sealed class SystemEngine
                     if (Current(action) is not { } back || !Same(back, change.Before)) throw new IOException("Windows did not keep the previous state.");
                     journal.Append(change with { Kind = JournalKind.Undone, Before = change.After, After = change.Before, At = clock(), Note = null });
                     restored++;
+                    // Disabling stopped the service; back to automatic, it runs again now rather than only after a restart.
+                    if (action is ServiceAction service && change.Before == RegistryValue.Dword(2) && StartService(service.Service) is { } later && !notes.Contains(later))
+                        notes.Add(later);
                 }
                 catch (Exception error) when (IsHostFailure(error))
                 {
@@ -227,6 +232,9 @@ public sealed class SystemEngine
         try { before = Current(action); }
         catch (Exception error) when (IsHostFailure(error)) { return error.Message; }
         if (before is null || Same(before.Value, desired)) return null;
+        // Undo writes back only DWORD policy values, so a policy stored as another type is left alone rather than lost.
+        if (action is PolicyAction && before.Value is { Exists: true } stored && stored.Kind != ValueKind.DWord)
+            return "stored as another kind of value, so it was left as it is";
 
         (string path, string name) = Key(action);
         journal.Append(new(JournalKind.Intent, operation, item.Id, path, name, before.Value, desired, clock()));
@@ -262,6 +270,50 @@ public sealed class SystemEngine
         if (kept > 0) return new(item.Id, true, With("Changed since; kept", extra));
         if (item.RemovesApps) return new(item.Id, false, string.Join(" ", extra));
         return new(item.Id, true, With("Nothing left to undo", extra));
+    }
+
+    /// <summary>Starts a service whose automatic start was restored. Returns a note when it starts only after a restart.</summary>
+    private string? StartService(string service)
+    {
+        try
+        {
+            host.StartService(service);
+            return null;
+        }
+        catch (Exception error) when (IsHostFailure(error))
+        {
+            return "The " + service + " service starts again after a restart.";
+        }
+    }
+
+    /// <summary>
+    /// Resolves intents a crash left without a completion (the administrator helper stopped mid-change): what is on this
+    /// PC now decides whether the change took effect. Run by the helper before it changes anything; an intent whose state
+    /// cannot be read now stays open for the next run. Returns how many were resolved.
+    /// </summary>
+    public int Reconcile()
+    {
+        IReadOnlyList<JournalRecord> all = journal.Records;
+        HashSet<(Guid, string)> completed = [.. all.Where(r => r.Kind != JournalKind.Intent).Select(r => (r.OperationId, r.TargetKey))];
+        Dictionary<string, SystemItem> byId = SystemCatalog.All.ToDictionary(i => i.Id);
+        int resolved = 0;
+        foreach (JournalRecord intent in all.Where(r => r.Kind == JournalKind.Intent && !completed.Contains((r.OperationId, r.TargetKey))))
+        {
+            bool tookEffect = false;
+            if (byId.TryGetValue(intent.SettingId, out SystemItem? item) && Match(item, intent) is { } action && Same(intent.After, Desired(action)))
+            {
+                RegistryValue? now;
+                try { now = Current(action); }
+                catch (Exception error) when (IsHostFailure(error)) { continue; }
+                // A removed Store app is no longer on this PC at all, which is the removal having worked.
+                tookEffect = now is { } value ? Same(value, intent.After) : action is RemoveAppAction;
+            }
+            journal.Append(tookEffect
+                ? intent with { Kind = JournalKind.Recovered, At = clock(), Note = "The administrator helper stopped during this change; the change had taken effect." }
+                : intent with { Kind = JournalKind.Abandoned, At = clock(), Note = "The administrator helper stopped before this change took effect." });
+            resolved++;
+        }
+        return resolved;
     }
 
     private void Skip(JournalRecord change, RegistryValue now, string note) =>

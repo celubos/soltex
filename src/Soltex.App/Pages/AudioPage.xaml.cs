@@ -57,6 +57,36 @@ public partial class AudioPage : UserControl, IShellPage, IAsyncDisposable
             : [new("playback", "Mixer"), new("microphone", "Microphone"), new("apps", "Apps")];
         Tabs.ItemsSource = tabs;
         Tabs.SelectedIndex = 0;
+        StartSonarInBackground();
+    }
+
+    private string SonarDirectory => Path.Combine(context.Services.AudioPreferencesDirectory, "Channels");
+
+    /// <summary>
+    /// True when Sonar is installed and its device shortcuts (Ctrl+Alt+1/2) or automatic output selection are on. Those
+    /// must work from the moment the app starts, before (or without) the Sonar tab being opened, so the shell creates this
+    /// page at startup when this is true; with both off nothing about Sonar starts until its tab is opened.
+    /// </summary>
+    internal static bool SonarRunsInBackground(string audioPreferencesDirectory) =>
+        SonarInstalled && !AudioPreview.Enabled && MixerWorkspace.NeedsBackgroundService(Path.Combine(audioPreferencesDirectory, "Channels"), globalShortcuts: true);
+
+    /// <summary>
+    /// Initializes the Sonar workspace in its collapsed tab without activating it, so its shortcuts, device watcher and
+    /// output policy run. Only presentation (meters, ChatMix polling) waits for the tab.
+    /// </summary>
+    private void StartSonarInBackground()
+    {
+        if (!SonarRunsInBackground(context.Services.AudioPreferencesDirectory)) return;
+        _ = StartSonarInBackgroundAsync();
+    }
+
+    private async Task StartSonarInBackgroundAsync()
+    {
+        try { await EnsureSonarAsync(); }
+        catch (Exception error) when (error is IOException or InvalidOperationException or UnauthorizedAccessException or OperationCanceledException or ArgumentException)
+        {
+            context.Services.Report(NoticeSeverity.Caution, "Audio", "Sonar shortcuts and automatic output selection could not start: " + error.Message);
+        }
     }
 
     public Destination Destination => Destination.Audio;
@@ -84,24 +114,19 @@ public partial class AudioPage : UserControl, IShellPage, IAsyncDisposable
     internal const double MinimumContentWidth = 228;
 
     /// <summary>
-    /// Narrow windows (or a large text scale) get slimmer page padding so the content keeps its room. Below the
-    /// narrowest usable width the page scrolls sideways with its scroll bar showing, instead of crushing controls.
+    /// The padding is Shell.PagePadding, as on every other page (the shell narrows it in a narrow window), so the content
+    /// column lines up with theirs. Only below the narrowest usable width does the page scroll sideways, with its scroll
+    /// bar showing, instead of crushing controls.
     /// </summary>
     private void PageScroll_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        // The page's scroll bars are drawn over its edge, so the whole width is the page's.
-        double width = e.NewSize.Width;
-        Thickness standard = TryFindResource("Shell.PagePadding") is Thickness padding ? padding : new Thickness(40, 28, 40, 36);
-        double side = width >= 720 ? -1 : width >= 480 ? 24 : width >= 320 ? 12 : 8;
-        // The right side keeps room for the page's scroll bar, which is drawn over the page's edge.
-        double right = Math.Max(side, 16);
-        if (side < 0) PageContent.SetResourceReference(MarginProperty, "Shell.PagePadding");
-        else PageContent.Margin = new Thickness(side, standard.Top, right, standard.Bottom);
-        double used = side < 0 ? standard.Left + standard.Right : side + right;
-        bool scroll = width - used < MinimumContentWidth;
-        // A fixed width while scrolling: the column would otherwise take its full 900 px once the width is unlimited.
+        Thickness padding = PageContent.Margin;
+        double used = padding.Left + padding.Right;
+        bool scroll = e.NewSize.Width - used < MinimumContentWidth;
+        // A fixed width while scrolling: the column would otherwise take its full width once the width is unlimited.
+        // Otherwise the content fills the page (the column stops at its cap, left-aligned like every page's).
         PageContent.Width = scroll ? MinimumContentWidth + used : double.NaN;
-        PageContent.HorizontalAlignment = HorizontalAlignment.Left;
+        PageContent.HorizontalAlignment = scroll ? HorizontalAlignment.Left : HorizontalAlignment.Stretch;
         PageScroll.HorizontalScrollBarVisibility = scroll ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
     }
 
@@ -213,7 +238,7 @@ public partial class AudioPage : UserControl, IShellPage, IAsyncDisposable
             {
                 // A section of this page: no header of its own, the app's theme and the page's scrolling.
                 Embedded = true,
-                PreferencesDirectory = Path.Combine(context.Services.AudioPreferencesDirectory, "Channels"),
+                PreferencesDirectory = SonarDirectory,
                 EnableGlobalShortcuts = true,
                 // Sign-in start is owned by Settings now; the Sonar view must not register its own.
                 GetStartupEnabled = null,

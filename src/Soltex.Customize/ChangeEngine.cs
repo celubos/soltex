@@ -1,9 +1,15 @@
+using System.Globalization;
+
 namespace Soltex.Customize;
 
 public enum ChangeOutcome { Applied, AlreadyInPlace, NotApplicable, Refused, Failed }
 public enum UndoOutcome { Restored, ChangedSince, NothingToUndo, Failed }
 
 /// <summary>What is true right now for one setting.</summary>
+/// <param name="PolicyNotes">
+/// Notes shown with the setting: the catalogue's fixed remark (<see cref="SettingDefinition.Note"/>) first, then a policy
+/// that may also govern it.
+/// </param>
 public sealed record SettingState(
     SettingDefinition Definition,
     bool IsCalm,
@@ -53,6 +59,9 @@ public sealed class ChangeEngine
     /// <summary>What a change or undo says when Windows denied the write, instead of the raw access-denied error.</summary>
     public const string BlockedByWindowsMessage = "Windows doesn't let apps change this. Use Windows Settings instead.";
 
+    /// <summary>What a change says when a value is stored in a form this app does not change (so undo could not put it back).</summary>
+    public const string UnchangeableMessage = "This is stored in a form this app does not change, so it was left as it is.";
+
     /// <summary>Access denied: Windows (or a driver guarding the value) refused the write to this user's own key.</summary>
     private static bool IsAccessDenied(Exception error) => error is UnauthorizedAccessException or System.Security.SecurityException;
 
@@ -72,23 +81,24 @@ public sealed class ChangeEngine
     public SettingState Inspect(SettingDefinition definition)
     {
         RegistryValue[] current = definition.Targets.Select(t => registry.Read(RegistryHive2.CurrentUser, t.Path, t.Name)).ToArray();
-        bool calm = definition.Targets.Select((t, i) => Equivalent(current[i], t.Calm, t.Implied)).All(x => x);
-        bool windowsDefault = definition.Targets.Select((t, i) => Equivalent(current[i], t.WindowsDefault, t.Implied)).All(x => x);
+        bool calm = definition.Targets.Select((t, i) => Matches(t, current[i], t.Calm)).All(x => x);
+        bool windowsDefault = definition.Targets.Select((t, i) => Matches(t, current[i], t.WindowsDefault)).All(x => x);
         IReadOnlyList<SettingChoice> options = definition.Options;
         int choice = -1;
         for (int c = 0; c < options.Count && choice < 0; c++)
-            if (definition.Targets.Select((t, i) => Equivalent(current[i], options[c].Values[i], t.Implied)).All(x => x)) choice = c;
-        List<string> policies = [];
+            if (definition.Targets.Select((t, i) => Matches(t, current[i], options[c].Values[i])).All(x => x)) choice = c;
+        List<string> notes = [];
+        if (definition.Note is { Length: > 0 } note) notes.Add(note);
         if (definition.Policies.Any(hint => registry.Read(hint.Hive, hint.Path, hint.Name).Exists))
         {
-            policies.Add(IsHomeEdition()
+            notes.Add(IsHomeEdition()
                 ? "A policy for this is also set; Windows Home may ignore it."
                 : "A policy on this PC controls this, so a change here may not take effect.");
         }
         string? notApplicable = definition.MinimumBuild > 0 && windowsBuild > 0 && windowsBuild < definition.MinimumBuild
             ? "Needs a newer version of Windows 11."
             : null;
-        return new SettingState(definition, calm, windowsDefault, current, policies, notApplicable, LiveChanges(definition.Id).Length > 0) { Choice = choice };
+        return new SettingState(definition, calm, windowsDefault, current, notes, notApplicable, LiveChanges(definition.Id).Length > 0) { Choice = choice };
     }
 
     public IReadOnlyList<SettingState> InspectAll(IEnumerable<SettingDefinition> definitions) => definitions.Select(Inspect).ToArray();
@@ -104,7 +114,7 @@ public sealed class ChangeEngine
         SettingState state = Inspect(definition);
         if (state.NotApplicable is { } reason) return new(definition, ChangeOutcome.NotApplicable, reason);
         if (calm ? state.IsCalm : state.IsWindowsDefault) return new(definition, ChangeOutcome.AlreadyInPlace, "Already set.");
-        return Write(definition, definition.Targets.Select(t => calm ? t.Calm : t.WindowsDefault).ToArray(), notify,
+        return Write(definition, definition.Targets.Select(t => (RegistryValue?)(calm ? t.Calm : t.WindowsDefault)).ToArray(), notify,
             calm ? "Changed. " + definition.When + "." : "Back to the Windows default. " + definition.When + ".");
     }
 
@@ -118,22 +128,36 @@ public sealed class ChangeEngine
         SettingState state = Inspect(definition);
         if (state.NotApplicable is { } reason) return new(definition, ChangeOutcome.NotApplicable, reason);
         if (state.Choice == choice) return new(definition, ChangeOutcome.AlreadyInPlace, "Already set.");
-        return Write(definition, options[choice].Values, notify: true, "Changed. " + definition.When + ".");
+        return Write(definition, [.. options[choice].Values.Select(v => (RegistryValue?)v)], notify: true, "Changed. " + definition.When + ".");
     }
 
-    private ChangeResult Write(SettingDefinition definition, IReadOnlyList<RegistryValue> values, bool notify, string success)
+    /// <summary>
+    /// Writes the setting's values (<paramref name="values"/> in target order; null leaves that value alone). A masked
+    /// target gets its bits merged into the stored value. Nothing is written when any value is stored in a form this app
+    /// does not change.
+    /// </summary>
+    private ChangeResult Write(SettingDefinition definition, RegistryValue?[] values, bool notify, string success)
     {
         if (definition.Targets.Any(t => NeverTouch.IsDenied(RegistryHive2.CurrentUser, t.Path, t.Name)))
             return new(definition, ChangeOutcome.Refused, "This affects security or updates, so it is not changed.");
 
-        Guid operation = Guid.NewGuid();
-        List<(RegistryTarget Target, RegistryValue Before, RegistryValue After)> done = [];
+        List<(RegistryTarget Target, RegistryValue Before, RegistryValue Desired)> plan = [];
         for (int index = 0; index < definition.Targets.Count; index++)
         {
             RegistryTarget target = definition.Targets[index];
-            RegistryValue desired = values[index];
+            if (values[index] is not { } wanted) continue;
             RegistryValue before = registry.Read(RegistryHive2.CurrentUser, target.Path, target.Name);
-            if (Equivalent(before, desired, target.Implied)) continue;
+            if (Matches(target, before, wanted)) continue;
+            // A value of a type this app never writes could not be put back by undo, so it is not changed at all.
+            if (before is { Exists: true, Kind: ValueKind.Unsupported } || Compose(target, before, wanted) is not { } desired)
+                return new(definition, ChangeOutcome.Refused, UnchangeableMessage);
+            plan.Add((target, before, desired));
+        }
+
+        Guid operation = Guid.NewGuid();
+        List<(RegistryTarget Target, RegistryValue Before, RegistryValue After)> done = [];
+        foreach ((RegistryTarget target, RegistryValue before, RegistryValue desired) in plan)
+        {
             journal.Append(new(JournalKind.Intent, operation, definition.Id, target.Path, target.Name, before, desired, clock()));
             string? failure = null;
             bool blocked = false;
@@ -204,19 +228,25 @@ public sealed class ChangeEngine
         string? failure = null;
         foreach (JournalRecord change in live)
         {
+            RegistryTarget? target = TargetOf(definition, change);
             RegistryValue now = registry.Read(RegistryHive2.CurrentUser, change.Path, change.Name);
-            if (!Same(now, change.After))
+            if (!Holds(target, now, change.After))
             {
                 journal.Append(change with { Kind = JournalKind.UndoSkipped, Before = change.After, After = now, At = clock(), Note = "Changed since; the newer value was kept." });
                 kept++;
                 continue;
             }
+            // Normally exactly what was there before. When only other bits of a masked value changed since, just this
+            // setting's bits go back, so the newer bits are kept.
+            RegistryValue restore = change.Before;
+            if (target is { Mask: not 0 } masked && !Same(now, change.After) && Bits(masked, change.Before) is long bits)
+                restore = Compose(masked, now, RegistryValue.Dword(unchecked((int)bits))) ?? change.Before;
             try
             {
-                registry.Write(change.Path, change.Name, change.Before);
-                if (!Same(registry.Read(RegistryHive2.CurrentUser, change.Path, change.Name), change.Before))
+                registry.Write(change.Path, change.Name, restore);
+                if (!Same(registry.Read(RegistryHive2.CurrentUser, change.Path, change.Name), restore))
                     throw new IOException("Windows did not keep the previous value.");
-                journal.Append(change with { Kind = JournalKind.Undone, Before = change.After, After = change.Before, At = clock(), Note = null });
+                journal.Append(change with { Kind = JournalKind.Undone, Before = now, After = restore, At = clock(), Note = null });
                 restored++;
             }
             catch (Exception error) when (IsAccessDenied(error) || error is IOException)
@@ -268,7 +298,8 @@ public sealed class ChangeEngine
     /// Settings this app changed (and did not undo) whose values were changed back since, usually by a Windows update.
     /// </summary>
     public IReadOnlyList<SettingDefinition> Drifted(IEnumerable<SettingDefinition> catalogue) =>
-        [.. catalogue.Where(d => LiveChanges(d.Id) is { Length: > 0 } live && live.Any(r => !Same(registry.Read(RegistryHive2.CurrentUser, r.Path, r.Name), r.After)))];
+        [.. catalogue.Where(d => LiveChanges(d.Id) is { Length: > 0 } live
+                                 && live.Any(r => !Holds(TargetOf(d, r), registry.Read(RegistryHive2.CurrentUser, r.Path, r.Name), r.After)))];
 
     /// <summary>Writes this app's last values for a drifted setting again (journalled and undoable like any change).</summary>
     public ChangeResult Reapply(SettingDefinition definition)
@@ -276,9 +307,9 @@ public sealed class ChangeEngine
         ArgumentNullException.ThrowIfNull(definition);
         JournalRecord[] live = LiveChanges(definition.Id);
         if (live.Length == 0) return new(definition, ChangeOutcome.AlreadyInPlace, "Nothing to put back.");
-        RegistryValue[] values = [.. definition.Targets.Select(t =>
-            live.LastOrDefault(r => string.Equals(r.Path, t.Path, StringComparison.OrdinalIgnoreCase) && string.Equals(r.Name, t.Name, StringComparison.OrdinalIgnoreCase)) is { } record
-                ? record.After : registry.Read(RegistryHive2.CurrentUser, t.Path, t.Name))];
+        // Values this app did not change (or whose change was undone) are left as they are.
+        RegistryValue?[] values = [.. definition.Targets.Select(t =>
+            live.LastOrDefault(r => IsTarget(r, t)) is { } record ? Logical(t, record.After) : (RegistryValue?)null)];
         return Write(definition, values, notify: true, "Put back.");
     }
 
@@ -311,6 +342,62 @@ public sealed class ChangeEngine
     /// <summary>Same value, treating "not set" as the value Windows assumes when that is known.</summary>
     private static bool Equivalent(RegistryValue current, RegistryValue wanted, RegistryValue? implied) =>
         Same(current, wanted) || (implied is { } assumed && Same(current.Exists ? current : assumed, wanted.Exists ? wanted : assumed));
+
+    /// <summary>
+    /// Whether the stored value gives the setting the value <paramref name="wanted"/>: an equivalent value, or for a
+    /// masked target the same bits (counting "not set" as the whole value Windows assumes).
+    /// </summary>
+    private static bool Matches(RegistryTarget target, RegistryValue stored, RegistryValue wanted)
+    {
+        if (target.Mask == 0 || !wanted.Exists) return Equivalent(stored, wanted, target.Implied);
+        return Bits(target, stored) is long bits && Number(wanted) is long value && bits == (value & target.Mask);
+    }
+
+    /// <summary>
+    /// Whether a value still holds what this app wrote: equivalent to it, or for a masked target the same bits (other
+    /// bits may have changed since). A value of a target the setting no longer has must be exactly the same.
+    /// </summary>
+    private static bool Holds(RegistryTarget? target, RegistryValue now, RegistryValue written)
+    {
+        if (target is null) return Same(now, written);
+        if (target.Mask == 0) return Equivalent(now, written, target.Implied);
+        return Bits(target, now) is long a && Bits(target, written) is long b ? a == b : Same(now, written);
+    }
+
+    /// <summary>The value to store so the target gives <paramref name="wanted"/>; null when a masked value cannot be read as a number.</summary>
+    private static RegistryValue? Compose(RegistryTarget target, RegistryValue before, RegistryValue wanted)
+    {
+        if (target.Mask == 0 || !wanted.Exists) return wanted;
+        RegistryValue basis = before.Exists ? before : target.Implied ?? RegistryValue.Absent;
+        if (Number(basis) is not long number || Number(wanted) is not long bits) return null;
+        long next = (number & ~(long)target.Mask) | (bits & target.Mask);
+        // Written back in the value's own type: decimal text stays text.
+        return basis.Kind switch
+        {
+            ValueKind.DWord => RegistryValue.Dword(unchecked((int)next)),
+            ValueKind.QWord => RegistryValue.Qword(next),
+            _ => RegistryValue.FromText(next.ToString(CultureInfo.InvariantCulture))
+        };
+    }
+
+    /// <summary>The setting's own value of a stored value: its bits for a masked target, the value itself otherwise.</summary>
+    private static RegistryValue Logical(RegistryTarget target, RegistryValue stored) =>
+        target.Mask != 0 && stored.Exists && Bits(target, stored) is long bits ? RegistryValue.Dword(unchecked((int)bits)) : stored;
+
+    /// <summary>The target's bits of a stored value (or of the value Windows assumes when none is stored); null when it is not a number.</summary>
+    private static long? Bits(RegistryTarget target, RegistryValue stored) =>
+        Number(stored.Exists ? stored : target.Implied ?? RegistryValue.Absent) is long number ? number & target.Mask : null;
+
+    /// <summary>A DWORD, QWORD or decimal text value as a number; null otherwise.</summary>
+    private static long? Number(RegistryValue value) =>
+        value.Exists && value.Kind is ValueKind.DWord or ValueKind.QWord or ValueKind.Text
+        && long.TryParse(value.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out long number) ? number : null;
+
+    private static RegistryTarget? TargetOf(SettingDefinition definition, JournalRecord record) =>
+        definition.Targets.FirstOrDefault(t => IsTarget(record, t));
+
+    private static bool IsTarget(JournalRecord record, RegistryTarget target) =>
+        string.Equals(record.Path, target.Path, StringComparison.OrdinalIgnoreCase) && string.Equals(record.Name, target.Name, StringComparison.OrdinalIgnoreCase);
 
     private static bool Same(RegistryValue a, RegistryValue b) =>
         a.Exists == b.Exists && (!a.Exists || (a.Kind == b.Kind && string.Equals(a.Text, b.Text, StringComparison.Ordinal)));

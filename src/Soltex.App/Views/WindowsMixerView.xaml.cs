@@ -29,7 +29,11 @@ public partial class WindowsMixerView : UserControl, IAsyncDisposable
     private string? _routingDirectory;
     private WindowsApplicationRoutingWindow? _routingWindow;
     public ObservableCollection<WindowsSessionRow> Rows { get; } = [];
-    private sealed record DeviceChoice(string Id, string Label);
+    private sealed record DeviceChoice(string Id, string Label)
+    {
+        /// <summary>What a screen reader announces for the list item.</summary>
+        public override string ToString() => Label;
+    }
 
     public static readonly DependencyProperty IsCompactProperty = DependencyProperty.Register(nameof(IsCompact), typeof(bool), typeof(WindowsMixerView),
         new PropertyMetadata(false, (d, _) => ((WindowsMixerView)d).ArrangeDeviceRow()));
@@ -41,6 +45,7 @@ public partial class WindowsMixerView : UserControl, IAsyncDisposable
     public WindowsMixerView()
     {
         InitializeComponent(); DataContext = this;
+        Soltex.Audio.UI.AudioTheme.UseHostCheckBoxAccent(this);
         _timer.Tick += (_, _) => { if (!_reading) _readingTask = RefreshAsync(); };
         SizeChanged += (_, e) => IsCompact = e.NewSize.Width < CompactWidth;
     }
@@ -114,8 +119,17 @@ public partial class WindowsMixerView : UserControl, IAsyncDisposable
             var snapshot = await _sessions.GetSnapshotAsync(_lifetime.Token);
             if (!_disposed && _active) { _snapshot = snapshot; Apply(snapshot); }
         }
-        catch (Exception error) when (Expected(error)) { if (!_disposed) Feedback.Text = "Windows audio is unavailable: " + error.Message; }
+        catch (Exception error) when (Expected(error)) { if (!_disposed) ShowUnavailable(error.Message); }
         finally { _reading = false; }
+    }
+
+    /// <summary>Windows audio couldn't be read: levels go back to "not measured" rather than freezing on old readings.</summary>
+    internal void ShowUnavailable(string reason)
+    {
+        Feedback.Text = "Windows audio is unavailable: " + reason;
+        EndpointPeak.Level = -1;
+        EndpointPeak.ToolTip = "Level not available";
+        foreach (var row in Rows) row.ClearPeak();
     }
 
     private void Apply(AudioSessionSnapshot snapshot)
@@ -319,13 +333,22 @@ public sealed class WindowsSessionRow(AudioSessionKey key) : INotifyPropertyChan
         if (Detail != detail) { Detail = detail; Changed(nameof(Detail)); Changed(nameof(Details)); }
         double level = (session.Volume ?? 0) * 100;
         if (updateLevel && Level != level) { Level = level; Changed(nameof(Level)); Changed(nameof(LevelText)); }
-        double peak = session.Peak ?? 0;
+        // No reading is "not measured" (an empty meter), never made-up silence.
+        double peak = session.Peak ?? -1;
         if (Peak != peak) { Peak = peak; Changed(nameof(Peak)); }
         bool muted = session.Muted == true;
         if (Muted != muted) { Muted = muted; Changed(nameof(Muted)); Changed(nameof(MuteLabel)); Changed(nameof(MuteAccessibleName)); }
         if (CanControl != session.CanControl) { CanControl = session.CanControl; Changed(nameof(CanControl)); }
         if (CanRoute != previouslyRouteable) Changed(nameof(CanRoute));
-        Status = !CanControl ? "Windows doesn't allow changes to this one." : session.State == AudioSessionState.Active ? "Playing on this device" : "Not playing right now";
+        // "Muted" is the state word everywhere in Audio; the button beside it says Unmute.
+        Status = !CanControl ? "Windows doesn't allow changes to this one."
+            : (Muted ? "Muted · " : "") + (session.State == AudioSessionState.Active ? (Muted ? "playing on this device" : "Playing on this device") : (Muted ? "not playing right now" : "Not playing right now"));
+    }
+    /// <summary>The level can't be read right now: the meter shows "not measured".</summary>
+    public void ClearPeak()
+    {
+        if (Peak == -1) return;
+        Peak = -1; Changed(nameof(Peak));
     }
     private void Changed([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
