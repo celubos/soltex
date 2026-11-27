@@ -6,22 +6,26 @@ namespace Soltex.App;
 
 /// <summary>
 /// Command line. User switches: --tray, --audio (alias --mixer), --quit, --profile-dir &lt;absolute&gt;.
-/// Test switches (only with --render-smoke): --panel &lt;page&gt;, --theme light|dark, --scale &lt;100-200&gt;.
+/// Test switches (only with --render-smoke): --panel &lt;page&gt;, --theme light|dark, --scale &lt;100-200&gt;,
+/// --size &lt;width&gt;x&lt;height&gt; (window size in pixels; the canonical capture is 1280x820).
 /// </summary>
 internal sealed record SuiteLaunchOptions(
     string? ProfileDirectory, bool Audio, bool Tray, bool Quit, string? CapturePath, string? Panel,
-    ThemePreference? Theme = null, int? Scale = null)
+    ThemePreference? Theme = null, int? Scale = null, int? CaptureWidth = null, int? CaptureHeight = null)
 {
     public bool Mixer => Audio;
 
-    public static readonly string[] PanelNames = ["my-pc", "customize", "history", "audio", "audio-apps", "tools", "settings", "search", "taskbar", "start", "explorer", "appearance", "multitasking", "desktop"];
+    public static readonly string[] PanelNames = ["my-pc", "customize", "history", "audio", "audio-mic", "audio-apps", "audio-sonar", "tools", "settings", "search", "taskbar", "start", "explorer", "appearance", "multitasking", "desktop"];
+
+    /// <summary>Smallest and largest window a capture may use, in pixels.</summary>
+    internal const int MinimumCaptureWidth = 640, MaximumCaptureWidth = 3840, MinimumCaptureHeight = 480, MaximumCaptureHeight = 2160;
 
     public static SuiteLaunchOptions Parse(string[] args)
     {
         string? profile = null, capture = null, panel = null;
         bool audio = false, tray = false, quit = false;
         ThemePreference? theme = null;
-        int? scale = null;
+        int? scale = null, width = null, height = null;
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -51,12 +55,26 @@ internal sealed record SuiteLaunchOptions(
                         throw new ArgumentException("--scale must be a whole percentage from 100 to 200.");
                     scale = percent;
                     break;
+                case "--size":
+                    (width, height) = SizeValue(Value(args, ref i, "--size requires a size such as 1280x820."));
+                    break;
                 default: throw new ArgumentException("Unknown option: " + args[i]);
             }
         }
-        if ((panel is not null || theme is not null || scale is not null) && capture is null)
-            throw new ArgumentException("--panel, --theme and --scale are only for --render-smoke.");
-        return new(profile, audio, tray, quit, capture, panel, theme, scale);
+        if ((panel is not null || theme is not null || scale is not null || width is not null) && capture is null)
+            throw new ArgumentException("--panel, --theme, --scale and --size are only for --render-smoke.");
+        return new(profile, audio, tray, quit, capture, panel, theme, scale, width, height);
+    }
+
+    private static (int Width, int Height) SizeValue(string text)
+    {
+        string[] parts = text.Split('x');
+        if (parts.Length == 2 &&
+            int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out int width) &&
+            int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out int height) &&
+            width is >= MinimumCaptureWidth and <= MaximumCaptureWidth && height is >= MinimumCaptureHeight and <= MaximumCaptureHeight)
+            return (width, height);
+        throw new ArgumentException($"--size must be <width>x<height> in pixels, from {MinimumCaptureWidth}x{MinimumCaptureHeight} to {MaximumCaptureWidth}x{MaximumCaptureHeight}.");
     }
 
     private static string Value(string[] args, ref int index, string message)

@@ -75,6 +75,8 @@ public partial class SettingsPage : UserControl, IShellPage
             ShortcutGrid.Children.Add(keys); ShortcutGrid.Children.Add(action);
         }
         DataFolderText.Text = "Folder: " + context.Services.DataRoot;
+        // A long path is trimmed on a narrow page; the tooltip has all of it.
+        DataFolderText.ToolTip = context.Services.DataRoot;
         EventsList.ItemsSource = context.Services.Notices;
         context.Services.Notices.CollectionChanged += (_, _) => UpdateEventsEmpty();
         UpdateEventsEmpty();

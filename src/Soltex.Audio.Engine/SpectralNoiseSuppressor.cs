@@ -6,18 +6,21 @@ namespace Soltex.Audio.Engine;
 /// All arrays and FFT roots are allocated on the control thread. Each instance owns one channel.</summary>
 internal sealed class SpectralNoiseSuppressor
 {
-    private readonly double[] input, output, window, gains;
+    private readonly double[] input, output, window, gains, previousClean;
     private readonly Complex[] bins, roots;
     private readonly int[] reversed;
     private double noisePower, minimumGain;
+    private bool decisionDirected;
     private readonly double smoothing;
     private int position, untilTransform;
+    // Decision-directed (Ephraim–Malah) weighting of the previous frame's clean-speech estimate.
+    private const double PriorWeight = 0.98, MinimumPriorSnr = 0.003;
     internal int LatencyFrames => input.Length;
 
     internal SpectralNoiseSuppressor(int sampleRate, SpectralNoiseSuppressionSettings settings)
     {
         int size = 1; while (size < sampleRate * .02) size <<= 1;
-        input = new double[size]; output = new double[size]; window = new double[size]; gains = new double[size];
+        input = new double[size]; output = new double[size]; window = new double[size]; gains = new double[size]; previousClean = new double[size / 2 + 1];
         bins = new Complex[size]; roots = new Complex[size / 2]; reversed = new int[size];
         int bits = BitOperations.Log2((uint)size);
         for (int i = 0; i < size; i++)
@@ -38,6 +41,7 @@ internal sealed class SpectralNoiseSuppressor
     {
         noisePower = Math.Pow(10, settings.NoiseFloorDb / 10) * input.Length * .5;
         minimumGain = Math.Pow(10, -settings.ReductionDb / 20);
+        decisionDirected = settings.SmoothResidual;
     }
 
     internal double Process(double sample)
@@ -57,8 +61,21 @@ internal sealed class SpectralNoiseSuppressor
         for (int i = 0; i <= size / 2; i++)
         {
             double power = bins[i].Real * bins[i].Real + bins[i].Imaginary * bins[i].Imaginary;
-            double target = Math.Max(minimumGain, Math.Sqrt(Math.Max(0, 1 - noisePower / Math.Max(power, 1e-30))));
-            double gain = target + (gains[i] - target) * smoothing;
+            double gain;
+            if (decisionDirected)
+            {
+                // A-priori SNR mixes last frame's clean estimate with this frame's excess power; the Wiener gain then
+                // varies slowly in noise-only bins, which removes isolated "musical" tones without smearing onsets.
+                double posterior = power / noisePower;
+                double prior = Math.Max(MinimumPriorSnr, PriorWeight * previousClean[i] / noisePower + (1 - PriorWeight) * Math.Max(posterior - 1, 0));
+                gain = Math.Max(minimumGain, prior / (1 + prior));
+                previousClean[i] = gain * gain * power;
+            }
+            else
+            {
+                double target = Math.Max(minimumGain, Math.Sqrt(Math.Max(0, 1 - noisePower / Math.Max(power, 1e-30))));
+                gain = target + (gains[i] - target) * smoothing;
+            }
             gains[i] = gain; bins[i] *= gain;
             if (i > 0 && i < size / 2) bins[size - i] *= gain;
         }

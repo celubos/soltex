@@ -30,6 +30,9 @@ public sealed class WasapiBridge : IDisposable
     private readonly WasapiOut render;
     private readonly BoundedFloatBus bus;
     private readonly OutputCeilingSampleProvider outputGuard;
+    private readonly AdaptiveResamplingSampleProvider resampler;
+    private readonly RenderHeadSampleProvider head;
+    private readonly int latencyMs;
     private readonly WaveFormat captureFormat;
     private readonly float[] captureSamples;
     private Exception? failure;
@@ -38,8 +41,11 @@ public sealed class WasapiBridge : IDisposable
     public PcmDspProcessor Processor { get; }
     public WaveFormat CaptureFormat => captureFormat;
     public WaveFormat RenderFormat => render.OutputWaveFormat;
+    /// <summary>Clock-drift loop and resampler telemetry (correction ppm, held fill, underruns).</summary>
+    public AdaptiveResamplingSampleProvider Resampler => resampler;
+    /// <summary>Dropped counts queue overflow plus backlog skipped after a stall; silent counts priming and concealed underruns.</summary>
     public BridgeStatus Status => new(started && !disposed && Volatile.Read(ref failure) is null,
-        bus.BufferedFrames, bus.DroppedFrames, bus.SilentFrames, Processor.LimitedSamples,
+        bus.BufferedFrames, bus.DroppedFrames + resampler.DiscardedFrames, bus.SilentFrames + resampler.InsertedSilenceFrames, Processor.LimitedSamples,
         Volatile.Read(ref failure)?.Message) { OutputPeak = started && !disposed ? outputGuard.Peak : null };
 
     public void UpdateSettings(DspSettings settings)
@@ -86,11 +92,13 @@ public sealed class WasapiBridge : IDisposable
                 (1, 1) or (2, 2) => source,
                 _ => throw new NotSupportedException("Bridge output currently supports mono or stereo endpoints.")
             };
-            if (source.WaveFormat.SampleRate != destination.SampleRate)
-                source = new WdlResamplingSampleProvider(source, destination.SampleRate);
+            // Always through the sinc converter: it also absorbs the capture/render clock drift (same nominal rate too).
+            resampler = new AdaptiveResamplingSampleProvider(source, destination.SampleRate, bus);
             acquiredRender = new WasapiOut(acquiredOutput, AudioClientShareMode.Shared, true, configuration.LatencyMs);
-            outputGuard = new OutputCeilingSampleProvider(source, configuration.Dsp.OutputCeiling);
-            acquiredRender.Init(outputGuard.ToWaveProvider());
+            outputGuard = new OutputCeilingSampleProvider(resampler, configuration.Dsp.OutputCeiling);
+            head = new RenderHeadSampleProvider(outputGuard);
+            latencyMs = configuration.LatencyMs;
+            acquiredRender.Init(head.ToWaveProvider());
             input = acquiredInput; output = acquiredOutput; capture = acquiredCapture; render = acquiredRender;
             capture.DataAvailable += OnDataAvailable;
             capture.RecordingStopped += OnStopped;
@@ -113,9 +121,17 @@ public sealed class WasapiBridge : IDisposable
         catch { Stop(); throw; }
     }
 
+    /// <summary>Starts the 5 ms fade to silence without waiting, so several bridges can be stopped together.</summary>
+    public void BeginStop()
+    {
+        if (!disposed && started && render.PlaybackState == PlaybackState.Playing) head.BeginFadeOut();
+    }
+
     public void Stop()
     {
         if (disposed) return;
+        // Fade the render to silence first so the cable/speakers never get a cut mid-waveform (bounded wait).
+        if (started && render.PlaybackState == PlaybackState.Playing && Volatile.Read(ref failure) is null) head.FadeOutAndWait(latencyMs);
         // No callback joins its own worker. Control owner performs orderly shutdown.
         started = false;
         try { capture.StopRecording(); }
@@ -124,6 +140,7 @@ public sealed class WasapiBridge : IDisposable
 
     private void OnDataAvailable(object? sender, WaveInEventArgs args)
     {
+        AudioThreadScheduling.RegisterCurrentThread();
         try
         {
             int blockBytes = captureSamples.Length / captureFormat.Channels * captureFormat.BlockAlign;

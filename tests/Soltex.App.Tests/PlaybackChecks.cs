@@ -24,7 +24,7 @@ internal static class PlaybackChecks
             new("sonar-game", "SteelSeries Sonar - Gaming (SteelSeries Sonar Virtual Audio Device)", true, true),
             new("cable-out", "CABLE Output (VB-Audio Virtual Cable)", true, true) { TransportId = "vb-audio-base-cable" },
             new("headset", "Speakers (USB Audio Interface)", false, true),
-            new("monitor", "LG ULTRAGEAR+ (NVIDIA High Definition Audio)", false, true)
+            new("monitor", "Gaming Monitor (High Definition Audio Device)", false, true)
         ];
 
         private HostSnapshot Snapshot() => new(false, profile, [], Endpoints, null) { StartRequested = started };
@@ -58,9 +58,12 @@ internal static class PlaybackChecks
         try
         {
             Pump();
-            IndependentMixerChannel[] rows = ((IEnumerable<IndependentMixerChannel>)view.ChannelList.ItemsSource).ToArray();
+            IndependentMixerChannel[] rows = view.PlaybackChannels.ToArray();
             Program.True(rows.Select(r => r.Bus).SequenceEqual([AudioBus.Game, AudioBus.Chat, AudioBus.Media, AudioBus.Aux]),
                 "Playback must list Game, Chat, Media and Aux and leave the microphone to its own card.");
+            Program.True(((IEnumerable<IndependentMixerChannel>)view.ChannelList.ItemsSource).Select(r => r.Bus)
+                .SequenceEqual([AudioBus.Microphone, AudioBus.Game, AudioBus.Chat, AudioBus.Media, AudioBus.Aux]),
+                "The strips must show the microphone first, then the four playback channels, in one set that wraps together.");
             Program.True(view.StagedBar.Visibility == Visibility.Collapsed, "Nothing is staged before an edit.");
 
             IndependentMixerChannel game = rows[0];
@@ -119,7 +122,7 @@ internal static class PlaybackChecks
             Pump();
             Program.True(view.OutputChoice.SelectedItem is null && !view.SwitchOutput.IsEnabled,
                 "With no channel playing there is no shared output to show, and Switch has nothing to do.");
-            IndependentMixerChannel[] rows = ((IEnumerable<IndependentMixerChannel>)view.ChannelList.ItemsSource).ToArray();
+            IndependentMixerChannel[] rows = view.PlaybackChannels.ToArray();
             IndependentMixerChannel game = rows[0], chat = rows[1];
             game.Enabled = true;
             game.CaptureEndpointId = "cable-out";
@@ -140,6 +143,61 @@ internal static class PlaybackChecks
                 "A refused Apply must say why while the edits stay staged; got: '" + view.StatusLine.Text + "'");
             Program.True(workspace.LastOperationFailed, "The workspace must report the refused change.");
             Program.True(connection.Starts == 0, "No playback action in this test may start audio.");
+        }
+        finally
+        {
+            window.Close();
+            Wait(workspace.ShutdownAsync());
+        }
+    }
+
+    /// <summary>A helper that cannot be reached until <see cref="Available"/> is set.</summary>
+    private sealed class OfflineConnection : IIndependentMixerConnection
+    {
+        private readonly ScriptedConnection inner = new();
+        public bool Available { get; set; }
+        public int Connects { get; private set; }
+        public Task<HostSnapshot> ConnectAsync(CancellationToken cancellationToken = default)
+        {
+            Connects++;
+            return Available ? inner.ConnectAsync(cancellationToken) : Task.FromException<HostSnapshot>(new IOException("the audio engine did not answer."));
+        }
+        public Task<HostSnapshot> ReadAsync(CancellationToken cancellationToken = default) => inner.ReadAsync(cancellationToken);
+        public Task<HostSnapshot> ApplyAsync(AudioHostProfile profile, CancellationToken cancellationToken = default) => inner.ApplyAsync(profile, cancellationToken);
+        public Task<HostSnapshot> StartAsync(CancellationToken cancellationToken = default) => inner.StartAsync(cancellationToken);
+        public Task<HostSnapshot> StopAsync(CancellationToken cancellationToken = default) => inner.StopAsync(cancellationToken);
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    public static void PlaybackExplainsNoConnectionAndRetries()
+    {
+        OfflineConnection connection = new();
+        IndependentMixerWorkspace workspace = new();
+        Wait(workspace.InitializeAsync(connection));
+        PlaybackView view = new(workspace);
+        Window window = new()
+        {
+            Content = view, ShowInTaskbar = false, ShowActivated = false,
+            WindowStartupLocation = WindowStartupLocation.Manual, Left = -32000, Top = -32000,
+            Background = (System.Windows.Media.Brush)Application.Current.FindResource("SolidBackgroundFillColorBaseBrush")
+        };
+        RenderSmokeCapture.ConfigureWindow(window);
+        window.Show();
+        try
+        {
+            Pump();
+            Program.True(view.OfflineBar.Visibility == Visibility.Visible && view.OfflineReason.Text.Contains("did not answer", StringComparison.Ordinal),
+                "Without a connection the Mixer must say why; got: '" + view.OfflineReason.Text + "'");
+            Program.True(view.StateText.Text == "Not connected" && !view.StartStopButton.IsEnabled, "Without a connection the state must say so and Start must wait.");
+            Program.True(string.IsNullOrEmpty(view.StatusLine.Text), "The reason must be shown once, not again on the status line.");
+            SaveRender(window, "playback-offline-dark");
+
+            connection.Available = true;
+            view.RetryButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+            while (view.OfflineBar.Visibility == Visibility.Visible && DateTime.UtcNow < deadline) { Pump(); Thread.Sleep(10); }
+            Program.True(connection.Connects >= 2 && view.OfflineBar.Visibility == Visibility.Collapsed && view.StateText.Text == "Stopped",
+                "Try again must reconnect and then show the normal stopped state.");
         }
         finally
         {

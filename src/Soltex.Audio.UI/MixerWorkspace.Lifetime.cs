@@ -25,6 +25,8 @@ public partial class MixerWorkspace : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(options);
         _hostOptions = options;
         InitializeComponent();
+        // The standalone mixer carries its own palette and control styles; embedded, the host's apply instead.
+        if (!options.Embedded) AudioTheme.Apply(this);
         InitializeChatMix();
         DataContext = _model;
         _stateTimer.Tick += StateTick;
@@ -32,14 +34,24 @@ public partial class MixerWorkspace : IAsyncDisposable
         PreviewMouseLeftButtonDown += (_, e) => _dragOrigin = e.GetPosition(this);
         if (options.Embedded) ApplyEmbeddedPresentation();
         StatusText.Text = "Connecting to Sonar…";
+        ShowConnection(SonarConnection.Connecting);
     }
 
-    /// <summary>The host page supplies the title, padding, scrolling and theme; the mixer keeps only its controls.</summary>
+    /// <summary>
+    /// A section of the host's page: the host supplies padding, scrolling, colours and control styles; the mixer keeps
+    /// a section heading that matches the host's other sections.
+    /// </summary>
     private void ApplyEmbeddedPresentation()
     {
-        MixerTitle.Visibility = Visibility.Collapsed;
+        MixerTitle.Text = "SteelSeries Sonar";
+        MixerTitle.FontSize = 20;
         BackendNote.Visibility = Visibility.Collapsed;
         MixerLayout.Margin = new Thickness(0);
+        HeaderRow.Margin = new Thickness(0, 0, 0, 16);
+        // The host page scrolls. Filling the viewport would only keep the height of an earlier, narrower layout
+        // and stretch the strips when the window widens.
+        System.Windows.Data.BindingOperations.ClearBinding(MixerLayout, MinHeightProperty);
+        MixerViewport.VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled;
         Background = System.Windows.Media.Brushes.Transparent;
         HostThemeBridge.Attach(this);
     }

@@ -29,7 +29,7 @@ setting.
 | Page | What it does | Main code |
 | --- | --- | --- |
 | Home | De-Windows profile, protection status, processor/memory/storage/network use, busy apps, Windows version | `Pages/MyPcPage`, `Pages/DeWindowsPanel`, `Pages/SystemPanel`, `Soltex.Monitoring`, `Soltex.Security` |
-| Taskbar | Taskbar options, taskbar look (clear, acrylic, blur, solid) and style rules | `Pages/CustomizePage`, `Pages/TaskbarLookPanel`, `Shell/TaskbarLook.cs`, native helper |
+| Taskbar | Taskbar options, taskbar look per state (clear, acrylic, blur, opaque; desktop, window visible or maximized, Start, Search, Task View, battery saver) and style rules | `Pages/CustomizePage`, `Pages/TaskbarLookPanel`, `Shell/TaskbarLook.cs`, `Shell/TaskbarStates.cs`, native helper |
 | Start | Start layout, recommendations and search options | `Pages/CustomizePage`, `Soltex.Customize` |
 | File Explorer | Extensions, context menus, navigation pane | `Pages/CustomizePage`, `Soltex.Customize` |
 | Appearance | Dark mode, transparency, accent colour, theme schedule | `Pages/CustomizePage`, `Personalize/` |

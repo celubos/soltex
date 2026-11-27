@@ -31,10 +31,35 @@ public partial class WindowsMixerView : UserControl, IAsyncDisposable
     public ObservableCollection<WindowsSessionRow> Rows { get; } = [];
     private sealed record DeviceChoice(string Id, string Label);
 
+    public static readonly DependencyProperty IsCompactProperty = DependencyProperty.Register(nameof(IsCompact), typeof(bool), typeof(WindowsMixerView),
+        new PropertyMetadata(false, (d, _) => ((WindowsMixerView)d).ArrangeDeviceRow()));
+
+    /// <summary>True below <see cref="CompactWidth"/>: each name gets its own line and its controls move below it.</summary>
+    public bool IsCompact { get => (bool)GetValue(IsCompactProperty); set => SetValue(IsCompactProperty, value); }
+    internal const double CompactWidth = 540;
+
     public WindowsMixerView()
     {
         InitializeComponent(); DataContext = this;
         _timer.Tick += (_, _) => { if (!_reading) _readingTask = RefreshAsync(); };
+        SizeChanged += (_, e) => IsCompact = e.NewSize.Width < CompactWidth;
+    }
+
+    /// <summary>The device row follows the same two layouts as the app rows.</summary>
+    private void ArrangeDeviceRow()
+    {
+        bool compact = IsCompact;
+        SessionCard.Padding = compact ? new Thickness(14, 4, 14, 8) : new Thickness(20, 6, 20, 10);
+        Grid.SetColumnSpan(DeviceName, compact ? 4 : 1);
+        DeviceName.Margin = compact ? new Thickness(0, 0, 0, 8) : new Thickness(0, 0, 16, 0);
+        Grid.SetRow(EndpointLevel, compact ? 1 : 0);
+        Grid.SetColumn(EndpointLevel, compact ? 0 : 1);
+        Grid.SetColumnSpan(EndpointLevel, compact ? 3 : 1);
+        Grid.SetRow(DeviceValue, compact ? 1 : 0);
+        Grid.SetColumn(DeviceValue, compact ? 3 : 2);
+        DeviceValue.Margin = compact ? new Thickness(0) : new Thickness(0, 0, 12, 0);
+        Grid.SetRow(EndpointMute, compact ? 2 : 0);
+        EndpointMute.Margin = compact ? new Thickness(0, 8, 0, 0) : new Thickness(0);
     }
 
     public void Activate()
@@ -44,6 +69,18 @@ public partial class WindowsMixerView : UserControl, IAsyncDisposable
         _active = true; _timer.Start(); if (!_reading) _readingTask = RefreshAsync();
     }
     public void Deactivate() { _active = false; _timer.Stop(); }
+
+    /// <summary>
+    /// Shows a supplied snapshot without reading Windows audio or creating any audio service (render captures and
+    /// layout checks). Volume and mute stay inert because no session service exists.
+    /// </summary>
+    internal void ShowPreview(AudioSessionSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (_disposed || _active) return;
+        _snapshot = snapshot;
+        Apply(snapshot);
+    }
 
     public void ConfigureRoutingDirectory(string directory)
     {
@@ -103,9 +140,9 @@ public partial class WindowsMixerView : UserControl, IAsyncDisposable
             var selected = endpoints.FirstOrDefault(d => d.Id == _selectedId);
             EndpointLevel.IsEnabled = selected?.Volume is not null; EndpointMute.IsEnabled = selected?.Muted is not null;
             if (_endpointPending is null && selected?.Volume is { } volume) EndpointLevel.Value = volume * 100;
-            EndpointValue.Text = selected?.Volume is { } value ? $"{value * 100:0}%" : "—";
+            EndpointValue.Text = selected?.Volume is { } value ? (value * 100).ToString("0", CultureInfo.CurrentCulture) : "—";
             EndpointMute.Content = selected?.Muted == true ? "Unmute" : "Mute";
-            EndpointPeak.Value = selected?.Peak ?? 0;
+            EndpointPeak.Level = selected?.Peak ?? -1;
             EndpointPeak.ToolTip = selected?.Peak is null ? "Level not available" : "Device output level";
             var sessions = selected?.Sessions.Where(s => s.State != AudioSessionState.Expired).ToArray() ?? [];
             foreach (var row in Rows.Where(r => sessions.All(s => s.Key != r.Key)).ToArray()) Rows.Remove(row);
@@ -248,6 +285,8 @@ public sealed class WindowsSessionRow(AudioSessionKey key) : INotifyPropertyChan
     public AudioSessionKey Key { get; } = key;
     public string Name { get; private set; } = "";
     public string Detail { get; private set; } = "";
+    /// <summary>The full name and where the app runs from, for the name's tooltip (long names are trimmed).</summary>
+    public string Details => Detail.Length == 0 || Detail == Name ? Name : Name + Environment.NewLine + Detail;
     public double Level { get; private set; }
     public string LevelText => Level.ToString("0", CultureInfo.CurrentCulture);
     public double Peak { get; private set; }
@@ -274,10 +313,10 @@ public sealed class WindowsSessionRow(AudioSessionKey key) : INotifyPropertyChan
         {
             Name = name; Changed(nameof(Name)); Changed(nameof(AccessibleName));
             Changed(nameof(MuteAccessibleName)); Changed(nameof(MeterAccessibleName));
-            Changed(nameof(RouteAccessibleName));
+            Changed(nameof(RouteAccessibleName)); Changed(nameof(Details));
         }
         string detail = session.ExecutablePath ?? name;
-        if (Detail != detail) { Detail = detail; Changed(nameof(Detail)); }
+        if (Detail != detail) { Detail = detail; Changed(nameof(Detail)); Changed(nameof(Details)); }
         double level = (session.Volume ?? 0) * 100;
         if (updateLevel && Level != level) { Level = level; Changed(nameof(Level)); Changed(nameof(LevelText)); }
         double peak = session.Peak ?? 0;

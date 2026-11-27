@@ -104,7 +104,11 @@ public static class MicrophoneSetup
         ?? destinations.FirstOrDefault(d => d.Available && d.Receiving?.StartsWith("CABLE Output", StringComparison.OrdinalIgnoreCase) == true)?.Id
         ?? destinations.FirstOrDefault(d => d.Available)?.Id;
 
-    /// <summary>Replaces the processing with a preset. Keeps the input choice, level trim and mute.</summary>
+    /// <summary>
+    /// Replaces the processing with a preset. Keeps the input choice, level trim and mute. The presets that add make-up
+    /// gain under a 0.89 ceiling also turn the safety limiter on, so loud words are turned down instead of clipped. Only a
+    /// newly chosen preset does this: a saved preset is still recognised (<see cref="Identify"/>) and kept as it is.
+    /// </summary>
     public static DspSettings ApplySound(MicrophoneSound sound, DspSettings current)
     {
         ArgumentNullException.ThrowIfNull(current);
@@ -116,19 +120,20 @@ public static class MicrophoneSetup
         EqBand[] natural = DspSettings.FlatBands();
         natural[0] = new EqBand(80, 0, 0.7071067811865476, EqFilterType.HighPass);
         CompressorSettings leveling = new(Enabled: true, ThresholdDb: -24, Ratio: 3, AttackMs: 10, ReleaseMs: 150, MakeupDb: 6);
+        SafetyLimiterSettings limiter = new(Enabled: true);
         return sound switch
         {
             MicrophoneSound.Clean => clean,
-            MicrophoneSound.Natural => clean with { HeadroomDb = -3, OutputCeiling = 0.89, Bands = natural, Compressor = leveling },
+            MicrophoneSound.Natural => clean with { HeadroomDb = -3, OutputCeiling = 0.89, Bands = natural, Compressor = leveling, Limiter = limiter },
             MicrophoneSound.Broadcast => clean with
             {
-                HeadroomDb = -6, OutputCeiling = 0.89, Bands = BroadcastBands(),
+                HeadroomDb = -6, OutputCeiling = 0.89, Bands = BroadcastBands(), Limiter = limiter,
                 Compressor = new CompressorSettings(Enabled: true, ThresholdDb: -26, Ratio: 4, AttackMs: 8, ReleaseMs: 120, MakeupDb: 9),
                 Gate = new GateSettings(Enabled: true, ThresholdDb: -55, HysteresisDb: 6, AttackMs: 3, HoldMs: 120, ReleaseMs: 150, ClosedGainDb: -24)
             },
             MicrophoneSound.NoisyRoom => clean with
             {
-                HeadroomDb = -3, OutputCeiling = 0.89, Bands = natural, Compressor = leveling,
+                HeadroomDb = -3, OutputCeiling = 0.89, Bands = natural, Compressor = leveling, Limiter = limiter,
                 NoiseSuppression = new SpectralNoiseSuppressionSettings(Enabled: true, NoiseFloorDb: -50, ReductionDb: 15),
                 NoiseAttenuation = new DownwardExpanderSettings(Enabled: true, ThresholdDb: -48, Ratio: 2, MaximumAttenuationDb: 18)
             },
@@ -145,6 +150,10 @@ public static class MicrophoneSetup
         return MicrophoneSound.Custom;
     }
 
+    /// <summary>
+    /// True when two settings sound the same. The safety limiter is left out: it only acts on peaks above the ceiling,
+    /// and presets saved before it existed (limiter off) must still be recognised as the preset they are.
+    /// </summary>
     public static bool SameSound(DspSettings a, DspSettings b)
     {
         ArgumentNullException.ThrowIfNull(a);
@@ -171,7 +180,9 @@ public static class MicrophoneSetup
         HostEndpoint? destination = endpoints.FirstOrDefault(e => e.Id == destinationId && !e.IsCapture);
         if (microphone?.TransportId is not null && microphone.TransportId == destination?.TransportId)
             return (null, "That microphone and destination are the two ends of one cable, which would feed your voice back into itself. Choose your physical microphone.");
-        DspSettings dsp = sound == MicrophoneSound.Custom ? current.Dsp : ApplySound(sound, current.Dsp);
+        // The preset the saved settings already match is kept as saved (a save that changes only the device must not
+        // rewrite the sound); only a different, newly chosen preset replaces the processing.
+        DspSettings dsp = sound == MicrophoneSound.Custom || (current.Enabled && sound == Identify(current.Dsp)) ? current.Dsp : ApplySound(sound, current.Dsp);
         return (current with
         {
             Enabled = true, CaptureEndpointId = microphoneId, RenderEndpointId = destinationId, ManualPin = true,

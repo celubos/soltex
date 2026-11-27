@@ -245,7 +245,7 @@ public sealed class LiveWallpaper : IDisposable
     private readonly DispatcherTimer settle, retry;
     private Window? window;
     private MediaElement? media;
-    private Shell.MaximizedWatcher? watcher;
+    private Shell.WindowEvents? watcher;
     private Desktop.DesktopEvents? events;
     private string? subject;
     private nint layer;
@@ -358,7 +358,7 @@ public sealed class LiveWallpaper : IDisposable
         tries = 0;
         _ = SetParent(handle, layer);
         Fit(handle);
-        watcher ??= new Shell.MaximizedWatcher(() => { settle.Stop(); settle.Start(); });
+        watcher ??= new Shell.WindowEvents(() => { settle.Stop(); settle.Start(); });
         Pause();
         SetStatus(LiveWallpaperStatus.Playing);
     }
@@ -420,7 +420,7 @@ public sealed class LiveWallpaper : IDisposable
     {
         settle.Stop();
         if (media is null || layer == 0) return;
-        if (Shell.MaximizedWatcher.AnyMaximized()) media.Pause(); else media.Play();
+        if (Shell.TaskbarStateProbe.AnyMaximized()) media.Pause(); else media.Play();
     }
 
     /// <summary>The desktop's wallpaper layer (a WorkerW window), or 0 if it was not found.</summary>

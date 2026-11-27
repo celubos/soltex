@@ -201,6 +201,8 @@ internal static class Program
         Check(fake.Disposals == 1, "workspace shutdown drains the owned connection exactly once");
         MicrophonePathChecks.Run(Check);
         MicrophoneSetupChecks.Run(Check);
+        ResponsiveLayoutChecks.Run(Check);
+        DspWindowChecks.Run(Check);
         Console.WriteLine($"{checks}/{checks} independent UI checks passed. Inert host fixture only; no process launch, device stream or Windows audio write.");
     }
 

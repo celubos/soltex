@@ -36,7 +36,7 @@ Soltex turns off the ads, tips and tracking in Windows, restyles the taskbar, ad
 - Update control: Windows asks before downloading updates and never restarts while you are signed in. Defender, the firewall, UAC and Windows Update itself are never turned off.
 
 **Taskbar**, inspired by [TranslucentTB](https://github.com/TranslucentTB/TranslucentTB) and [Windhawk](https://github.com/ramensoftware/windhawk) mods
-- Clear, blurred, acrylic or tinted taskbar, with a different look when a window is maximized.
+- Clear, blurred, acrylic or tinted taskbar, with its own look while a window is open or maximized, Start, Search or Task View is open, or battery saver is on.
 - Hide the running-app line, choose what the clock shows, larger or smaller icons, square button corners.
 - Scroll over the taskbar to change the volume.
 

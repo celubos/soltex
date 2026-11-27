@@ -3,4 +3,28 @@
     <ResourceDictionary Source="Tokens.xaml"/>
     <ResourceDictionary Source="Controls.xaml"/>
   </ResourceDictionary.MergedDictionaries>
+  <!-- Keys the mixer shares with the suite's Studio theme. Inside the suite HostThemeBridge points them at the
+       Studio brushes; the standalone mixer uses these, built from the graphite tokens. -->
+  <LinearGradientBrush x:Key="MeterBrush" StartPoint="0,1" EndPoint="0,0">
+    <GradientStop Color="{StaticResource SignalColor}" Offset="0"/>
+    <GradientStop Color="{StaticResource SignalColor}" Offset="0.62"/>
+    <GradientStop Color="{StaticResource WarningColor}" Offset="0.84"/>
+    <GradientStop Color="{StaticResource DangerColor}" Offset="1"/>
+  </LinearGradientBrush>
+  <LinearGradientBrush x:Key="MeterHorizontalBrush" StartPoint="0,0" EndPoint="1,0">
+    <GradientStop Color="{StaticResource SignalColor}" Offset="0"/>
+    <GradientStop Color="{StaticResource SignalColor}" Offset="0.62"/>
+    <GradientStop Color="{StaticResource WarningColor}" Offset="0.84"/>
+    <GradientStop Color="{StaticResource DangerColor}" Offset="1"/>
+  </LinearGradientBrush>
+  <SolidColorBrush x:Key="CardBrush" Color="{StaticResource SurfaceColor}"/>
+  <SolidColorBrush x:Key="WarningSurfaceBrush" Color="{StaticResource AccentQuietColor}"/>
+  <SolidColorBrush x:Key="GoodSurfaceBrush" Color="{StaticResource SignalQuietColor}"/>
+  <SolidColorBrush x:Key="DangerSurfaceBrush" Color="{StaticResource AccentQuietColor}"/>
+  <SolidColorBrush x:Key="ChannelMasterBrush" Color="{StaticResource TextBrightColor}"/>
+  <SolidColorBrush x:Key="ChannelGameBrush" Color="{StaticResource AccentColor}"/>
+  <SolidColorBrush x:Key="ChannelChatBrush" Color="{StaticResource SignalColor}"/>
+  <SolidColorBrush x:Key="ChannelMediaBrush" Color="{StaticResource WarningColor}"/>
+  <SolidColorBrush x:Key="ChannelAuxBrush" Color="{StaticResource AccentFocusColor}"/>
+  <SolidColorBrush x:Key="ChannelMicBrush" Color="{StaticResource DangerTextColor}"/>
 </ResourceDictionary>

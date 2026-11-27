@@ -21,7 +21,7 @@ internal static class LayoutChecks
             Checks.That(Math.Abs(window.ActualWidth - width) < 1 && Math.Abs(window.ActualHeight - height) < 1,
                 "Window minimum constraints prevented the requested logical viewport.");
             var vertical = Checks.Named<ScrollViewer>(window, "MixerViewport");
-            var horizontal = Checks.Named<ScrollViewer>(window, "ChannelViewport");
+            Checks.Render(window, renderDirectory, $"mixer-{width}x{height}-top.png");
             var linked = Checks.Named<ComboBox>(window, "LinkedDevice");
             var peer = UIElementAutomationPeer.CreatePeerForElement(linked);
             var automationBounds = peer.GetBoundingRectangle();
@@ -31,11 +31,32 @@ internal static class LayoutChecks
                 "Playback selector must expose the standard expansion automation pattern.");
 
             var faders = Checks.Descendants(window).OfType<Slider>().Where(s => s.Orientation == Orientation.Vertical).ToArray();
-            Checks.That(faders.Length == 6, "All six current channel faders must remain in the layout.");
-            Checks.That(faders.All(s => s.ActualHeight >= 70), "Short windows must scroll instead of collapsing usable fader travel.");
-            if (width == 1240 && height == 810)
-                Checks.That(horizontal.ScrollableWidth < 1 && vertical.ScrollableHeight < 1, "Normal size must show the complete mixer without scrolling.");
+            Checks.That(faders.Length == 6, "All six channel faders must remain in the layout.");
+            Checks.That(faders.All(s => s.ActualHeight >= 100), "Short windows must scroll instead of collapsing usable fader travel.");
+            Checks.That(vertical.ScrollableWidth < 1, "The mixer must never need sideways scrolling: strips wrap into rows instead.");
 
+            // Strips wrap into even rows and never cover each other.
+            var stripList = Checks.Named<ItemsControl>(window, "ChannelStrips");
+            var strips = Enumerable.Range(0, stripList.Items.Count).Select(i => stripList.ItemContainerGenerator.ContainerFromIndex(i)).OfType<FrameworkElement>().ToArray();
+            Checks.That(strips.Length == 6, "All six channel strips must be laid out.");
+            var stripBounds = strips.Select(s => s.TransformToAncestor(vertical).TransformBounds(new Rect(s.RenderSize))).ToArray();
+            for (int i = 0; i < stripBounds.Length; i++)
+                for (int j = i + 1; j < stripBounds.Length; j++)
+                    Checks.That(Rect.Intersect(stripBounds[i], stripBounds[j]) is not { IsEmpty: false, Width: > 1, Height: > 1 }, "Channel strips overlap.");
+            if (width == 1240 && height == 810)
+            {
+                Checks.That(vertical.ScrollableHeight < 1, "Normal size must show the complete mixer without scrolling.");
+                Checks.That(stripBounds.Select(b => Math.Round(b.Top)).Distinct().Count() == 1, "Normal size must show all six strips in one row.");
+            }
+
+            // Nothing past the right edge: every control fits the viewport's width.
+            foreach (var control in Checks.Descendants(Checks.Named<Grid>(window, "MixerLayout")).OfType<Control>()
+                .Where(c => c.IsVisible && c is Button or CheckBox or ComboBox or Slider or TextBox))
+            {
+                var bounds = control.TransformToAncestor(vertical).TransformBounds(new Rect(control.RenderSize));
+                Checks.That(bounds.Left >= -1 && bounds.Right <= vertical.ViewportWidth + 1,
+                    $"{control.GetType().Name} '{(control as ContentControl)?.Content ?? control.Name}' runs past the side of a {width} px window.");
+            }
             foreach (string caption in new[] { "Devices", "Processing", "Reconnect", "Settings" })
             {
                 var button = Checks.Descendants(window).OfType<Button>().Single(b => string.Equals(b.Content as string, caption, StringComparison.Ordinal));
@@ -47,9 +68,8 @@ internal static class LayoutChecks
             var link = Checks.Named<CheckBox>(window, "LinkOutputs");
             var linkBounds = link.TransformToAncestor(vertical).TransformBounds(new Rect(link.RenderSize));
             Checks.That(!deviceBounds.IntersectsWith(linkBounds), "Device selector and linked-output toggle must not overlap.");
-            Checks.Render(window, renderDirectory, $"mixer-{width}x{height}-top.png");
 
-            horizontal.ScrollToRightEnd(); vertical.ScrollToEnd(); window.UpdateLayout();
+            vertical.ScrollToEnd(); window.UpdateLayout();
             var footer = Checks.Named<TextBlock>(window, "StatusText");
             var footerBounds = footer.TransformToAncestor(vertical).TransformBounds(new Rect(footer.RenderSize));
             Checks.That(footerBounds.Top >= -1 && footerBounds.Bottom <= vertical.ActualHeight + 1, "Footer must be reachable at scroll end.");
@@ -60,14 +80,8 @@ internal static class LayoutChecks
                     "Visible scrollbars must have a painted thumb, including when theme token names change.");
             }
             Checks.Render(window, renderDirectory, $"mixer-{width}x{height}-end.png");
-
-            horizontal.ScrollToLeftEnd(); vertical.ScrollToTop(); window.UpdateLayout();
-            var lastInput = Checks.Descendants(Checks.Named<ItemsControl>(window, "ChannelStrips")).OfType<ComboBox>().Last();
-            lastInput.BringIntoView(); window.UpdateLayout();
-            var lastBounds = lastInput.TransformToAncestor(horizontal).TransformBounds(new Rect(lastInput.RenderSize));
-            Checks.That(lastBounds.Left >= -1 && lastBounds.Right <= horizontal.ActualWidth + 1,
-                "A request to reveal the final channel must make its device control reachable.");
-            Console.WriteLine($"  Simulated {width}x{height} DIP; fader minimum {faders.Min(s => s.ActualHeight):F0}; selector UIA {automationBounds.Width:F0}x{automationBounds.Height:F0}");
+            vertical.ScrollToTop(); window.UpdateLayout();
+            Console.WriteLine($"  Simulated {width}x{height} DIP; fader minimum {faders.Min(s => s.ActualHeight):F0}; strip rows {stripBounds.Select(b => Math.Round(b.Top)).Distinct().Count()}; selector UIA {automationBounds.Width:F0}x{automationBounds.Height:F0}");
         }
         finally { await window.Workspace.ShutdownAsync(); window.Close(); }
     }

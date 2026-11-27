@@ -29,4 +29,8 @@ Global shortcut capability defaults off. When enabled by the host, user settings
 
 The workspace keeps backend boundaries: the five-bus mixer uses the optional installed Sonar development adapter, while independent Processing uses Soltex's PCM engine and explicit supplied endpoints. It installs no driver, changes no default endpoints during initialization, and does not enable GG/Sonar. Hosts have separate process singletons; running both hosts does not imply cross-process exclusion or exclusive audio control ownership.
 
+The layout reflows instead of scrolling sideways: header actions and side controls move below their row when narrow (`ResponsiveRow`), and the six channel strips wrap into even rows (`AdaptiveGrid`: 6, 3 + 3, 2 + 2 + 2, one per row). Standalone, the workspace merges its own palette and control styles; embedded, it uses the host's styles, with the palette keys pointed at the host theme (`HostThemeBridge`). `SignalMeter` rises at once, falls back smoothly and keeps a short peak-hold mark, animating only while something moves and while shown.
+
+`ShowPreview(snapshot, chatMix, peaks)` and `ShowUnavailablePreview(reason)` show supplied Sonar state through the normal presentation path without contacting Sonar, reading devices or saving preferences; the suite's render captures and layout checks use them. They are refused once the workspace is initialized.
+
 Offline regression tests instantiate this actual control without backend initialization and verify layout, scoped themes, child ownership/reuse, processing presets and asynchronous shutdown. They do not claim live routing/hardware or mixed-monitor DPI acceptance.

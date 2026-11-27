@@ -35,6 +35,7 @@ public partial class MixerWorkspace : UserControl
         if (_disposed || !_initialized) return;
         bool entered = false;
         StatusText.Text = "Connecting to the installed Sonar engine…";
+        ShowConnection(SonarConnection.Connecting);
         try
         {
             await _operations.WaitAsync(_lifetime.Token); entered = true;
@@ -61,9 +62,10 @@ public partial class MixerWorkspace : UserControl
         foreach (var application in _model.Applications) { application.Status = "Connection unavailable"; application.Routes.Clear(); }
         LinkedDevice.IsEnabled = false;
         ChatMixSlider.IsEnabled = false;
-        ChatMixStatus.Text = "ChatMix isn't available. Turn on Sonar and reconnect.";
+        ChatMixStatus.Text = "ChatMix needs Sonar. It comes back when Sonar does.";
         StatusText.Text = "Sonar isn't available. Turn it on in SteelSeries GG, then choose Reconnect.";
         StatusText.ToolTip = error;
+        ShowConnection(SonarConnection.Unavailable);
     }
 
     private async void ReconnectClick(object sender, RoutedEventArgs e) => await ConnectAsync();
@@ -116,6 +118,7 @@ public partial class MixerWorkspace : UserControl
             if (outputChanged) OutputsChanged?.Invoke(this, EventArgs.Empty);
             if (!snapshot.IsReady) StatusText.Text = "Turn on Sonar in SteelSeries GG to use its channels.";
             else StatusText.Text = "Connected to Sonar. Audio keeps playing when you close this window.";
+            ShowConnection(snapshot.IsReady ? SonarConnection.Connected : SonarConnection.Off);
         }
         finally { _applying = false; }
         ScheduleOutputPolicy(snapshot);

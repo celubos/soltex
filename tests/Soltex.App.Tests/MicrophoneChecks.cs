@@ -256,6 +256,68 @@ internal static class MicrophoneChecks
         finally { window.Close(); }
     }
 
+    public static void ProcessingEditorKeepsLimiterAndSmoothBackground()
+    {
+        DspSettings saved = new()
+        {
+            OutputCeiling = 0.89,
+            NoiseSuppression = new SpectralNoiseSuppressionSettings(Enabled: true, NoiseFloorDb: -55, ReductionDb: 12, SmoothResidual: true),
+            Limiter = new SafetyLimiterSettings(Enabled: true, ReleaseMs: 300, TruePeak: false)
+        };
+        foreach (bool microphone in new[] { true, false })
+        {
+            ProcessingEditor editor = new(saved, microphone);
+            Window window = Host(new System.Windows.Controls.ScrollViewer { Content = editor });
+            try
+            {
+                Pump();
+                System.Windows.Controls.CheckBox limiter = Find<System.Windows.Controls.CheckBox>(editor, "Safety limiter");
+                System.Windows.Controls.CheckBox smooth = Find<System.Windows.Controls.CheckBox>(editor, "Smooth background");
+                Program.True(limiter.IsChecked == true && smooth.IsChecked == true, "The editor must show the saved limiter and smooth background.");
+                Program.True(System.Windows.Automation.AutomationProperties.GetHelpText(limiter) == "Catches peaks above the ceiling. Adds 1.6 ms." &&
+                    System.Windows.Automation.AutomationProperties.GetHelpText(smooth) == "Smoother background, slightly different sound.",
+                    "Both switches must carry their short note.");
+                DspSettings untouched = editor.Result();
+                Program.True(untouched.Limiter == saved.Limiter && untouched.NoiseSuppression == saved.NoiseSuppression && untouched.OutputCeiling == saved.OutputCeiling,
+                    "Opening and saving without changes must keep both settings exactly.");
+
+                Find<System.Windows.Controls.Slider>(editor, "Starts at").Value = -30;
+                Find<System.Windows.Controls.Slider>(editor, "Strength").Value = 20;
+                DspSettings edited = editor.Result();
+                Program.True(edited.Limiter == saved.Limiter && edited.NoiseSuppression is { SmoothResidual: true, ReductionDb: 20, NoiseFloorDb: -55 } &&
+                    edited.Compressor.ThresholdDb == -30, "Unrelated edits must keep the limiter (with its unseen settings) and smooth background.");
+
+                limiter.IsChecked = false;
+                smooth.IsChecked = false;
+                DspSettings off = editor.Result();
+                Program.True(off.Limiter is { Enabled: false, ReleaseMs: 300, TruePeak: false } && off.NoiseSuppression is { SmoothResidual: false, ReductionDb: 20 },
+                    "Turning the switches off must change only those two settings.");
+                limiter.IsChecked = true;
+                Program.True(editor.Result().Limiter == saved.Limiter, "Turning the limiter back on must restore it as saved.");
+            }
+            finally { window.Close(); }
+        }
+
+        // A saved Natural preset from before the limiter stays Natural and keeps its limiter off; choosing a preset turns it on.
+        DspSettings oldNatural = MicrophoneSetup.ApplySound(MicrophoneSound.Natural, new DspSettings()) with { Limiter = new SafetyLimiterSettings() };
+        ProcessingEditor presets = new(oldNatural, microphone: true);
+        Window host = Host(new System.Windows.Controls.ScrollViewer { Content = presets });
+        try
+        {
+            Pump();
+            Program.True(presets.PresetChoice?.SelectedItem is MicrophoneSoundChoice { Sound: MicrophoneSound.Natural } && !presets.Result().Limiter.Enabled,
+                "A saved Natural preset must still read as Natural and keep its limiter off.");
+            Find<System.Windows.Controls.CheckBox>(presets, "Safety limiter").IsChecked = true;
+            Program.True(presets.PresetChoice?.SelectedItem is MicrophoneSoundChoice { Sound: MicrophoneSound.Natural },
+                "The limiter is not part of a preset's sound: switching it must not turn the preset into Custom.");
+            presets.PresetChoice!.SelectedItem = MicrophoneSetup.Sounds.First(s => s.Sound == MicrophoneSound.Broadcast);
+            Pump();
+            Program.True(presets.Result().Limiter.Enabled && MicrophoneSetup.Identify(presets.Result()) == MicrophoneSound.Broadcast,
+                "A newly chosen Broadcast preset must turn the limiter on.");
+        }
+        finally { host.Close(); }
+    }
+
     private static T Find<T>(DependencyObject root, string name) where T : FrameworkElement
     {
         Queue<DependencyObject> queue = new([root]);

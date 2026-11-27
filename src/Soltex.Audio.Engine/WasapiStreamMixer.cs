@@ -34,6 +34,7 @@ public sealed class WasapiStreamMixer : IDisposable
     private Exception? failure;
     private volatile bool started, disposed;
     private bool hasStarted;
+    private readonly int latencyMs;
     public WasapiStreamMixStatus Status => new(started && !disposed && Volatile.Read(ref failure) is null,
         Volatile.Read(ref failure)?.Message, renders[0].Guard.Peak, renders[1].Guard.Peak,
         renders[0].Sum.LimitedSamples, renders[1].Sum.LimitedSamples,
@@ -64,11 +65,12 @@ public sealed class WasapiStreamMixer : IDisposable
             _ = source.Personal.Target(); _ = source.Stream.Target();
         }
         MMDeviceEnumerator GetEnumerator() => enumerator ??= new();
+        latencyMs = configuration.LatencyMs;
         try
         {
             foreach (var source in configuration.Sources) captures.Add(new CapturePath(GetEnumerator, source, configuration, RecordFailure, captureFactory));
-            renders.Add(new RenderPath(GetEnumerator, configuration.PersonalRenderEndpointId, captures.Select(c => c.Source.Personal).ToArray(), configuration, OnStopped, renderFactory));
-            renders.Add(new RenderPath(GetEnumerator, configuration.StreamRenderEndpointId, captures.Select(c => c.Source.Stream).ToArray(), configuration, OnStopped, renderFactory));
+            renders.Add(new RenderPath(GetEnumerator, configuration.PersonalRenderEndpointId, captures.Select(c => (c.Source.Personal, c.Source.PersonalBus)).ToArray(), configuration, OnStopped, renderFactory));
+            renders.Add(new RenderPath(GetEnumerator, configuration.StreamRenderEndpointId, captures.Select(c => (c.Source.Stream, c.Source.StreamBus)).ToArray(), configuration, OnStopped, renderFactory));
         }
         catch (Exception error)
         {
@@ -100,7 +102,16 @@ public sealed class WasapiStreamMixer : IDisposable
 
     public void Stop()
     {
-        if (disposed) return; started = false;
+        if (disposed) return;
+        if (started && Volatile.Read(ref failure) is null)
+        {
+            // Fade every output to silence together (bounded), so stopping never cuts a waveform on either destination.
+            foreach (var render in renders) if (render.Output.PlaybackState == PlaybackState.Playing) render.Head.BeginFadeOut();
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            while (renders.Any(r => r.Output.PlaybackState == PlaybackState.Playing && !r.Head.Silenced) && clock.ElapsedMilliseconds < 60) Thread.Sleep(2);
+            if (renders.Any(r => r.Head.Silenced)) Thread.Sleep(Math.Clamp(latencyMs + 5, 0, 600));
+        }
+        started = false;
         List<Exception> errors = [];
         foreach (var capture in captures) Attempt(capture.Stop, errors);
         foreach (var render in renders) Attempt(render.Output.Stop, errors);
@@ -165,6 +176,7 @@ public sealed class WasapiStreamMixer : IDisposable
         }
         private void Data(object? sender, WaveInEventArgs args)
         {
+            AudioThreadScheduling.RegisterCurrentThread();
             try
             {
                 int bytes = decoded.Length / format.Channels * format.BlockAlign;
@@ -193,9 +205,11 @@ public sealed class WasapiStreamMixer : IDisposable
         public IWavePlayer Output { get; }
         public StreamMixSumProvider Sum { get; }
         public OutputCeilingSampleProvider Guard { get; }
-        internal RenderPath(Func<MMDeviceEnumerator> getEnumerator, string endpointId, ISampleProvider[] sources, WasapiStreamMixConfiguration config,
+        public RenderHeadSampleProvider Head { get; }
+        internal RenderPath(Func<MMDeviceEnumerator> getEnumerator, string endpointId, (ISampleProvider Provider, BoundedFloatBus Bus)[] sends, WasapiStreamMixConfiguration config,
             EventHandler<StoppedEventArgs> stopped, Func<string, int, IWavePlayer?>? factory)
         {
+            var sources = new ISampleProvider[sends.Length];
             EndpointId = endpointId; IWavePlayer? output = null;
             try
             {
@@ -211,13 +225,16 @@ public sealed class WasapiStreamMixer : IDisposable
                 else format = output.OutputWaveFormat ?? throw new InvalidOperationException("An owned output must declare its format before initialization.");
                 for (int i = 0; i < sources.Length; i++)
                 {
-                    sources[i] = (sources[i].WaveFormat.Channels, format.Channels) switch
-                    { (1, 2) => new MonoToStereoSampleProvider(sources[i]), (2, 1) => new StereoToMonoSampleProvider(sources[i]) { LeftVolume = .5f, RightVolume = .5f },
-                        (1, 1) or (2, 2) => sources[i], _ => throw new NotSupportedException("Stream-mix outputs currently support mono or stereo.") };
-                    if (sources[i].WaveFormat.SampleRate != format.SampleRate) sources[i] = new WdlResamplingSampleProvider(sources[i], format.SampleRate);
+                    var send = sends[i].Provider;
+                    sources[i] = (send.WaveFormat.Channels, format.Channels) switch
+                    { (1, 2) => new MonoToStereoSampleProvider(send), (2, 1) => new StereoToMonoSampleProvider(send) { LeftVolume = .5f, RightVolume = .5f },
+                        (1, 1) or (2, 2) => send, _ => throw new NotSupportedException("Stream-mix outputs currently support mono or stereo.") };
+                    // Each capture clock is reconciled with this output's clock by its own drift-compensating sinc converter.
+                    sources[i] = new AdaptiveResamplingSampleProvider(sources[i], format.SampleRate, sends[i].Bus);
                 }
                 Sum = new(sources, config.OutputCeiling); Guard = new(Sum, config.OutputCeiling);
-                output.Init(Guard.ToWaveProvider());
+                Head = new RenderHeadSampleProvider(Guard);
+                output.Init(Head.ToWaveProvider());
                 Output = output; Output.PlaybackStopped += stopped;
             }
             catch { try { output?.Dispose(); } finally { device?.Dispose(); } throw; }

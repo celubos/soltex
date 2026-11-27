@@ -10,6 +10,10 @@ public partial class MixerWorkspace
     public static readonly DependencyProperty IsCompactMixerLayoutProperty = DependencyProperty.Register(
         nameof(IsCompactMixerLayout), typeof(bool), typeof(MixerWorkspace), new PropertyMetadata(false));
 
+    /// <summary>
+    /// True below 920 px. The layout reflows on its own (rows stack, strips wrap); hosts may still read this to adapt
+    /// their own surroundings.
+    /// </summary>
     public bool IsCompactMixerLayout
     {
         get => (bool)GetValue(IsCompactMixerLayoutProperty);
@@ -18,19 +22,6 @@ public partial class MixerWorkspace
 
     private void MixerWindowSizeChanged(object sender, SizeChangedEventArgs e) =>
         IsCompactMixerLayout = e.NewSize.Width < 920;
-
-    private void ChannelViewportChanged(object sender, ScrollChangedEventArgs e)
-    {
-        if (ChannelScrollHint is not null)
-            ChannelScrollHint.Visibility = ChannelViewport.ScrollableWidth > 1 ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private void ChannelViewportMouseWheel(object sender, MouseWheelEventArgs e)
-    {
-        if ((Keyboard.Modifiers & ModifierKeys.Shift) == 0 || ChannelViewport.ScrollableWidth <= 0) return;
-        ChannelViewport.ScrollToHorizontalOffset(ChannelViewport.HorizontalOffset - e.Delta);
-        e.Handled = true;
-    }
 
     private void MixerViewportMouseWheel(object sender, MouseWheelEventArgs e)
     {
@@ -47,8 +38,8 @@ public partial class MixerWorkspace
             }
             return;
         }
-        // Existing faders deliberately ignore the wheel. On constrained viewports, wheel-over-fader
-        // scrolls the workspace instead of trapping the gesture or accidentally changing volume.
+        // Faders deliberately ignore the wheel. On constrained viewports, wheel-over-fader scrolls the workspace
+        // instead of trapping the gesture or accidentally changing volume.
         for (var source = e.OriginalSource as DependencyObject; source is not null;)
         {
             if (source is Slider)
@@ -71,5 +62,33 @@ public partial class MixerWorkspace
                 ? VisualTreeHelper.GetParent(source) : LogicalTreeHelper.GetParent(source);
         }
         return false;
+    }
+
+    private enum SonarConnection { Connecting, Connected, Off, Unavailable }
+
+    /// <summary>The badge beside the title and, when Sonar can't be used, the notice with the next step.</summary>
+    private void ShowConnection(SonarConnection state)
+    {
+        (string text, string background, string foreground) = state switch
+        {
+            SonarConnection.Connected => ("Connected", "GoodSurfaceBrush", "SignalBrush"),
+            SonarConnection.Off => ("Sonar is off", "WarningSurfaceBrush", "WarningBrush"),
+            SonarConnection.Unavailable => ("Not running", "DangerSurfaceBrush", "DangerBrush"),
+            _ => ("Connecting…", "QuietBrush", "TextBrush")
+        };
+        ConnectionText.Text = text;
+        ConnectionBadge.SetResourceReference(Border.BackgroundProperty, background);
+        ConnectionText.SetResourceReference(TextBlock.ForegroundProperty, foreground);
+        SonarNotice.Visibility = state is SonarConnection.Off or SonarConnection.Unavailable ? Visibility.Visible : Visibility.Collapsed;
+        if (state == SonarConnection.Off)
+        {
+            SonarNoticeTitle.Text = "Sonar is off";
+            SonarNoticeText.Text = "Turn on Sonar in SteelSeries GG to use its channels here, then choose Try again.";
+        }
+        else if (state == SonarConnection.Unavailable)
+        {
+            SonarNoticeTitle.Text = "Sonar isn't running";
+            SonarNoticeText.Text = "Open SteelSeries GG and turn on Sonar, then choose Try again. Your Sonar settings are kept.";
+        }
     }
 }

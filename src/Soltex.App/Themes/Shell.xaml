@@ -130,6 +130,50 @@
         </StackPanel>
     </DataTemplate>
 
+    <!-- Icon-only navigation item for the narrow rail: same selection pill, hover fill and focus ring; the label moves
+         into the tooltip, and the accessible name stays the label. -->
+    <Style x:Key="Shell.NavItemCompact" TargetType="ListBoxItem">
+        <Setter Property="Height" Value="{DynamicResource Shell.NavItemHeight}" />
+        <Setter Property="Margin" Value="2,2" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        <Setter Property="AutomationProperties.Name" Value="{Binding Label}" />
+        <Setter Property="AutomationProperties.HelpText" Value="{Binding Description}" />
+        <Setter Property="ToolTip" Value="{Binding CompactTip}" />
+        <Setter Property="ToolTipService.Placement" Value="Right" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Grid>
+                        <Border x:Name="Fill" CornerRadius="10" Background="Transparent" />
+                        <Border x:Name="Pill" Width="4" Height="20" CornerRadius="2" HorizontalAlignment="Left"
+                                Background="{DynamicResource AccentFillColorDefaultBrush}" Visibility="Collapsed" />
+                        <Border x:Name="Focus" CornerRadius="10" BorderThickness="2" Visibility="Collapsed"
+                                BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}" />
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Fill" Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Fill" Property="Background" Value="{DynamicResource Studio.SelectedBrush}" />
+                            <Setter TargetName="Pill" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="Focus" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <DataTemplate x:Key="Shell.NavItemCompactTemplate">
+        <TextBlock Style="{StaticResource Shell.Glyph}" Text="{Binding Glyph}" FontSize="16" HorizontalAlignment="Center" />
+    </DataTemplate>
+
     <!-- Severity-coloured message bar. Tag carries the severity name: Information, Success, Caution, Critical. -->
     <Style x:Key="Shell.InfoBar" TargetType="Border">
         <Setter Property="CornerRadius" Value="12" />

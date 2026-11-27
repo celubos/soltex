@@ -60,11 +60,12 @@
                         <Button x:Name="ChooseRustDesk" Content="Choose RustDesk…" Margin="0,0,8,8" Click="ChooseRustDesk_Click" />
                     </WrapPanel>
                     <TextBlock Style="{StaticResource Shell.Body}" Text="Help someone else" Margin="0,8,0,4" FontWeight="SemiBold" />
-                    <StackPanel Orientation="Horizontal">
-                        <TextBox x:Name="PeerId" Width="240" Margin="0,0,8,0" AutomationProperties.Name="Their RustDesk ID" TextChanged="PeerId_TextChanged" />
-                        <Button x:Name="ConnectButton" Content="Connect" IsEnabled="False" Click="Connect_Click"
+                    <!-- Wraps: on a narrow page Connect moves below the box instead of being cut off. -->
+                    <WrapPanel>
+                        <TextBox x:Name="PeerId" Width="240" Margin="0,0,8,8" AutomationProperties.Name="Their RustDesk ID" TextChanged="PeerId_TextChanged" />
+                        <Button x:Name="ConnectButton" Content="Connect" IsEnabled="False" Margin="0,0,0,8" Click="Connect_Click"
                                 AutomationProperties.HelpText="Opens RustDesk to connect to the ID you entered" />
-                    </StackPanel>
+                    </WrapPanel>
                     <TextBlock x:Name="PeerHint" Style="{StaticResource Shell.Secondary}" Margin="0,4,0,0" Text="Enter the ID shown in their RustDesk window." />
                     <Expander Header="Technical details" Margin="0,10,0,0" AutomationProperties.Name="Remote help technical details">
                         <TextBlock x:Name="RemoteTechnical" Style="{StaticResource Shell.Secondary}" Margin="0,6,0,0" />

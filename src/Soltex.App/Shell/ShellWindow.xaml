@@ -5,25 +5,27 @@
         Title="{x:Static app:ProductIdentity.DisplayName}" Width="1180" Height="780" MinWidth="760" MinHeight="540"
         WindowStartupLocation="CenterScreen" UseLayoutRounding="True"
         Background="{DynamicResource SolidBackgroundFillColorBaseBrush}">
-    <Grid x:Name="ScaleRoot">
+    <Grid x:Name="ScaleRoot" SizeChanged="ScaleRoot_SizeChanged">
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="240" />
+            <ColumnDefinition x:Name="RailColumn" Width="240" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
 
         <!-- Navigation pane. The footer is declared before the main list so the main list fills the rest;
-             TabIndex keeps keyboard order the same as the visual order (search, pages, then History and Settings). -->
-        <DockPanel Grid.Column="0" Margin="10,18,6,14">
+             TabIndex keeps keyboard order the same as the visual order (search, pages, then History and Settings).
+             When the page would get too narrow (a small window or a large text scale) the pane becomes an icon rail:
+             the labels move into tooltips and the accessible names stay. -->
+        <DockPanel x:Name="Rail" Grid.Column="0" Margin="10,18,6,14">
             <TextBlock x:Name="ProductNameText" DockPanel.Dock="Top" Text="{x:Static app:ProductIdentity.DisplayName}" FontSize="16" FontWeight="SemiBold"
                        Margin="16,4,0,16" Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
             <Button x:Name="SearchButton" DockPanel.Dock="Top" KeyboardNavigation.TabIndex="0" Margin="6,0,6,16" Padding="14,9" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
                     AutomationProperties.Name="Search settings and tools" AutomationProperties.AcceleratorKey="Ctrl+K"
                     ToolTip="Search settings and tools (Ctrl+K)" Click="SearchButton_Click">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Left" Style="{StaticResource Shell.Glyph}" Text="&#xE721;" Margin="0,0,10,0" FontSize="14" />
-                    <TextBlock DockPanel.Dock="Right" Text="Ctrl+K" FontSize="12" Foreground="{DynamicResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" />
-                    <TextBlock Text="Search" Foreground="{DynamicResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                    <TextBlock x:Name="SearchGlyph" DockPanel.Dock="Left" Style="{StaticResource Shell.Glyph}" Text="&#xE721;" Margin="0,0,10,0" FontSize="14" />
+                    <TextBlock x:Name="SearchShortcut" DockPanel.Dock="Right" Text="Ctrl+K" FontSize="12" Foreground="{DynamicResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" />
+                    <TextBlock x:Name="SearchLabel" Text="Search" Foreground="{DynamicResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
                 </DockPanel>
             </Button>
             <ListBox x:Name="FooterNav" DockPanel.Dock="Bottom" KeyboardNavigation.TabIndex="2" Background="Transparent" BorderThickness="0"
@@ -43,7 +45,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
-                <Border x:Name="NoticeBar" Style="{StaticResource Shell.InfoBar}" Visibility="Collapsed" Margin="36,18,36,0"
+                <Border x:Name="NoticeBar" Style="{StaticResource Shell.InfoBar}" Visibility="Collapsed" Margin="24,18,24,0"
                         AutomationProperties.LiveSetting="Polite" AutomationProperties.Name="Notice">
                     <DockPanel>
                         <Button x:Name="NoticeClose" DockPanel.Dock="Right" Padding="8,4" Margin="8,0,0,0" Click="NoticeClose_Click"
@@ -55,14 +57,19 @@
                         <TextBlock x:Name="NoticeText" Style="{StaticResource Shell.Body}" VerticalAlignment="Center" />
                     </DockPanel>
                 </Border>
-                <ContentControl x:Name="PageHost" Grid.Row="1" Focusable="False" IsTabStop="False" />
+                <!-- Scrolls sideways only when the page area is narrower than any page can use (a very large text scale in a
+                     small window); the page's own scrolling stays vertical inside it. -->
+                <ScrollViewer x:Name="PageViewport" Grid.Row="1" Focusable="False" IsTabStop="False"
+                              HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Disabled">
+                    <ContentControl x:Name="PageHost" Focusable="False" IsTabStop="False" />
+                </ScrollViewer>
             </Grid>
         </Border>
 
         <!-- Search overlay -->
         <Grid x:Name="SearchOverlay" Grid.ColumnSpan="2" Visibility="Collapsed"
               Background="{DynamicResource SmokeFillColorDefaultBrush}" MouseDown="SearchOverlay_MouseDown">
-            <Border Style="{StaticResource Shell.Card}" Width="580" VerticalAlignment="Top" Margin="0,64,0,0"
+            <Border Style="{StaticResource Shell.Card}" MaxWidth="580" HorizontalAlignment="Stretch" VerticalAlignment="Top" Margin="16,64,16,0"
                     Background="{DynamicResource SolidBackgroundFillColorBaseBrush}" MouseDown="SearchCard_MouseDown">
                 <StackPanel>
                     <TextBox x:Name="SearchBox" FontSize="15" Padding="10,8" AutomationProperties.Name="Search settings and tools"

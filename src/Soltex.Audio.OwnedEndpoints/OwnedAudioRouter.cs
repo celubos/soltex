@@ -36,6 +36,8 @@ public sealed class OwnedAudioRouter : IDisposable
         if (!automatic || worker is not null) return;
         worker = new Thread(() =>
         {
+            // This thread paces kernel refills; MMCSS keeps its 10 ms waits on time under CPU load.
+            AudioThreadScheduling.RegisterCurrentThread();
             while (!stop.IsSet)
             {
                 try { PumpOnce(); } catch (Exception error) { Volatile.Write(ref failure, error.Message); return; }

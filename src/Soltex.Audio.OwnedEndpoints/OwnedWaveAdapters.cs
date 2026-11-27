@@ -31,6 +31,7 @@ public sealed class OwnedWaveIn : IWaveIn
             Exception? failure = null; float[] samples = new float[9600]; byte[] bytes = new byte[samples.Length * sizeof(float)];
             try
             {
+                Soltex.Audio.Engine.AudioThreadScheduling.RegisterCurrentThread();
                 while (!stop.IsSet)
                 {
                     if (router.Failure is { } message) throw new IOException(message);

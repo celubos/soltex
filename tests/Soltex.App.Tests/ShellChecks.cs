@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Automation.Peers;
 using System.Windows.Automation.Provider;
 using System.Windows.Controls;
@@ -279,36 +280,116 @@ internal static class ShellChecks
         shell.Window.Navigate(Destination.Taskbar);
         Pump();
         TaskbarLookPanel panel = Descendants(shell.Window.Page(Destination.Taskbar).View).OfType<TaskbarLookPanel>().Single();
-        AppSettings Saved() => shell.Services.Settings.Current;
-        Program.True(panel.ColorRow.Visibility == Visibility.Collapsed && panel.MaximizedRow.Visibility == Visibility.Collapsed,
-            "Windows default shows only the background and line rows.");
+        TaskbarStateLook Desktop() => shell.Services.Settings.Current.LookFor(TaskbarState.Desktop);
+        TaskbarState[] order = [TaskbarState.Desktop, TaskbarState.VisibleWindow, TaskbarState.MaximizedWindow, TaskbarState.StartOpen,
+            TaskbarState.SearchOpen, TaskbarState.TaskViewOpen, TaskbarState.BatterySaver];
+        Program.True(TaskbarLookPanel.States.Select(s => s.State).SequenceEqual(order), "The state rows are out of order.");
+        Program.True(panel.OpenState == TaskbarState.Desktop && panel.HeaderFor(TaskbarState.Desktop).IsChecked == true && panel.SwitchFor(TaskbarState.Desktop) is null
+            && order.Skip(1).All(s => panel.SwitchFor(s) is { IsChecked: false } && panel.HeaderFor(s).IsChecked == false),
+            "The Desktop editor starts open, with no switch; every other state starts off and closed.");
+        Program.True(panel.ColorRow.Visibility == Visibility.Collapsed && panel.OpacityRow.Visibility == Visibility.Collapsed && panel.LineSwitch.IsVisible,
+            "Windows default shows only the style and the line.");
+        Program.True(panel.SummaryFor(TaskbarState.Desktop).Text == "Windows default" && panel.SummaryFor(TaskbarState.StartOpen).Text == "Acrylic, 40%",
+            "Rows summarize their look.");
 
-        panel.LookList.SelectedIndex = 1; // Clear
+        panel.StyleList.SelectedIndex = 2; // Clear
         Pump();
-        Program.True(Saved().TaskbarLook == TaskbarLookKind.Clear, "Choosing Clear was not saved.");
-        Program.True(panel.ColorRow.Visibility == Visibility.Visible && panel.OpacityRow.Visibility == Visibility.Visible && panel.MaximizedRow.Visibility == Visibility.Visible,
-            "Clear shows color, tint and the maximized look.");
+        Program.True(Desktop().Kind == TaskbarLookKind.Clear, "Choosing Clear was not saved.");
+        Program.True(panel.ColorRow.Visibility == Visibility.Visible && panel.OpacityRow.Visibility == Visibility.Visible, "Clear shows color and opacity.");
 
-        Button blue = Descendants(panel).OfType<Button>().Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Taskbar color: Blue");
+        Button blue = Descendants(panel).OfType<Button>().Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Desktop color: Blue");
         ((IInvokeProvider)UIElementAutomationPeer.CreatePeerForElement(blue).GetPattern(PatternInterface.Invoke)).Invoke();
         Pump();
-        Program.True(Saved().TaskbarColor == 0x000067C0, "Choosing a swatch through UI Automation did not save the color.");
+        Program.True(Desktop().Color == 0x000067C0 && !Desktop().UseAccent, "Choosing a swatch through UI Automation did not save the color.");
         Program.True(blue.BorderBrush != Brushes.Transparent, "The chosen swatch is not marked.");
 
-        panel.LookList.SelectedIndex = 2; // Acrylic starts with a visible tint
+        panel.StyleList.SelectedIndex = 4; // Acrylic starts with a visible tint
         Pump();
-        Program.True(Saved().TaskbarLook == TaskbarLookKind.Acrylic && Saved().TaskbarColor == 0x660067C0, "Acrylic did not start with a visible tint.");
-        Program.True(panel.OpacityText.Text == "40%", "The tint percentage is wrong.");
+        Program.True(Desktop().Kind == TaskbarLookKind.Acrylic && Desktop().Color == 0x660067C0, "Acrylic did not start with a visible tint.");
+        Program.True(panel.OpacityText.Text == "40%" && panel.SummaryFor(TaskbarState.Desktop).Text == "Acrylic, 40%", "The opacity or summary is wrong.");
 
-        panel.MaximizedList.SelectedIndex = 2; // Solid
+        ((IInvokeProvider)UIElementAutomationPeer.CreatePeerForElement(panel.AccentSwatch).GetPattern(PatternInterface.Invoke)).Invoke();
         panel.LineSwitch.IsChecked = false;
         Pump();
-        Program.True(Saved().TaskbarMaximizedLook == TaskbarLookKind.Opaque && !Saved().TaskbarLine, "The maximized look or line choice was not saved.");
+        Program.True(Desktop() is { UseAccent: true, Line: false, Color: 0x660067C0 } && panel.SummaryFor(TaskbarState.Desktop).Text == "Acrylic, accent color, 40%, no line",
+            "The accent color or line choice was not saved: " + panel.SummaryFor(TaskbarState.Desktop).Text);
+        Program.True(panel.AccentSwatch.BorderBrush != Brushes.Transparent && blue.BorderBrush == Brushes.Transparent, "The accent color is not the marked choice.");
 
-        panel.LookList.SelectedIndex = 3; // Blur has no color or tint
+        panel.StyleList.SelectedIndex = 1; // Opaque has a color but no opacity
         Pump();
-        Program.True(panel.ColorRow.Visibility == Visibility.Collapsed && panel.OpacityRow.Visibility == Visibility.Collapsed, "Blur shows no color or tint rows.");
+        Program.True(panel.ColorRow.Visibility == Visibility.Visible && panel.OpacityRow.Visibility == Visibility.Collapsed, "Opaque shows color without opacity.");
+        panel.StyleList.SelectedIndex = 3; // Blur has no color or opacity
+        Pump();
+        Program.True(panel.ColorRow.Visibility == Visibility.Collapsed && panel.OpacityRow.Visibility == Visibility.Collapsed, "Blur shows no color or opacity rows.");
+        Program.True(shell.Services.Settings.Current.TaskbarStates.Where(p => p.Key != TaskbarState.Desktop).All(p => p.Value == TaskbarStateLook.DefaultFor(p.Key)),
+            "Editing the Desktop look changed another state.");
         Program.True(First([.. shell.Search("translucent")]) is { Destination: Destination.Taskbar, Anchor: "look" }, "Search does not find the taskbar look.");
+    }
+
+    public static void TaskbarStatesSaveThroughAutomation()
+    {
+        using TestShell shell = new();
+        shell.Window.Navigate(Destination.Taskbar);
+        Pump();
+        TaskbarLookPanel panel = Descendants(shell.Window.Page(Destination.Taskbar).View).OfType<TaskbarLookPanel>().Single();
+        TaskbarStateLook Start() => shell.Services.Settings.Current.LookFor(TaskbarState.StartOpen);
+        static AutomationPeer Peer(UIElement element) => UIElementAutomationPeer.CreatePeerForElement(element);
+
+        // Turning a state on (UI Automation Toggle) saves it and opens its editor; only one editor is open.
+        CheckBox start = panel.SwitchFor(TaskbarState.StartOpen)!;
+        Program.True(System.Windows.Automation.AutomationProperties.GetName(start) == "Change the look when Start is open", "The Start open switch needs its name.");
+        ((IToggleProvider)Peer(start).GetPattern(PatternInterface.Toggle)).Toggle();
+        Pump();
+        Program.True(Start().Enabled && panel.OpenState == TaskbarState.StartOpen, "Turning Start open on did not save it or open its editor.");
+        Program.True(panel.HeaderFor(TaskbarState.StartOpen).IsChecked == true && panel.HeaderFor(TaskbarState.Desktop).IsChecked == false
+            && Descendants(panel).OfType<ComboBox>().Count(c => c.IsVisible) == 1, "Only one editor may be open.");
+        Program.True(System.Windows.Automation.AutomationProperties.GetName(panel.StyleList) == "Start open style", "The editor's controls must name the state they change.");
+
+        // Style through UI Automation: open the list and select Acrylic.
+        panel.StyleList.SelectedIndex = 0; // Windows default first, so choosing Acrylic is a change
+        Pump();
+        IExpandCollapseProvider list = (IExpandCollapseProvider)Peer(panel.StyleList).GetPattern(PatternInterface.ExpandCollapse);
+        list.Expand();
+        Pump();
+        AutomationPeer acrylic = Peer(panel.StyleList).GetChildren().Single(c => c.GetName() == "Acrylic");
+        ((ISelectionItemProvider)acrylic.GetPattern(PatternInterface.SelectionItem)).Select();
+        list.Collapse();
+        Pump();
+        Program.True(Start().Kind == TaskbarLookKind.Acrylic, "Selecting Acrylic through UI Automation was not saved: " + Start());
+
+        // Opacity through UI Automation RangeValue; it saves once the slider settles.
+        ((IRangeValueProvider)Peer(panel.OpacitySlider).GetPattern(PatternInterface.RangeValue)).SetValue(60);
+        DateTime deadline = DateTime.UtcNow.AddSeconds(3);
+        while (Start().Color >> 24 != 153 && DateTime.UtcNow < deadline)
+        {
+            Pump();
+            Thread.Sleep(10);
+        }
+        Program.True(Start().Color >> 24 == 153 && panel.SummaryFor(TaskbarState.StartOpen).Text == "Acrylic, 60%",
+            "Setting the opacity through UI Automation was not saved: " + panel.SummaryFor(TaskbarState.StartOpen).Text);
+
+        // Row headers expand and collapse (UI Automation ExpandCollapse).
+        IExpandCollapseProvider header = (IExpandCollapseProvider)Peer(panel.HeaderFor(TaskbarState.StartOpen)).GetPattern(PatternInterface.ExpandCollapse);
+        header.Collapse();
+        Pump();
+        Program.True(panel.OpenState is null && header.ExpandCollapseState == ExpandCollapseState.Collapsed && !panel.StyleList.IsVisible, "Collapsing did not close the editor.");
+        ((IExpandCollapseProvider)Peer(panel.HeaderFor(TaskbarState.BatterySaver)).GetPattern(PatternInterface.ExpandCollapse)).Expand();
+        Pump();
+        Program.True(panel.OpenState == TaskbarState.BatterySaver && System.Windows.Automation.AutomationProperties.GetName(panel.OpacitySlider) == "Battery saver opacity",
+            "Expanding another row must move the editor there.");
+        Program.True(!shell.Services.Settings.Current.LookFor(TaskbarState.BatterySaver).Enabled, "Opening a row must not turn its state on.");
+        Program.True(shell.Services.Settings.Current.LookFor(TaskbarState.Desktop) == TaskbarStateLook.DefaultFor(TaskbarState.Desktop), "The Desktop look changed.");
+
+        // Every state can be found by search, and revealing it focuses its row.
+        Program.True(First([.. shell.Search("maximized")]) is { Destination: Destination.Taskbar, Anchor: "look.MaximizedWindow" }, "Search does not find the maximized state.");
+        Program.True(First([.. shell.Search("battery saver")]) is { Anchor: "look.BatterySaver" }, "Search does not find the battery saver state.");
+        Program.True(shell.Search("start menu").Any(e => e.Anchor == "look.StartOpen"), "Search does not find the Start open state.");
+        foreach (TaskbarLookPanel.StateInfo state in TaskbarLookPanel.States)
+            Program.True(shell.Search(state.SearchTitle).FirstOrDefault()?.Anchor == TaskbarLookPanel.AnchorFor(state.State), "Search does not find " + state.SearchTitle + ".");
+        shell.Window.Navigate(Destination.Taskbar, "look.TaskViewOpen");
+        Pump();
+        ToggleButton taskView = panel.HeaderFor(TaskbarState.TaskViewOpen);
+        Program.True(FocusManager.GetFocusedElement(shell.Window) == taskView || taskView.IsKeyboardFocusWithin, "Revealing a state must focus its row.");
     }
 
     public static void TaskbarDetailsSaveChoices()
@@ -422,13 +503,16 @@ internal static class ShellChecks
         SettingDefinition widgets = CalmCatalog.All.Single(d => d.Id == "taskbar.widgets"), search = CalmCatalog.All.Single(d => d.Id == "taskbar.search");
         Program.True(sourceEngine.ApplyChoice(widgets, 0).Outcome == ChangeOutcome.Applied && sourceEngine.ApplyChoice(search, 2).Outcome == ChangeOutcome.Applied, "Setup failed.");
         SystemEngine system = new(new EmptySystemHost(), new ChangeJournal(Path.Combine(root, "s.jsonl")));
-        AppSettings app = new() { TaskbarLook = TaskbarLookKind.Clear, DesktopWidgets = [new(DesktopWidgetKind.Clock, 1, 2)] };
+        AppSettings app = new AppSettings { DesktopWidgets = [new(DesktopWidgetKind.Clock, 1, 2)] }
+            .WithTaskbarState(TaskbarState.Desktop, l => l with { Kind = TaskbarLookKind.Clear })
+            .WithTaskbarState(TaskbarState.StartOpen, l => l with { Enabled = true, UseAccent = true });
         SettingsProfile profile = SettingsProfile.Capture(app, sourceEngine, system);
         Program.True(profile.WindowsChoices.Count == 2 && profile.WindowsChoices["taskbar.search"] == 2, "Capture missed the Windows options.");
         string file = Path.Combine(root, "setup.json");
         profile.Save(file);
         SettingsProfile loaded = SettingsProfile.Load(file);
-        Program.True(loaded.App.TaskbarLook == TaskbarLookKind.Clear && loaded.App.DesktopWidgets.Count == 1, "App preferences did not survive export.");
+        Program.True(loaded.App.LookFor(TaskbarState.Desktop).Kind == TaskbarLookKind.Clear && loaded.App.LookFor(TaskbarState.StartOpen) is { Enabled: true, UseAccent: true }
+            && loaded.App.DesktopWidgets.Count == 1, "App preferences did not survive export.");
         Program.True(loaded.ApplyWindowsChoices(targetEngine).All(r => r.Outcome == ChangeOutcome.Applied) && targetEngine.Inspect(search).Choice == 2 && targetEngine.Inspect(search).CanUndo,
             "Importing did not set the same Windows options (undoable).");
         File.WriteAllText(file, "{\"FormatVersion\":1,\"App\":{},\"WindowsChoices\":{\"nope\":1,\"taskbar.search\":99},\"SystemItems\":[\"nope\"]}");

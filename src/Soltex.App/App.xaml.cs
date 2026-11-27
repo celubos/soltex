@@ -82,6 +82,13 @@ public partial class App : Application
         services = new ShellServices(options.ProfileDirectory, store, Dispatcher);
         bool renderSmoke = options.CapturePath is not null;
         if (!renderSmoke) services.Start();
+        else
+        {
+            // A capture never reaches real audio: the Audio page shows made-up state, Sonar's tab included,
+            // instead of starting the audio engine, reading Windows sessions or contacting Sonar.
+            Pages.AudioPreview.Enabled = true;
+            Pages.AudioPage.SonarInstalled = true;
+        }
         ShellWindow window = new(services, renderSmoke);
         MainWindow = window;
         if (options.Scale is not null) ThemeService.ApplyScale((FrameworkElement)window.Content, effective);
@@ -92,7 +99,9 @@ public partial class App : Application
             switch (options.Panel)
             {
                 case "audio": window.Navigate(Destination.Audio); break;
+                case "audio-mic": window.Navigate(Destination.Audio, "microphone"); break;
                 case "audio-apps": window.Navigate(Destination.Audio, "apps"); break;
+                case "audio-sonar": window.Navigate(Destination.Audio, "sonar"); break;
                 case "tools": window.Navigate(Destination.Tools); break;
                 case "customize": window.Navigate(Destination.Customize); break;
                 case "taskbar": window.Navigate(Destination.Taskbar); break;
@@ -105,7 +114,8 @@ public partial class App : Application
                 case "settings": window.Navigate(Destination.Settings); break;
                 case "my-pc": window.Navigate(Destination.MyPc); break;
             }
-            RenderSmokeSnapshot(window, outputPath, options.Panel == "search");
+            RenderSmokeSnapshot(window, outputPath, options.Panel == "search",
+                options.CaptureWidth ?? RenderSmokeCapture.PixelWidth, options.CaptureHeight ?? RenderSmokeCapture.PixelHeight);
             return;
         }
 
@@ -153,7 +163,7 @@ public partial class App : Application
         catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException) { return null; }
     }
 
-    private static void RenderSmokeSnapshot(ShellWindow window, string outputPath, bool openSearch)
+    private static void RenderSmokeSnapshot(ShellWindow window, string outputPath, bool openSearch, int width, int height)
     {
         string fullOutputPath = Path.GetFullPath(outputPath);
         string outputDirectory = Path.GetDirectoryName(fullOutputPath)
@@ -161,7 +171,7 @@ public partial class App : Application
         Directory.CreateDirectory(outputDirectory);
         window.ShowInTaskbar = false;
         window.WindowStartupLocation = WindowStartupLocation.Manual;
-        RenderSmokeCapture.ConfigureWindow(window);
+        RenderSmokeCapture.ConfigureWindow(window, width, height);
         window.Left = -32_000;
         window.Top = -32_000;
         window.Show();
@@ -175,7 +185,7 @@ public partial class App : Application
             try
             {
                 window.UpdateLayout();
-                RenderTargetBitmap bitmap = RenderSmokeCapture.Capture(window);
+                RenderTargetBitmap bitmap = RenderSmokeCapture.Capture(window, width, height);
                 PngBitmapEncoder encoder = new();
                 encoder.Frames.Add(BitmapFrame.Create(bitmap));
                 using FileStream stream = new(fullOutputPath, FileMode.Create, FileAccess.Write, FileShare.None);

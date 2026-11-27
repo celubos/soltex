@@ -14,6 +14,30 @@ public enum Destination { MyPc, Customize, Audio, Tools, History, Settings, Task
 /// <summary>How the taskbar background is drawn (TranslucentTB-style). Values are shared with the native helper.</summary>
 public enum TaskbarLookKind { Default = 0, Clear = 1, Opaque = 2, Acrylic = 3, Blur = 4 }
 
+/// <summary>
+/// What is going on around a taskbar. Each state can have its own look; when several apply, the most specific enabled
+/// one wins (see <see cref="Shell.TaskbarStateRules.Precedence"/>). Saved by name, so new states can be added later.
+/// </summary>
+public enum TaskbarState { Desktop, VisibleWindow, MaximizedWindow, StartOpen, SearchOpen, TaskViewOpen, BatterySaver }
+
+/// <summary>
+/// The taskbar's look in one state. <paramref name="Color"/> is 0xAARRGGBB; alpha is the opacity of the tint (Clear,
+/// Acrylic) and is ignored by Opaque. With <paramref name="UseAccent"/> the colour follows Windows' accent colour and only
+/// the alpha of <paramref name="Color"/> is used. The Desktop state is always enabled.
+/// </summary>
+public sealed record TaskbarStateLook(bool Enabled, TaskbarLookKind Kind, uint Color, bool Line, bool UseAccent = false)
+{
+    /// <summary>The look a state starts with: Desktop as Windows draws it, the others off with a look that suits them.</summary>
+    public static TaskbarStateLook DefaultFor(TaskbarState state) => state switch
+    {
+        TaskbarState.Desktop => new(true, TaskbarLookKind.Default, 0, true),
+        TaskbarState.VisibleWindow => new(false, TaskbarLookKind.Clear, 0x33000000, true),
+        TaskbarState.MaximizedWindow => new(false, TaskbarLookKind.Opaque, 0xFF202020, true),
+        TaskbarState.BatterySaver => new(false, TaskbarLookKind.Opaque, 0xFF202020, true),
+        _ => new(false, TaskbarLookKind.Acrylic, 0x66202020, true) // Start, Search and Task View
+    };
+}
+
 /// <summary>User preferences for the app itself. Never contains Windows state or secrets.</summary>
 public sealed record AppSettings
 {
@@ -39,14 +63,40 @@ public sealed record AppSettings
     public bool AlwaysOnTopShortcut { get; init; } = true;
     /// <summary>Win+Shift+C copies the colour under the pointer.</summary>
     public bool ColorPickerShortcut { get; init; } = true;
-    /// <summary>Taskbar background. Default leaves the taskbar exactly as Windows draws it.</summary>
-    public TaskbarLookKind TaskbarLook { get; init; }
-    /// <summary>Taskbar colour as 0xAARRGGBB; alpha is the tint strength (Clear, Acrylic) and is ignored by Opaque.</summary>
-    public uint TaskbarColor { get; init; }
-    /// <summary>Show the thin line Windows draws above the taskbar.</summary>
-    public bool TaskbarLine { get; init; } = true;
-    /// <summary>Look used while a window is maximized; null keeps <see cref="TaskbarLook"/>.</summary>
-    public TaskbarLookKind? TaskbarMaximizedLook { get; init; }
+    /// <summary>
+    /// The taskbar's look per state (TranslucentTB-class). <see cref="Normalize"/> keeps every state, in order; the Desktop
+    /// look with Windows' background and line leaves the taskbar exactly as Windows draws it.
+    /// </summary>
+    [JsonConverter(typeof(TaskbarStatesJsonConverter))]
+    public IReadOnlyDictionary<TaskbarState, TaskbarStateLook> TaskbarStates { get; init; } = DefaultTaskbarStates;
+
+    /// <summary>Every state at its starting look (see <see cref="TaskbarStateLook.DefaultFor"/>).</summary>
+    public static IReadOnlyDictionary<TaskbarState, TaskbarStateLook> DefaultTaskbarStates { get; } =
+        System.Collections.Frozen.FrozenDictionary.ToFrozenDictionary(Enum.GetValues<TaskbarState>(), s => s, TaskbarStateLook.DefaultFor);
+
+    // Version 1.0 kept one look, its colour and line, and an optional look while a window was maximized. They are read
+    // only so Normalize can turn them into states, and never written again.
+    [JsonInclude, JsonPropertyName("TaskbarLook"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    internal TaskbarLookKind? LegacyTaskbarLook { get; init; }
+    [JsonInclude, JsonPropertyName("TaskbarColor"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    internal uint? LegacyTaskbarColor { get; init; }
+    [JsonInclude, JsonPropertyName("TaskbarLine"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    internal bool? LegacyTaskbarLine { get; init; }
+    [JsonInclude, JsonPropertyName("TaskbarMaximizedLook"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    internal TaskbarLookKind? LegacyTaskbarMaximizedLook { get; init; }
+
+    /// <summary>The look saved for <paramref name="state"/> (its starting look when none is saved).</summary>
+    public TaskbarStateLook LookFor(TaskbarState state) =>
+        TaskbarStates is not null && TaskbarStates.TryGetValue(state, out TaskbarStateLook? look) && look is not null ? look : TaskbarStateLook.DefaultFor(state);
+
+    /// <summary>These settings with the look of <paramref name="state"/> changed by <paramref name="change"/>.</summary>
+    public AppSettings WithTaskbarState(TaskbarState state, Func<TaskbarStateLook, TaskbarStateLook> change)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+        Dictionary<TaskbarState, TaskbarStateLook> states = Enum.GetValues<TaskbarState>().ToDictionary(s => s, LookFor);
+        states[state] = change(LookFor(state));
+        return this with { TaskbarStates = states };
+    }
     /// <summary>Taskbar details (tweak id → choice key, see <see cref="Shell.TaskbarTweaks"/>); missing ids keep Windows' look.</summary>
     public IReadOnlyDictionary<string, string> TaskbarTweaks { get; init; } = new Dictionary<string, string>();
     /// <summary>Scrolling over the taskbar changes the volume.</summary>
@@ -89,8 +139,11 @@ public sealed record AppSettings
         Motion = Enum.IsDefined(Motion) ? Motion : MotionPreference.System,
         StartPage = Enum.IsDefined(StartPage) && StartPage is not (Destination.Settings or Destination.History) ? StartPage : Destination.MyPc,
         HiddenDestinations = (HiddenDestinations ?? []).Where(d => Enum.IsDefined(d) && d is not (Destination.Settings or Destination.History)).Distinct().ToArray(),
-        TaskbarLook = Enum.IsDefined(TaskbarLook) ? TaskbarLook : TaskbarLookKind.Default,
-        TaskbarMaximizedLook = TaskbarMaximizedLook is { } maximized && !Enum.IsDefined(maximized) ? null : TaskbarMaximizedLook,
+        TaskbarStates = NormalizeTaskbarStates(),
+        LegacyTaskbarLook = null,
+        LegacyTaskbarColor = null,
+        LegacyTaskbarLine = null,
+        LegacyTaskbarMaximizedLook = null,
         TaskbarTweaks = (TaskbarTweaks ?? new Dictionary<string, string>())
             .Where(t => Shell.TaskbarTweaks.All.Any(k => k.Id == t.Key && k.Options.Skip(1).Any(o => o.Key == t.Value)))
             .ToDictionary(t => t.Key, t => t.Value),
@@ -116,6 +169,36 @@ public sealed record AppSettings
             .Select(w => w with { Left = double.IsFinite(w.Left) ? w.Left : 24, Top = double.IsFinite(w.Top) ? w.Top : 24 })]
     };
 
+    /// <summary>
+    /// Every state once, in order, with a defined style; Desktop always enabled. A file from version 1.0 is converted:
+    /// its look becomes the Desktop look, and its maximized look (when it made a difference: only over a chosen look,
+    /// and only when it differed from it) becomes the enabled Window maximized look with the same colour and line. A
+    /// maximized look that had no effect stays saved there, switched off.
+    /// </summary>
+    private Dictionary<TaskbarState, TaskbarStateLook> NormalizeTaskbarStates()
+    {
+        Dictionary<TaskbarState, TaskbarStateLook> states = [];
+        foreach (TaskbarState state in Enum.GetValues<TaskbarState>())
+        {
+            TaskbarStateLook look = LookFor(state);
+            if (!Enum.IsDefined(look.Kind)) look = look with { Kind = TaskbarLookKind.Default };
+            states[state] = state == TaskbarState.Desktop ? look with { Enabled = true } : look;
+        }
+        if (LegacyTaskbarLook is null && LegacyTaskbarColor is null && LegacyTaskbarLine is null && LegacyTaskbarMaximizedLook is null) return states;
+
+        TaskbarLookKind kind = LegacyTaskbarLook is { } old && Enum.IsDefined(old) ? old : TaskbarLookKind.Default;
+        uint color = LegacyTaskbarColor ?? 0;
+        bool line = LegacyTaskbarLine ?? true;
+        states[TaskbarState.Desktop] = new TaskbarStateLook(true, kind, color, line);
+        if (LegacyTaskbarMaximizedLook is { } maximized && Enum.IsDefined(maximized))
+        {
+            bool effective = kind != TaskbarLookKind.Default && maximized != kind;
+            // Version 1.0 drew its "Windows default" maximized look exactly as Windows does, line included.
+            states[TaskbarState.MaximizedWindow] = new TaskbarStateLook(effective, maximized, color, maximized == TaskbarLookKind.Default || line);
+        }
+        return states;
+    }
+
     /// <summary>Sorted, distinct, '|'-separated ids (at most 256, each at most 100 characters); null when empty.</summary>
     internal static string? NormalizeIdList(string? ids)
     {
@@ -126,6 +209,44 @@ public sealed record AppSettings
     }
 
     private static string Truncate(string text, int length) => text.Length <= length ? text : text[..length];
+}
+
+/// <summary>
+/// Taskbar states as a JSON object keyed by state name, written in state order. Names this version does not know (a
+/// state added by a newer version) are skipped instead of failing the whole settings file.
+/// </summary>
+internal sealed class TaskbarStatesJsonConverter : JsonConverter<IReadOnlyDictionary<TaskbarState, TaskbarStateLook>>
+{
+    public override IReadOnlyDictionary<TaskbarState, TaskbarStateLook>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Null) return null;
+        if (reader.TokenType != JsonTokenType.StartObject) throw new JsonException("Taskbar states must be an object.");
+        Dictionary<TaskbarState, TaskbarStateLook> states = [];
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            string name = reader.GetString() ?? "";
+            reader.Read();
+            if (!Enum.GetNames<TaskbarState>().Contains(name, StringComparer.OrdinalIgnoreCase) || !Enum.TryParse(name, ignoreCase: true, out TaskbarState state))
+            {
+                reader.Skip();
+                continue;
+            }
+            if (JsonSerializer.Deserialize<TaskbarStateLook>(ref reader, options) is { } look) states[state] = look;
+        }
+        return states;
+    }
+
+    public override void Write(Utf8JsonWriter writer, IReadOnlyDictionary<TaskbarState, TaskbarStateLook> value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        foreach (TaskbarState state in Enum.GetValues<TaskbarState>())
+        {
+            if (!value.TryGetValue(state, out TaskbarStateLook? look) || look is null) continue;
+            writer.WritePropertyName(state.ToString());
+            JsonSerializer.Serialize(writer, look, options);
+        }
+        writer.WriteEndObject();
+    }
 }
 
 /// <summary>

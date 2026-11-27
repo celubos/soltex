@@ -59,7 +59,8 @@ public partial class MixerWorkspace
 
     private void ScheduleOutputPolicy(SonarSnapshot snapshot)
     {
-        if (_disposed) return;
+        // A preview has no Sonar connection and must not record devices in the saved policy.
+        if (_disposed || _preview) return;
         ObserveOutputPolicy(snapshot);
         _policyPending?.Cancel();
         if (!_outputPolicy.Enabled) return;

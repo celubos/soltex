@@ -23,6 +23,7 @@ public sealed class ProcessingEditor : UserControl
     private Slider compressorThreshold = null!, compressorRatio = null!, compressorMakeup = null!, width = null!, pan = null!, crossfeed = null!, ceiling = null!;
     private Slider[] bands = [];
     private CheckBox gateOn = null!, expanderOn = null!, suppressionOn = null!, eqOn = null!, compressorOn = null!, stereoOn = null!, mono = null!, swap = null!;
+    private CheckBox smoothResidual = null!, limiter = null!;
     private bool loading;
 
     public ProcessingEditor(DspSettings settings, bool microphone)
@@ -107,6 +108,7 @@ public sealed class ProcessingEditor : UserControl
             "Reduces steady noise such as fans and hum against a noise level you set. It can't pick out your voice, so it won't remove talking or music.", out suppressionOn);
         suppressionStrength = AddSlider(suppression, "Strength", s.NoiseSuppression.ReductionDb, 0, 36, 1, v => v.ToString("0", CultureInfo.InvariantCulture) + " dB less noise");
         suppressionFloor = AddSlider(suppression, "Noise level", s.NoiseSuppression.NoiseFloorDb, -90, -20, 1, Dbfs);
+        smoothResidual = AddCheck(suppression, "Smooth background", s.NoiseSuppression.SmoothResidual, "Smoother background, slightly different sound.");
 
         StackPanel eq = Section("Equalizer", !s.EqBypass, "Shapes the tone. Small changes go a long way.", out eqOn);
         bands = new Slider[s.Bands.Count];
@@ -133,8 +135,10 @@ public sealed class ProcessingEditor : UserControl
             swap = AddCheck(stereo, "Swap left and right", s.Stereo.SwapChannels);
         }
 
-        StackPanel output = Section("Clipping guard", null, "The last stage. Peaks above this level are clipped so the output never distorts digitally.", out _);
+        StackPanel output = Section("Clipping guard", null, "The last stage. Nothing leaves above this level, so the output never distorts digitally.", out _);
         ceiling = AddSlider(output, "Ceiling", 20 * Math.Log10(Math.Clamp(s.OutputCeiling, 0.01, 1)), -12, 0, 0.1, Dbfs);
+        // Not part of a preset's sound: switching it does not turn the preset into Custom.
+        limiter = AddCheck(output, "Safety limiter", s.Limiter.Enabled, "Catches peaks above the ceiling. Adds 1.6 ms.", changesSound: false);
     }
 
     /// <summary>The edited settings. Untouched controls keep their saved values exactly.</summary>
@@ -155,8 +159,10 @@ public sealed class ProcessingEditor : UserControl
             {
                 Enabled = suppressionOn.IsChecked == true,
                 ReductionDb = Pick(suppressionStrength, s.NoiseSuppression.ReductionDb, v => v),
-                NoiseFloorDb = Pick(suppressionFloor, s.NoiseSuppression.NoiseFloorDb, v => v)
+                NoiseFloorDb = Pick(suppressionFloor, s.NoiseSuppression.NoiseFloorDb, v => v),
+                SmoothResidual = smoothResidual.IsChecked == true
             },
+            Limiter = s.Limiter with { Enabled = limiter.IsChecked == true },
             EqBypass = eqOn.IsChecked != true,
             Bands = s.Bands.Select((band, i) => band with { GainDb = Pick(bands[i], band.GainDb, v => v) }).ToArray(),
             Compressor = s.Compressor with
@@ -252,13 +258,23 @@ public sealed class ProcessingEditor : UserControl
         return slider;
     }
 
-    private CheckBox AddCheck(Panel parent, string label, bool value)
+    private CheckBox AddCheck(Panel parent, string label, bool value, string? note = null, bool changesSound = true)
     {
-        CheckBox box = new() { Content = label, IsChecked = value, Margin = new Thickness(0, 4, 0, 0) };
+        CheckBox box = new() { Content = label, IsChecked = value, Margin = new Thickness(0, 6, 0, 0) };
         AutomationProperties.SetName(box, label);
-        box.Checked += (_, _) => Raise();
-        box.Unchecked += (_, _) => Raise();
+        Action changed = changesSound ? Raise : () => { if (!loading) Changed?.Invoke(this, EventArgs.Empty); };
+        box.Checked += (_, _) => changed();
+        box.Unchecked += (_, _) => changed();
         parent.Children.Add(box);
+        if (note is not null)
+        {
+            // A short, honest note under the switch, also read by screen readers.
+            AutomationProperties.SetHelpText(box, note);
+            TextBlock text = new() { Text = note, Margin = new Thickness(28, 0, 0, 2) };
+            text.SetResourceReference(StyleProperty, "Shell.Secondary");
+            text.FontSize = 12;
+            parent.Children.Add(text);
+        }
         return box;
     }
 

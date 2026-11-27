@@ -10,7 +10,11 @@ using Soltex.App.Settings;
 
 namespace Soltex.App.Shell;
 
-internal sealed record NavItem(Destination Destination, string Label, string Glyph, string Description);
+internal sealed record NavItem(Destination Destination, string Label, string Glyph, string Description)
+{
+    /// <summary>The tooltip on the icon rail, where the label itself is hidden.</summary>
+    public string CompactTip => Label + ": " + Description;
+}
 
 /// <summary>What pages may ask of the shell.</summary>
 internal sealed class ShellContext(ShellServices services, ShellWindow window)
@@ -157,6 +161,79 @@ public partial class ShellWindow : Window, ISuiteWindow
         followingSystem = false;
         SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         SystemParameters.StaticPropertyChanged -= OnSystemParameterChanged;
+    }
+
+    // ---------- navigation rail ----------
+    /// <summary>The full navigation pane's width, and the icon rail's.</summary>
+    internal const double ExpandedRailWidth = 240, CompactRailWidth = 64;
+    /// <summary>The narrowest page area (in the scaled layout) the full pane may leave; below it the pane becomes an icon rail.</summary>
+    internal const double MinimumPageWidth = 600;
+
+    /// <summary>True while the navigation pane shows icons only.</summary>
+    internal bool IsRailCompact { get; private set; }
+
+    /// <summary>
+    /// The text scale and the window size both change the room in the scaled layout. The rail's own width does not
+    /// enter the decision, so it never flips back and forth.
+    /// </summary>
+    private void ScaleRoot_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (!e.WidthChanged) return;
+        ApplyRail(e.NewSize.Width - ExpandedRailWidth < MinimumPageWidth);
+        ApplyPageSpacing(e.NewSize.Width - (IsRailCompact ? CompactRailWidth : ExpandedRailWidth));
+    }
+
+    /// <summary>
+    /// Pages take their padding from Shell.PagePadding and Shell.CardPadding. In a narrow page area the window supplies
+    /// slimmer values for its own pages (they shadow the app-wide density values), so content keeps its room; with room
+    /// to spare the window's values are removed and the density values apply again.
+    /// </summary>
+    private void ApplyPageSpacing(double pageWidth)
+    {
+        (Thickness page, Thickness card)? narrow = pageWidth switch
+        {
+            < 480 => (new Thickness(16, 20, 16, 28), new Thickness(14, 12, 14, 14)),
+            < 720 => (new Thickness(24, 24, 24, 32), new Thickness(18, 14, 18, 16)),
+            _ => null
+        };
+        if (narrow is { } values)
+        {
+            if (!Equals(Resources["Shell.PagePadding"], values.page)) Resources["Shell.PagePadding"] = values.page;
+            if (!Equals(Resources["Shell.CardPadding"], values.card)) Resources["Shell.CardPadding"] = values.card;
+        }
+        else
+        {
+            Resources.Remove("Shell.PagePadding");
+            Resources.Remove("Shell.CardPadding");
+        }
+        // Narrower than any page can use: the page keeps that width and scrolls sideways, with its scroll bar showing.
+        bool scroll = pageWidth < MinimumScrollFreePageWidth;
+        PageHost.Width = scroll ? MinimumScrollFreePageWidth : double.NaN;
+        PageHost.HorizontalAlignment = HorizontalAlignment.Left;
+        PageViewport.HorizontalScrollBarVisibility = scroll ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
+    }
+
+    /// <summary>The narrowest page area pages are laid out for; below it the page area scrolls sideways.</summary>
+    internal const double MinimumScrollFreePageWidth = 380;
+
+    private void ApplyRail(bool compact)
+    {
+        if (compact == IsRailCompact) return;
+        IsRailCompact = compact;
+        RailColumn.Width = new GridLength(compact ? CompactRailWidth : ExpandedRailWidth);
+        Rail.Margin = compact ? new Thickness(6, 18, 6, 14) : new Thickness(10, 18, 6, 14);
+        ProductNameText.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        // Search stays one press (or Ctrl+K) away: the button keeps its icon, name and tooltip.
+        SearchLabel.Visibility = SearchShortcut.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        SearchGlyph.Margin = compact ? new Thickness(0) : new Thickness(0, 0, 10, 0);
+        SearchButton.Padding = compact ? new Thickness(0, 9, 0, 9) : new Thickness(14, 9, 14, 9);
+        SearchButton.Margin = compact ? new Thickness(2, 0, 2, 16) : new Thickness(6, 0, 6, 16);
+        SearchButton.HorizontalContentAlignment = compact ? HorizontalAlignment.Center : HorizontalAlignment.Stretch;
+        foreach (ListBox nav in new[] { PrimaryNav, FooterNav })
+        {
+            nav.ItemContainerStyle = (Style)FindResource(compact ? "Shell.NavItemCompact" : "Shell.NavItem");
+            nav.ItemTemplate = (DataTemplate)FindResource(compact ? "Shell.NavItemCompactTemplate" : "Shell.NavItemTemplate");
+        }
     }
 
     internal AudioPage? Audio => pages.TryGetValue(Destination.Audio, out IShellPage? page) ? page as AudioPage : null;

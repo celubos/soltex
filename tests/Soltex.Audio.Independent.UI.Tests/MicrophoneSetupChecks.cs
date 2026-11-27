@@ -48,7 +48,20 @@ internal static class MicrophoneSetupChecks
         check(steps.Contains("Low cut at 80 Hz") && steps.Contains("Equalizer") && steps.Contains("Noise gate") && steps.Contains("Compressor"),
             "The processing step names the low cut with its frequency and still lists real tone shaping");
         IReadOnlyList<string> natural = MicrophonePath.DescribeProcessing(Blank with { Dsp = MicrophoneSetup.ApplySound(MicrophoneSound.Natural, new DspSettings()) });
-        check(natural.SequenceEqual(["Low cut at 80 Hz", "Compressor", "Clipping guard at −1 dB"]), "Natural voice is described exactly as what it does: " + string.Join(", ", natural));
+        check(natural.SequenceEqual(["Low cut at 80 Hz", "Compressor", "Safety limiter at −1 dB"]), "Natural voice is described exactly as what it does: " + string.Join(", ", natural));
+
+        // Presets with make-up gain under a 0.89 ceiling turn the safety limiter on, but only when newly chosen.
+        foreach (MicrophoneSound sound in new[] { MicrophoneSound.Natural, MicrophoneSound.Broadcast, MicrophoneSound.NoisyRoom })
+            check(MicrophoneSetup.ApplySound(sound, new DspSettings()).Limiter.Enabled, sound + " chosen now turns the safety limiter on");
+        check(!MicrophoneSetup.ApplySound(MicrophoneSound.Clean, new DspSettings()).Limiter.Enabled, "Clean keeps the plain clipping guard");
+        DspSettings savedNatural = MicrophoneSetup.ApplySound(MicrophoneSound.Natural, new DspSettings()) with { Limiter = new SafetyLimiterSettings() };
+        check(MicrophoneSetup.Identify(savedNatural) == MicrophoneSound.Natural, "A Natural preset saved before the limiter existed is still recognized as Natural");
+        HostChannelProfile savedProfile = Blank with { Enabled = true, CaptureEndpointId = "webcam", RenderEndpointId = "cable-in", Dsp = savedNatural };
+        (HostChannelProfile? resaved, _) = MicrophoneSetup.Build(savedProfile, Endpoints, "interface", null, "cable-in", MicrophoneSound.Natural);
+        check(resaved is { CaptureEndpointId: "interface" } && !resaved.Dsp.Limiter.Enabled && MicrophoneSetup.SameSound(resaved.Dsp, savedNatural),
+            "Saving the setup with the same preset (only the microphone changed) keeps the saved processing as it was");
+        (HostChannelProfile? switched, _) = MicrophoneSetup.Build(savedProfile, Endpoints, "interface", null, "cable-in", MicrophoneSound.Broadcast);
+        check(switched!.Dsp.Limiter.Enabled && MicrophoneSetup.Identify(switched.Dsp) == MicrophoneSound.Broadcast, "Choosing a different preset applies it, limiter included");
         check(MicrophoneSetup.Identify(new DspSettings()) == MicrophoneSound.Custom, "Settings that match no preset are reported as Custom, never as a preset");
 
         DspSettings trimmed = new() { GainDb = 4.5, InputChannel = 0, Mute = true };

@@ -56,7 +56,21 @@ internal static class HostThemeBridge
         ("WarningBrush", "Studio.CautionBrush"),
         ("DangerBrush", "Studio.CriticalBrush"),
         ("DangerTextBrush", "Studio.CriticalBrush"),
-        ("SelectionBrush", "Studio.SelectedBrush")
+        ("SelectionBrush", "Studio.SelectedBrush"),
+        // Shared with the suite's Studio look: meters, cards, state surfaces, channel colours and the fader.
+        ("MeterBrush", "Studio.MeterBrush"),
+        ("MeterHorizontalBrush", "Studio.MeterHorizontalBrush"),
+        ("CardBrush", "Studio.CardBrush"),
+        ("GoodSurfaceBrush", "Studio.SuccessSurfaceBrush"),
+        ("WarningSurfaceBrush", "Studio.CautionSurfaceBrush"),
+        ("DangerSurfaceBrush", "Studio.CriticalSurfaceBrush"),
+        ("ChannelMasterBrush", "Studio.Channel.Master"),
+        ("ChannelGameBrush", "Studio.Channel.Game"),
+        ("ChannelChatBrush", "Studio.Channel.Chat"),
+        ("ChannelMediaBrush", "Studio.Channel.Media"),
+        ("ChannelAuxBrush", "Studio.Channel.Aux"),
+        ("ChannelMicBrush", "Studio.Channel.Microphone"),
+        ("FaderStyle", "Studio.Fader")
     ];
 
     private static readonly DependencyProperty[] Properties = Map

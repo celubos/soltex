@@ -43,7 +43,12 @@ public partial class CustomizePage : UserControl, IShellPage
         if (destination == Destination.Taskbar)
         {
             yield return new SearchEntry("Taskbar look", area.Title, destination, "look",
-                ["Taskbar", "transparent", "translucent", "TranslucentTB", "clear", "acrylic", "blur", "solid", "color", "colour", "tint", "maximized", "line"]);
+                ["Taskbar", "transparent", "translucent", "TranslucentTB", "clear", "acrylic", "blur", "opaque", "solid", "color", "colour", "accent",
+                 "opacity", "tint", "maximized", "line", "states"]);
+            // Each state of the look (TranslucentTB's dynamic modes) is found by name.
+            foreach (TaskbarLookPanel.StateInfo state in TaskbarLookPanel.States)
+                yield return new SearchEntry(state.SearchTitle, area.Title, destination, TaskbarLookPanel.AnchorFor(state.State),
+                    ["Taskbar", "TranslucentTB", "look", .. state.Synonyms]);
             foreach (TaskbarTweak tweak in TaskbarTweaks.All)
                 yield return new SearchEntry(tweak.Title, area.Title, destination, "tweak." + tweak.Id,
                     ["Taskbar", "Windhawk", .. tweak.Options.Select(o => o.Label)]);
@@ -136,7 +141,8 @@ public partial class CustomizePage : UserControl, IShellPage
             look = new TaskbarLookPanel();
             look.Attach(context);
             Groups.Children.Add(look);
-            anchors.Add("look", look.LookList);
+            anchors.Add("look", look.HeaderFor(TaskbarState.Desktop));
+            foreach (TaskbarLookPanel.StateInfo state in TaskbarLookPanel.States) anchors.Add(TaskbarLookPanel.AnchorFor(state.State), look.HeaderFor(state.State));
             Groups.Children.Add(SectionTitle("Details", "Inspired by Windhawk mods"));
             details = new TaskbarDetailsPanel();
             details.Attach(context);

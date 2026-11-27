@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Windows;
@@ -41,14 +42,9 @@ public partial class PlaybackView : UserControl
         ArgumentNullException.ThrowIfNull(workspace);
         this.workspace = workspace;
         InitializeComponent();
-        ChannelList.ItemsSource = workspace.Channels.Where(c => c.Bus != AudioBus.Microphone).ToArray();
-        IndependentMixerChannel mic = workspace.Channels.Single(c => c.Bus == AudioBus.Microphone);
-        MicStrip.DataContext = mic;
-        MicFader.SetBinding(RangeBase.ValueProperty, new Binding(nameof(IndependentMixerChannel.GainDb)) { Mode = BindingMode.TwoWay });
-        MicMute.SetBinding(ToggleButton.IsCheckedProperty, new Binding(nameof(IndependentMixerChannel.Mute)) { Mode = BindingMode.TwoWay });
-        MicMeter.SetBinding(LevelMeter.LevelProperty, new Binding(nameof(IndependentMixerChannel.Peak)) { Converter = new PeakLevelConverter() });
-        MicValue.SetBinding(TextBlock.TextProperty, new Binding(nameof(IndependentMixerChannel.GainDb)) { Converter = new DecibelTextConverter() });
-        MicCurve.SetBinding(EqCurve.SettingsProperty, new Binding(nameof(IndependentMixerChannel.Dsp)));
+        PlaybackChannels = workspace.Channels.Where(c => c.Bus != AudioBus.Microphone).OrderBy(c => c.Bus).ToArray();
+        // One set of strips: the microphone first, then Game, Chat, Media and Aux. They wrap together into even rows.
+        ChannelList.ItemsSource = workspace.Channels.Where(c => c.Bus == AudioBus.Microphone).Concat(PlaybackChannels).ToArray();
         OutputChoice.ItemsSource = workspace.OutputChoices;
         workspace.StatusApplied += (_, _) => Sync();
         workspace.StatusTextChanged += (_, _) =>
@@ -66,6 +62,12 @@ public partial class PlaybackView : UserControl
     /// <summary>Raised when the microphone strip's Setup is chosen; the Audio page opens the microphone card.</summary>
     public event EventHandler? MicrophoneSetupRequested;
 
+    /// <summary>Game, Chat, Media and Aux, in that order (the microphone has its own strip and tab).</summary>
+    public IReadOnlyList<IndependentMixerChannel> PlaybackChannels { get; }
+
+    /// <summary>What the microphone strip shows, from the helper's confirmed state.</summary>
+    public MicStripInfo Mic { get; } = new();
+
     /// <summary>Opens a channel's sound editor and returns the result, or null when cancelled. Replaceable for tests.</summary>
     public Func<string, DspSettings, DspSettings?> EditSound { get; set; } = (title, settings) =>
     {
@@ -82,24 +84,37 @@ public partial class PlaybackView : UserControl
             MasterValue.Text = MicrophonePath.Decibels(workspace.MasterGainDb);
             MasterMuteBox.IsChecked = workspace.MasterMuted;
             BalanceSlider.Value = workspace.GameChatBalance;
+            BalanceValue.Text = BalanceText(workspace.GameChatBalance);
             BalanceSlider.IsEnabled = workspace.CanBalance;
             BalanceHint.Text = workspace.CanBalance ? "Center leaves both unchanged; only the other side is turned down." : workspace.BalanceHint;
             bool running = workspace.CanStop;
             StartStopButton.Content = running ? "Stop audio" : "Start audio";
             StartStopButton.IsEnabled = workspace.IsHostInitialized && (running || workspace.CanStart);
+            ShowState();
+            // Not connected (the engine is missing, or did not answer): the reason and a retry, instead of dead controls.
+            bool offline = !workspace.IsHostInitialized && workspace.StatusText.StartsWith("Audio ", StringComparison.Ordinal) &&
+                workspace.StatusText != "Connecting to audio…";
+            OfflineBar.Visibility = offline ? Visibility.Visible : Visibility.Collapsed;
+            OfflineReason.Text = offline ? workspace.StatusText : "";
             if (localStatus is not null && DateTime.UtcNow >= localUntil) localStatus = null;
             // While edits are staged the staged bar already says what to do, so routine status is hidden.
             // A failed or refused change is still shown, or the click would seem to do nothing.
-            StatusLine.Text = localStatus ?? (workspace.LastOperationFailed || !workspace.RoutingStaged ? workspace.StatusText : "");
+            StatusLine.Text = offline ? "" : localStatus ?? (workspace.LastOperationFailed || !workspace.RoutingStaged ? workspace.StatusText : "");
             if (workspace.LatestSnapshot is { } snapshot)
             {
                 MicrophonePathModel model = MicrophonePath.Describe(snapshot);
-                MicState.Text = model.StateText;
-                // The strip is narrow: short words when nothing usable is chosen; the tooltip has the full text.
+                // The strip is narrow: short words when nothing usable is chosen; the tooltips have the full text.
                 bool chosen = snapshot.Profile.Channels.FirstOrDefault(c => c.Bus == AudioBus.Microphone)?.CaptureEndpointId is not null;
-                MicSource.Text = model.SourceAvailable ? model.SourceName : chosen ? "Not connected" : "Not chosen";
-                MicReceiving.Text = model.ReceivingInputName ?? "Not set up";
-                MicSource.ToolTip = model.SourceName + " · " + model.SourceDetail;
+                Mic.Update(model.StateText, model.Explanation,
+                    model.SourceAvailable ? model.SourceName : chosen ? "Not connected" : "Not chosen", model.SourceName + " · " + model.SourceDetail,
+                    model.ReceivingInputName ?? "Not set up",
+                    (Brush)FindResource(model.State switch
+                    {
+                        MicrophonePathState.Running => "Studio.SuccessBrush",
+                        MicrophonePathState.Problem => "Studio.CriticalBrush",
+                        MicrophonePathState.Muted => "Studio.CautionBrush",
+                        _ => "Studio.TextTertiaryBrush"
+                    }));
             }
             SyncOutputChoice();
             UpdateStaged();
@@ -145,6 +160,27 @@ public partial class PlaybackView : UserControl
 
     private void UpdateStaged() => StagedBar.Visibility = workspace.RoutingStaged ? Visibility.Visible : Visibility.Collapsed;
 
+    /// <summary>The badge next to Start/Stop: what audio is doing right now, in one word or two.</summary>
+    private void ShowState()
+    {
+        (string text, string background) = workspace.LatestSnapshot switch
+        {
+            null => (workspace.IsHostInitialized ? "Connecting…" : "Not connected", "SubtleFillColorSecondaryBrush"),
+            { StreamMix.Running: true } => ("Stream mix on", "SystemFillColorAttentionBackgroundBrush"),
+            { Running: true } => ("Running", "SystemFillColorSuccessBackgroundBrush"),
+            { StartRequested: true } => ("Starting", "SystemFillColorCautionBackgroundBrush"),
+            _ => ("Stopped", "SubtleFillColorSecondaryBrush")
+        };
+        if (workspace.LatestSnapshot is null && workspace.LastOperationFailed) (text, background) = ("Not connected", "SystemFillColorCriticalBackgroundBrush");
+        StateText.Text = text;
+        StateBadge.SetResourceReference(Border.BackgroundProperty, background);
+    }
+
+    /// <summary>"Centered", or how far the balance leans and which side stays at full level.</summary>
+    internal static string BalanceText(double balance) => Math.Abs(balance) < 0.005
+        ? "Centered"
+        : (Math.Abs(balance) * 100).ToString("0", CultureInfo.CurrentCulture) + "% toward " + (balance < 0 ? "Game" : "Chat");
+
     private void MasterSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (MasterValue is not null) MasterValue.Text = MicrophonePath.Decibels(e.NewValue);
@@ -153,7 +189,11 @@ public partial class PlaybackView : UserControl
 
     private void MasterMute_Changed(object sender, RoutedEventArgs e) { if (!syncing) workspace.MasterMuted = MasterMuteBox.IsChecked == true; }
 
-    private void BalanceSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) { if (!syncing) workspace.GameChatBalance = e.NewValue; }
+    private void BalanceSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (BalanceValue is not null) BalanceValue.Text = BalanceText(e.NewValue);
+        if (!syncing) workspace.GameChatBalance = e.NewValue;
+    }
 
     private async void StartStopButton_Click(object sender, RoutedEventArgs e)
     {
@@ -163,6 +203,13 @@ public partial class PlaybackView : UserControl
         else if (workspace.RoutingStaged) ShowStatus("Apply your changes first so audio starts with the devices you chose.");
         else await workspace.StartAudioAsync();
         Sync();
+    }
+
+    private async void RetryButton_Click(object sender, RoutedEventArgs e)
+    {
+        RetryButton.IsEnabled = false;
+        try { await workspace.RefreshStateAsync(); }
+        finally { RetryButton.IsEnabled = true; Sync(); }
     }
 
     private async void ApplyButton_Click(object sender, RoutedEventArgs e)
@@ -181,20 +228,6 @@ public partial class PlaybackView : UserControl
         // Once switched, the box follows the output the channels share again.
         if (!workspace.LastOperationFailed) pickedOutputId = null;
         Sync();
-    }
-
-    private void StripScroll_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
-    {
-        // The strips only scroll sideways. Shift + wheel moves them; a plain wheel scrolls the page, as it does elsewhere.
-        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0)
-        {
-            StripScroll.ScrollToHorizontalOffset(StripScroll.HorizontalOffset - e.Delta);
-            e.Handled = true;
-            return;
-        }
-        if (VisualTreeHelper.GetParent(StripScroll) is not UIElement parent) return;
-        e.Handled = true;
-        parent.RaiseEvent(new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta) { RoutedEvent = MouseWheelEvent, Source = StripScroll });
     }
 
     private async void Sound_Click(object sender, RoutedEventArgs e)
@@ -261,4 +294,33 @@ public partial class PlaybackView : UserControl
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException) { ShowStatus("Profile was not exported: " + error.Message); }
         Sync();
     }
+}
+
+/// <summary>The microphone strip's text, from the helper's confirmed state (the full names go in tooltips).</summary>
+public sealed class MicStripInfo : INotifyPropertyChanged
+{
+    public string State { get; private set; } = "Connecting…";
+    public string Explanation { get; private set; } = "Connecting to audio…";
+    public string Source { get; private set; } = "—";
+    public string SourceDetail { get; private set; } = "";
+    public string Receiving { get; private set; } = "—";
+    public Brush? StateBrush { get; private set; }
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    internal void Update(string state, string explanation, string source, string sourceDetail, string receiving, Brush stateBrush)
+    {
+        if (State == state && Explanation == explanation && Source == source && SourceDetail == sourceDetail && Receiving == receiving && ReferenceEquals(StateBrush, stateBrush)) return;
+        (State, Explanation, Source, SourceDetail, Receiving, StateBrush) = (state, explanation, source, sourceDetail, receiving, stateBrush);
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(string.Empty));
+    }
+}
+
+/// <summary>The microphone gets its own strip; Game, Chat, Media and Aux share the channel strip.</summary>
+public sealed class ChannelStripSelector : DataTemplateSelector
+{
+    public DataTemplate? Microphone { get; set; }
+    public DataTemplate? Playback { get; set; }
+
+    public override DataTemplate? SelectTemplate(object item, DependencyObject container) =>
+        item is IndependentMixerChannel { Bus: AudioBus.Microphone } ? Microphone : Playback;
 }

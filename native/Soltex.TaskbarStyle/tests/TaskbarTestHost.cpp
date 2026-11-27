@@ -1,11 +1,16 @@
-// Test host for the taskbar look helper: a hidden, off-screen window hosting system XAML (the same Windows.UI.Xaml the
+// Test host for the taskbar look helper: two hidden, off-screen windows (stand-ins for two taskbars, 1200x48 and 800x48,
+// window classes SoltexTaskbarTestHost and SoltexTaskbarTestHost2), each hosting system XAML (the same Windows.UI.Xaml the
 // taskbar uses) with a copy of the taskbar's background structure:
-//   Grid#TaskbarBackground > Grid > Rectangle#BackgroundFill, Rectangle#BackgroundStroke
-// Tests inject the helper into this process instead of Explorer and read the real brushes back through the XAML API.
+//   Grid > Grid#TaskbarBackground > Grid > Rectangle#BackgroundFill, Rectangle#BackgroundStroke
+// The first island's root Grid is named TaskbarFrame (as Taskbar.TaskbarFrame is in Explorer); the second has no frame,
+// so the helper sizes it by its topmost element. Tests inject the helper into this process instead of Explorer and read
+// the real brushes back through the XAML API. The process is DPI-unaware, so window pixels are DIPs.
 //
-// stdin commands: "fill" (prints the BackgroundFill and BackgroundStroke brushes; acrylic as source, tint, tint opacity and
-// fallback colour), "pixel" (renders the window and prints
-// the centre pixel), "probe" (opacity, visibility and width of the style probes Inside and Outside), "quit". stdout: "ready <pid>", then one line per command.
+// stdin commands, for the first island unless followed by " 2": "fill" (prints the BackgroundFill and BackgroundStroke
+// brushes; acrylic as source, tint, tint opacity and fallback colour), "pixel" (renders the window and prints the centre
+// pixel), "probe" (opacity, visibility and width of the style probes Inside and Outside), "size" (the root's laid-out size,
+// "size=<w>x<h>"); "resize <island> <width> <height>" (resizes that window and its island, prints "resized"); "quit".
+// stdout: "ready <pid> <thread> <window 1> <window 2>" (window handles in decimal), then one line per command.
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -72,28 +77,39 @@ struct IXamlCompositionBrushBase : IInspectable
 };
 constexpr int FindNameSlot = 6 + 45; // IInspectable (6) + IFrameworkElement.FindName (method 45)
 
-const wchar_t Markup[] =
-    L"<Grid xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' "
-    L"xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' Background='#FF101010'>"
-    L"<Grid x:Name='TaskbarBackground'><Grid>"
-    L"<Rectangle x:Name='BackgroundFill' Fill='#FF202020' />"
-    L"<Rectangle x:Name='BackgroundStroke' Fill='#FF404040' Height='1' VerticalAlignment='Top' />"
-    L"</Grid></Grid>"
-    // Style rule probes (top-left, away from the centre pixel the brush tests read).
-    L"<StackPanel x:Name='StyleScope' HorizontalAlignment='Left' VerticalAlignment='Top'>"
-    L"<Border x:Name='Inside' Width='40' Height='4' Background='#FF00FF00' /></StackPanel>"
-    L"<Border x:Name='Outside' Width='40' Height='4' HorizontalAlignment='Right' VerticalAlignment='Top' Background='#FF0000FF' />"
-    // A template part whose CornerRadius is a TemplateBinding, like the taskbar's button backgrounds.
-    L"<ContentControl x:Name='Templated' CornerRadius='3' HorizontalAlignment='Left' VerticalAlignment='Bottom'><ContentControl.Template>"
-    L"<ControlTemplate TargetType='ContentControl'><Border x:Name='TemplatedBorder' Width='10' Height='4' Background='#FFFF00FF' "
-    L"CornerRadius='{TemplateBinding CornerRadius}' /></ControlTemplate></ContentControl.Template></ContentControl>"
-    L"</Grid>";
+#define ROOT L"<Grid xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' "
+// Style rule probes (top-left, away from the centre pixel the brush tests read), then a template part whose CornerRadius
+// is a TemplateBinding, like the taskbar's button backgrounds.
+#define BODY \
+    L"<Grid x:Name='TaskbarBackground'><Grid>" \
+    L"<Rectangle x:Name='BackgroundFill' Fill='#FF202020' />" \
+    L"<Rectangle x:Name='BackgroundStroke' Fill='#FF404040' Height='1' VerticalAlignment='Top' />" \
+    L"</Grid></Grid>" \
+    L"<StackPanel x:Name='StyleScope' HorizontalAlignment='Left' VerticalAlignment='Top'>" \
+    L"<Border x:Name='Inside' Width='40' Height='4' Background='#FF00FF00' /></StackPanel>" \
+    L"<Border x:Name='Outside' Width='40' Height='4' HorizontalAlignment='Right' VerticalAlignment='Top' Background='#FF0000FF' />" \
+    L"<ContentControl x:Name='Templated' CornerRadius='3' HorizontalAlignment='Left' VerticalAlignment='Bottom'><ContentControl.Template>" \
+    L"<ControlTemplate TargetType='ContentControl'><Border x:Name='TemplatedBorder' Width='10' Height='4' Background='#FFFF00FF' " \
+    L"CornerRadius='{TemplateBinding CornerRadius}' /></ControlTemplate></ContentControl.Template></ContentControl>" \
+    L"</Grid>"
+const wchar_t FrameMarkup[] = ROOT L"x:Name='TaskbarFrame' Background='#FF101010'>" BODY;
+const wchar_t PlainMarkup[] = ROOT L"Background='#FF101010'>" BODY;
+#undef ROOT
+#undef BODY
 
 constexpr UINT CommandMessage = WM_APP + 1;
 constexpr UINT RenderFullContent = 0x2; // PW_RENDERFULLCONTENT (not in the MinGW headers)
-HWND g_window;
-IShape *g_fill, *g_stroke;
-IInspectable *g_inside, *g_outside, *g_templated;
+
+// One stand-in taskbar: a top-level window, the XAML island window inside it and the elements the commands read.
+struct Island
+{
+    HWND window, content;
+    IInspectable *source, *root;
+    IShape *fill, *stroke;
+    IInspectable *inside, *outside, *templated;
+};
+constexpr int IslandCount = 2;
+Island g_islands[IslandCount];
 constexpr IID IidVisualTreeHelperStatics = {0xe75758c4, 0xd25d, 0x4b1d, {0x97, 0x1f, 0x59, 0x6f, 0x17, 0xf1, 0x2b, 0xaa}};
 constexpr IID IidDependencyObject = {0x5c526665, 0xf60e, 0x4912, {0xaf, 0x59, 0x5f, 0xe0, 0x68, 0x0f, 0x08, 0x9d}};
 constexpr IID IidBorder = {0x797c4539, 0x45bd, 0x4633, {0xa0, 0x44, 0xbf, 0xb0, 0x2e, 0xf5, 0x17, 0x0f}};
@@ -103,6 +119,7 @@ struct XamlCornerRadius
     double TopLeft, TopRight, BottomRight, BottomLeft;
 };
 constexpr int OpacitySlot = 6 + 3, VisibilitySlot = 6 + 15, WidthSlot = 6 + 9; // IUIElement.get_Opacity/get_Visibility, IFrameworkElement.get_Width
+constexpr int ActualWidthSlot = 6 + 7, ActualHeightSlot = 6 + 8;               // IFrameworkElement.get_ActualWidth/get_ActualHeight
 
 void Fail(const char *step, HRESULT hr)
 {
@@ -165,12 +182,12 @@ void PrintProbe(const char *label, IInspectable *element)
 }
 
 // The template part's corner radius ("templated=r:<top left>"), or -1 when the template is not applied yet.
-void PrintTemplated()
+void PrintTemplated(IInspectable *templated)
 {
     double radius = -1;
     void *statics = nullptr, *reference = nullptr, *child = nullptr, *border = nullptr;
     HSTRING name = Text(L"Windows.UI.Xaml.Media.VisualTreeHelper");
-    if (SUCCEEDED(RoGetActivationFactory(name, IidVisualTreeHelperStatics, &statics)) && SUCCEEDED(g_templated->QueryInterface(IidDependencyObject, &reference)))
+    if (SUCCEEDED(RoGetActivationFactory(name, IidVisualTreeHelperStatics, &statics)) && SUCCEEDED(templated->QueryInterface(IidDependencyObject, &reference)))
     {
         using GetChild = HRESULT(STDMETHODCALLTYPE *)(void *, void *, int, void **);
         if (SUCCEEDED(reinterpret_cast<GetChild>((*static_cast<void ***>(statics))[GetChildSlot])(statics, reference, 0, &child)) && child &&
@@ -250,14 +267,29 @@ void PrintBrush(const char *label, IShape *shape)
     brush->Release();
 }
 
-void PrintPixel()
+// "size=<width>x<height>": the island root's laid-out size.
+void PrintSize(IInspectable *root)
+{
+    double width = -1, height = -1;
+    void *framework = nullptr;
+    if (SUCCEEDED(root->QueryInterface(IidFrameworkElement, &framework)))
+    {
+        void **table = *static_cast<void ***>(framework);
+        reinterpret_cast<HRESULT(STDMETHODCALLTYPE *)(void *, double *)>(table[ActualWidthSlot])(framework, &width);
+        reinterpret_cast<HRESULT(STDMETHODCALLTYPE *)(void *, double *)>(table[ActualHeightSlot])(framework, &height);
+        static_cast<IUnknown *>(framework)->Release();
+    }
+    printf("size=%.0fx%.0f\n", width, height);
+}
+
+void PrintPixel(HWND window)
 {
     RECT bounds;
-    GetClientRect(g_window, &bounds);
+    GetClientRect(window, &bounds);
     HDC screen = GetDC(nullptr), memory = CreateCompatibleDC(screen);
     HBITMAP bitmap = CreateCompatibleBitmap(screen, bounds.right, bounds.bottom);
     HGDIOBJ old = SelectObject(memory, bitmap);
-    BOOL rendered = PrintWindow(g_window, memory, PW_CLIENTONLY | RenderFullContent);
+    BOOL rendered = PrintWindow(window, memory, PW_CLIENTONLY | RenderFullContent);
     COLORREF pixel = GetPixel(memory, bounds.right / 2, bounds.bottom / 2);
     SelectObject(memory, old);
     DeleteObject(bitmap);
@@ -266,25 +298,37 @@ void PrintPixel()
     printf("pixel=%s#%02X%02X%02X\n", rendered ? "" : "unrendered:", GetRValue(pixel), GetGValue(pixel), GetBValue(pixel));
 }
 
+enum Command : WPARAM { FillCommand = 1, PixelCommand, ProbeCommand, SizeCommand, ResizeCommand };
+
+// lParam: the island index in bits 0-7; for a resize, the width in bits 8-31 and the height from bit 32.
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     if (message == CommandMessage)
     {
-        if (wParam == 1)
+        Island &island = g_islands[lParam & 0xFF];
+        if (wParam == FillCommand)
         {
-            PrintBrush("fill", g_fill);
+            PrintBrush("fill", island.fill);
             printf(" ");
-            PrintBrush("stroke", g_stroke);
+            PrintBrush("stroke", island.stroke);
             printf("\n");
         }
-        else if (wParam == 2) PrintPixel();
-        else if (wParam == 3)
+        else if (wParam == PixelCommand) PrintPixel(island.window);
+        else if (wParam == ProbeCommand)
         {
-            PrintProbe("inside", g_inside);
+            PrintProbe("inside", island.inside);
             printf(" ");
-            PrintProbe("outside", g_outside);
-            PrintTemplated();
+            PrintProbe("outside", island.outside);
+            PrintTemplated(island.templated);
             printf("\n");
+        }
+        else if (wParam == SizeCommand) PrintSize(island.root);
+        else if (wParam == ResizeCommand)
+        {
+            int width = static_cast<int>((lParam >> 8) & 0xFFFFFF), height = static_cast<int>((lParam >> 32) & 0xFFFFFF);
+            SetWindowPos(island.window, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(island.content, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            printf("resized\n");
         }
         fflush(stdout);
         return 0;
@@ -294,18 +338,81 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
+// The island a command names: " 2" after the command is the second island; anything else the first.
+LPARAM IslandOf(const char *rest)
+{
+    int number = 1;
+    return sscanf(rest, "%d", &number) == 1 && number >= 1 && number <= IslandCount ? number - 1 : 0;
+}
+
 DWORD WINAPI ReadCommands(void *)
 {
     char line[64];
+    HWND window = g_islands[0].window;
     while (fgets(line, sizeof line, stdin))
     {
-        if (strncmp(line, "fill", 4) == 0) PostMessageW(g_window, CommandMessage, 1, 0);
-        else if (strncmp(line, "pixel", 5) == 0) PostMessageW(g_window, CommandMessage, 2, 0);
-        else if (strncmp(line, "probe", 5) == 0) PostMessageW(g_window, CommandMessage, 3, 0);
+        int island = 0, width = 0, height = 0;
+        if (strncmp(line, "fill", 4) == 0) PostMessageW(window, CommandMessage, FillCommand, IslandOf(line + 4));
+        else if (strncmp(line, "pixel", 5) == 0) PostMessageW(window, CommandMessage, PixelCommand, IslandOf(line + 5));
+        else if (strncmp(line, "probe", 5) == 0) PostMessageW(window, CommandMessage, ProbeCommand, IslandOf(line + 5));
+        else if (strncmp(line, "size", 4) == 0) PostMessageW(window, CommandMessage, SizeCommand, IslandOf(line + 4));
+        else if (strncmp(line, "resize", 6) == 0)
+        {
+            if (sscanf(line + 6, "%d %d %d", &island, &width, &height) == 3 && island >= 1 && island <= IslandCount && width > 0 &&
+                width < 0x10000 && height > 0 && height < 0x10000)
+                PostMessageW(window, CommandMessage, ResizeCommand,
+                             static_cast<LPARAM>(island - 1) | static_cast<LPARAM>(width) << 8 | static_cast<LPARAM>(height) << 32);
+            else
+            {
+                printf("error resize\n");
+                fflush(stdout);
+            }
+        }
         else if (strncmp(line, "quit", 4) == 0) break;
     }
-    PostMessageW(g_window, WM_CLOSE, 0, 0);
+    PostMessageW(window, WM_CLOSE, 0, 0);
     return 0;
+}
+
+// An off-screen, never activated window (nothing appears on the user's desktop) hosting a XAML island with the markup.
+void CreateIsland(Island &island, const wchar_t *className, const wchar_t *markup, int top, int width, int height)
+{
+    WNDCLASSW windowClass{};
+    windowClass.lpfnWndProc = WindowProc;
+    windowClass.hInstance = GetModuleHandleW(nullptr);
+    windowClass.lpszClassName = className;
+    RegisterClassW(&windowClass);
+    island.window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, className, L"Soltex taskbar test", WS_POPUP, -12000, top, width, height,
+                                    nullptr, nullptr, windowClass.hInstance, nullptr);
+    if (!island.window) Fail("window", HRESULT_FROM_WIN32(GetLastError()));
+
+    IInspectable *inner = nullptr;
+    HRESULT hr = Factory<IDesktopWindowXamlSourceFactory>(L"Windows.UI.Xaml.Hosting.DesktopWindowXamlSource", IidDesktopWindowXamlSourceFactory)
+                     ->CreateInstance(nullptr, &inner, &island.source);
+    if (FAILED(hr)) Fail("xamlsource", hr);
+    IDesktopWindowXamlSourceNative *native = nullptr;
+    hr = island.source->QueryInterface(__uuidof(IDesktopWindowXamlSourceNative), reinterpret_cast<void **>(&native));
+    if (FAILED(hr)) Fail("native", hr);
+    hr = native->AttachToWindow(island.window);
+    if (FAILED(hr)) Fail("attach", hr);
+    native->get_WindowHandle(&island.content);
+    SetWindowPos(island.content, nullptr, 0, 0, width, height, SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOZORDER);
+
+    HSTRING text = Text(markup);
+    hr = Factory<IXamlReaderStatics>(L"Windows.UI.Xaml.Markup.XamlReader", IidXamlReaderStatics)->Load(text, &island.root);
+    WindowsDeleteString(text);
+    if (FAILED(hr)) Fail("xamlreader", hr);
+    void *element = nullptr, *xamlSource = nullptr;
+    if (FAILED(island.root->QueryInterface(IidUIElement, &element))) Fail("uielement", E_NOINTERFACE);
+    if (FAILED(island.source->QueryInterface(IidDesktopWindowXamlSource, &xamlSource))) Fail("sourceinterface", E_NOINTERFACE);
+    hr = static_cast<IDesktopWindowXamlSource *>(xamlSource)->put_Content(static_cast<IInspectable *>(element));
+    if (FAILED(hr)) Fail("content", hr);
+    island.fill = FindShape(island.root, L"BackgroundFill");
+    island.stroke = FindShape(island.root, L"BackgroundStroke");
+    island.inside = FindElement(island.root, L"Inside");
+    island.outside = FindElement(island.root, L"Outside");
+    island.templated = FindElement(island.root, L"Templated");
+    ShowWindow(island.window, SW_SHOWNOACTIVATE);
 }
 
 } // namespace
@@ -321,49 +428,15 @@ int wmain(int argc, wchar_t **argv)
     hr = Factory<IWindowsXamlManagerStatics>(L"Windows.UI.Xaml.Hosting.WindowsXamlManager", IidWindowsXamlManagerStatics)->InitializeForCurrentThread(&manager);
     if (FAILED(hr)) Fail("xamlmanager", hr);
 
-    WNDCLASSW windowClass{};
-    windowClass.lpfnWndProc = WindowProc;
-    windowClass.hInstance = GetModuleHandleW(nullptr);
-    windowClass.lpszClassName = L"SoltexTaskbarTestHost";
-    RegisterClassW(&windowClass);
-    // Off-screen and never activated: nothing appears on the user's desktop.
-    g_window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, windowClass.lpszClassName, L"Soltex taskbar test", WS_POPUP,
-                               -12000, -12000, 320, 48, nullptr, nullptr, windowClass.hInstance, nullptr);
-    if (!g_window) Fail("window", HRESULT_FROM_WIN32(GetLastError()));
+    // Two stand-in taskbars of different sizes, each with its own window class (passed to the helper as taskbar classes).
+    CreateIsland(g_islands[0], L"SoltexTaskbarTestHost", FrameMarkup, -12000, 1200, 48);
+    CreateIsland(g_islands[1], L"SoltexTaskbarTestHost2", PlainMarkup, -11800, 800, 48);
 
-    IInspectable *inner = nullptr, *source = nullptr;
-    hr = Factory<IDesktopWindowXamlSourceFactory>(L"Windows.UI.Xaml.Hosting.DesktopWindowXamlSource", IidDesktopWindowXamlSourceFactory)
-             ->CreateInstance(nullptr, &inner, &source);
-    if (FAILED(hr)) Fail("xamlsource", hr);
-    IDesktopWindowXamlSourceNative *native = nullptr;
-    hr = source->QueryInterface(__uuidof(IDesktopWindowXamlSourceNative), reinterpret_cast<void **>(&native));
-    if (FAILED(hr)) Fail("native", hr);
-    hr = native->AttachToWindow(g_window);
-    if (FAILED(hr)) Fail("attach", hr);
-    HWND island = nullptr;
-    native->get_WindowHandle(&island);
-    SetWindowPos(island, nullptr, 0, 0, 320, 48, SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOZORDER);
-
-    HSTRING markup = Text(Markup);
-    IInspectable *root = nullptr;
-    hr = Factory<IXamlReaderStatics>(L"Windows.UI.Xaml.Markup.XamlReader", IidXamlReaderStatics)->Load(markup, &root);
-    WindowsDeleteString(markup);
-    if (FAILED(hr)) Fail("xamlreader", hr);
-    void *element = nullptr, *xamlSource = nullptr;
-    if (FAILED(root->QueryInterface(IidUIElement, &element))) Fail("uielement", E_NOINTERFACE);
-    if (FAILED(source->QueryInterface(IidDesktopWindowXamlSource, &xamlSource))) Fail("sourceinterface", E_NOINTERFACE);
-    hr = static_cast<IDesktopWindowXamlSource *>(xamlSource)->put_Content(static_cast<IInspectable *>(element));
-    if (FAILED(hr)) Fail("content", hr);
-    g_fill = FindShape(root, L"BackgroundFill");
-    g_stroke = FindShape(root, L"BackgroundStroke");
-    g_inside = FindElement(root, L"Inside");
-    g_outside = FindElement(root, L"Outside");
-    g_templated = FindElement(root, L"Templated");
-
-    ShowWindow(g_window, SW_SHOWNOACTIVATE);
-    printf("ready %lu %lu\n", GetCurrentProcessId(), GetCurrentThreadId());
+    printf("ready %lu %lu %llu %llu\n", GetCurrentProcessId(), GetCurrentThreadId(),
+           static_cast<unsigned long long>(reinterpret_cast<UINT_PTR>(g_islands[0].window)),
+           static_cast<unsigned long long>(reinterpret_cast<UINT_PTR>(g_islands[1].window)));
     fflush(stdout);
-    if (linger > 0) SetTimer(g_window, 1, static_cast<UINT>(linger) * 1000, nullptr);
+    if (linger > 0) SetTimer(g_islands[0].window, 1, static_cast<UINT>(linger) * 1000, nullptr);
     else if (HANDLE reader = CreateThread(nullptr, 0, ReadCommands, nullptr, 0, nullptr)) CloseHandle(reader);
 
     MSG message;

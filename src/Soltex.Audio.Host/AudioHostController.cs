@@ -317,7 +317,14 @@ public sealed partial class AudioHostController : IAsyncDisposable
         { try { path.Path.Dispose(); } catch (Exception error) { lastError = "Closing " + bus + ": " + error.Message; failedRetirement.Add(bus); return false; } }
         return true;
     }
-    private void StopAll() { StopStreamMix(); streamFailure = null; StopProbe(); foreach (var bus in active.Keys.ToArray()) Retire(bus); peaks = new Dictionary<string, float?>(); }
+    private void StopAll()
+    {
+        StopStreamMix(); streamFailure = null; StopProbe();
+        // Fade every channel out together, so closing them one by one waits for one fade in total.
+        foreach (var path in active.Values) { try { path.Path.BeginStop(); } catch (Exception error) { lastError = "Fading out: " + error.Message; } }
+        foreach (var bus in active.Keys.ToArray()) Retire(bus);
+        peaks = new Dictionary<string, float?>();
+    }
     private HostSnapshot Snapshot() => new(streamMix?.Status.Running == true || active.Values.Any(p => p.Path.Status.Running && p.Path.Status.Failure is null), profile with { StreamMix = profile.StreamMix with { Sends = profile.StreamMix.Sends.ToArray() }, Channels = profile.Channels.Select(c => c with
         { OutputPriorityIds = c.OutputPriorityIds.ToArray(), ExcludedOutputIds = c.ExcludedOutputIds.ToArray(), Dsp = c.Dsp with { Bands = c.Dsp.Bands.ToArray() } }).ToArray() }, profile.Channels.Select(c =>
     {

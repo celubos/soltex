@@ -128,7 +128,7 @@ public partial class MicrophonePathView : UserControl
             SourceName.Text = DestinationName.Text = ReceivingName.Text = "—";
             SourceDetail.Text = ReceivingDetail.Text = InputLevel.Text = OutputLevel.Text = "";
             ProcessingText.Text = "";
-            InputMeter.Value = OutputMeter.Value = 0;
+            InputMeter.Level = OutputMeter.Level = -1;
             CopyName.Visibility = Visibility.Collapsed;
             TestButton.IsEnabled = StartStopButton.IsEnabled = ChangeButton.IsEnabled = SoundButton.IsEnabled = false;
             return;
@@ -179,9 +179,10 @@ public partial class MicrophonePathView : UserControl
         TestButton.Content = testing ? "Stop test" : "Test my microphone";
     }
 
-    private static void ShowLevel(ProgressBar meter, TextBlock label, float? peak, string unknown)
+    private static void ShowLevel(SignalMeter meter, TextBlock label, float? peak, string unknown)
     {
-        meter.Value = MicrophonePath.MeterPosition(peak);
+        // The meter rises at once and falls back smoothly between readings; no reading means an empty track.
+        meter.Level = peak is { } measured && float.IsFinite(measured) ? measured : -1;
         string text = peak is { } value ? MicrophonePath.PeakDbfs(value).ToString("0", CultureInfo.InvariantCulture) + " dBFS peak" : unknown;
         label.Text = text;
         AutomationProperties.SetItemStatus(meter, text);

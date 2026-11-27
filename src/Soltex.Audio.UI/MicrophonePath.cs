@@ -114,7 +114,7 @@ public static class MicrophonePath
         if (dsp.Compressor.Enabled) steps.Add("Compressor");
         if (dsp.Stereo.Enabled) steps.Add("Stereo image");
         // The output stage is a hard clamp at the ceiling, so it is named for what it does rather than called a limiter.
-        steps.Add("Clipping guard at " + Decibels(20 * Math.Log10(Math.Clamp(dsp.OutputCeiling, 0.01, 1))));
+        steps.Add((dsp.Limiter.Enabled ? "Safety limiter at " : "Clipping guard at ") + Decibels(20 * Math.Log10(Math.Clamp(dsp.OutputCeiling, 0.01, 1))));
         return steps;
     }
 

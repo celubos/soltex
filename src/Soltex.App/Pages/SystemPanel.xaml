@@ -1,6 +1,7 @@
 <UserControl x:Class="Soltex.App.Pages.SystemPanel"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:audio="clr-namespace:Soltex.Audio.UI;assembly=Soltex.Audio.UI">
     <StackPanel>
         <Border Style="{StaticResource Shell.Card}" AutomationProperties.Name="Full De-Windows">
             <StackPanel>
@@ -28,16 +29,15 @@
         </Border>
 
         <Border Style="{StaticResource Shell.Card}" AutomationProperties.Name="Windows Update">
-            <DockPanel>
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button x:Name="CheckUpdatesButton" Style="{StaticResource Studio.GhostButton}" Content="Check now" Margin="0,0,4,0" Click="CheckUpdates_Click" />
-                    <Button Content="Windows Update" Click="OpenWindowsUpdate_Click" AutomationProperties.Name="Open Windows Update" />
-                </StackPanel>
-                <StackPanel VerticalAlignment="Center">
+            <!-- The buttons move below the text when the page is narrow. -->
+            <audio:ResponsiveRow MinPrimaryWidth="200" Spacing="4">
+                <StackPanel VerticalAlignment="Center" Margin="0,0,8,0">
                     <TextBlock Style="{StaticResource Shell.CardTitle}" Text="Windows Update" />
                     <TextBlock x:Name="UpdateText" Style="{StaticResource Shell.Secondary}" Margin="0,2,0,0" AutomationProperties.LiveSetting="Polite" />
                 </StackPanel>
-            </DockPanel>
+                <Button x:Name="CheckUpdatesButton" Style="{StaticResource Studio.GhostButton}" Content="Check now" VerticalAlignment="Center" Click="CheckUpdates_Click" />
+                <Button Content="Windows Update" Click="OpenWindowsUpdate_Click" VerticalAlignment="Center" AutomationProperties.Name="Open Windows Update" />
+            </audio:ResponsiveRow>
         </Border>
     </StackPanel>
 </UserControl>

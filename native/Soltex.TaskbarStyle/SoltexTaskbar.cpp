@@ -15,12 +15,22 @@
 // DLL creates on that thread. AdviseVisualTreeChange runs on a worker thread, because the call waits for the UI thread.
 // The worker also waits for the app's signal, reads the settings and posts to the windows.
 //
-// Settings: HKCU\<key> values Look, Color, Line and Styles (REG_MULTI_SZ), read when the app signals the named event
-// "<event>.<process id>". Report: Status ("targets= applied= look= hr= styled= styleApplied= styleHr= request="), Targets,
-// HelperVersion, HelperProcess. "request" echoes the Request value of the settings the pass applied, so the app can tell
-// a report about its own change from one written by an earlier pass.
+// Settings: HKCU\<key> values Look, Color, Line, Styles (REG_MULTI_SZ) and Taskbars (REG_MULTI_SZ, optional), read when
+// the app signals the named event "<event>.<process id>". Taskbars gives single taskbars their own look, one entry per
+// taskbar window: "hwnd=<decimal HWND>;look=<0-4>;color=<decimal ARGB>;line=<0|1>" (unknown fields ignored, malformed
+// entries skipped); every other taskbar shows Look/Color/Line. Report: Status ("targets= applied= look= hr= styled=
+// styleApplied= styleHr= request= mapped="), Targets, HelperVersion, HelperProcess. "request" echoes the Request value of
+// the settings the pass applied, so the app can tell a report about its own change from one written by an earlier pass;
+// "mapped" counts the background rectangles that showed a Taskbars entry's look.
+//
+// Which taskbar window a rectangle belongs to: XAML does not say, so the helper compares sizes. It traces the rectangle up
+// the visual tree to its Taskbar.TaskbarFrame (or, without one, the topmost known FrameworkElement), reads that element's
+// ActualWidth/ActualHeight and looks for the one Shell_TrayWnd/Shell_SecondaryTrayWnd of this process whose size in DIPs
+// matches within 2 DIPs. No match, or several (two displays with the same taskbar size), leaves the global look. A match
+// is kept until the Taskbars value changes or the window goes away; a rectangle added later is matched on its first pass.
 
 #define WIN32_LEAN_AND_MEAN
+#define _WIN32_WINNT 0x0A00 // Windows 10 declarations (GetDpiForWindow); the XAML taskbar is Windows 11 only
 #include <windows.h>
 #include <ocidl.h>
 #include <oleauto.h>
@@ -34,7 +44,7 @@
 
 namespace {
 
-constexpr DWORD HelperVersion = 2;
+constexpr DWORD HelperVersion = 3; // 3: Taskbars (a look per taskbar window) and "mapped=" in Status
 
 // {053DF8EC-D4D0-4868-BC22-F1EEFC050065}
 constexpr CLSID ClsidTap = {0x053df8ec, 0xd4d0, 0x4868, {0xbc, 0x22, 0xf1, 0xee, 0xfc, 0x05, 0x00, 0x65}};
@@ -47,6 +57,7 @@ constexpr IID IidDependencyPropertyStatics = {0x49e5f28f, 0x8259, 0x4d5c, {0xaa,
 constexpr IID IidBindingExpression = {0x516a19a5, 0xc2fd, 0x4a9e, {0x9f, 0xd3, 0x9a, 0xa4, 0x2f, 0x99, 0x5a, 0x3c}};
 constexpr IID IidBindingBase = {0x1589a2ab, 0x3d15, 0x49bc, {0xa4, 0x47, 0x8a, 0x54, 0x48, 0xe5, 0x88, 0x70}};
 constexpr IID IidBindingOperationsStatics = {0xe155ef73, 0x95a0, 0x4aab, {0x8c, 0x7d, 0x2a, 0x47, 0xda, 0x07, 0x3c, 0x79}};
+constexpr IID IidFrameworkElement = {0xa391d09b, 0x4a99, 0x4b7c, {0x9d, 0x8d, 0x6f, 0xa5, 0xd0, 0x1f, 0x6f, 0xbf}};
 
 struct IXamlReaderStatics : IInspectable
 {
@@ -78,6 +89,19 @@ struct IBindingOperationsStatics : IInspectable
 {
     virtual HRESULT STDMETHODCALLTYPE SetBinding(IInspectable *target, IInspectable *property, IInspectable *binding) = 0;
 };
+// IFrameworkElement up to ActualWidth and ActualHeight (its methods 7 and 8).
+struct IFrameworkElementSize : IInspectable
+{
+    virtual HRESULT STDMETHODCALLTYPE get_Triggers(IInspectable **value) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_Resources(IInspectable **value) = 0;
+    virtual HRESULT STDMETHODCALLTYPE put_Resources(IInspectable *value) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_Tag(IInspectable **value) = 0;
+    virtual HRESULT STDMETHODCALLTYPE put_Tag(IInspectable *value) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_Language(HSTRING *value) = 0;
+    virtual HRESULT STDMETHODCALLTYPE put_Language(HSTRING value) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_ActualWidth(double *value) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_ActualHeight(double *value) = 0;
+};
 
 enum Look : DWORD { LookDefault = 0, LookClear = 1, LookOpaque = 2, LookAcrylic = 3, LookBlur = 4 };
 
@@ -92,12 +116,20 @@ struct Settings
     bool line = true; // show the thin line above the taskbar
 };
 
+// One Taskbars entry: the look for one taskbar window.
+struct WindowLook
+{
+    DWORD window; // the HWND's low 32 bits (window handles are 32-bit values, sign- or zero-extended)
+    Settings look;
+};
+
 struct Config
 {
     wchar_t key[200] = L"Software\\Soltex\\Taskbar";
     wchar_t event[120] = L"Local\\SoltexTaskbar2";
     wchar_t log[MAX_PATH] = L"";
     wchar_t dump[MAX_PATH] = L""; // write the visual tree seen at attach time here (types and names only)
+    wchar_t taskbarClasses[256] = L""; // more window classes that count as taskbars, comma-separated (the test host's)
     bool verbose = false;
 };
 
@@ -134,6 +166,17 @@ struct Target
     unsigned fillIndex;
     IInspectable *original; // held, so XAML cannot release the original brush while ours is shown
     HRESULT result;         // last pass
+    HWND window;            // the taskbar window it was matched to, or null (kept while the Taskbars value stays the same)
+    unsigned long long mapKey; // the Taskbars value (hash) that match was made under
+    bool mapped;            // the last pass showed a Taskbars entry's look
+};
+
+// The parent of an element in the visual tree, so a background rectangle can be traced up to its taskbar.
+struct Link
+{
+    InstanceHandle handle, parent;
+    bool used, deleted;
+    bool frame; // Taskbar.TaskbarFrame (or named TaskbarFrame, as in the test host)
 };
 
 // One element a style rule applies to.
@@ -158,12 +201,16 @@ struct Dispatcher
 };
 
 constexpr int NodeCapacity = 16384, MaxTargets = 32, MaxDepth = 4, MaxDispatchers = 8, MaxRules = 48, MaxAnchors = 16, MaxStyled = 1024;
+constexpr int LinkCapacity = NodeCapacity, MaxChain = 64, MaxSizeCandidates = 8, MaxWindowLooks = 16, MaxTaskbarWindows = 16;
+constexpr DWORD MaxTaskbarsBytes = 64 * 1024;
 
 Config g_config;
 HMODULE g_module;
 SRWLOCK g_lock = SRWLOCK_INIT; // guards everything below except the dump buffer
 Node g_nodes[NodeCapacity];
 int g_nodeCount;
+Link g_links[LinkCapacity];
+int g_linkCount, g_linkDeleted;
 Target g_targets[MaxTargets];
 int g_targetCount;
 Styled g_styled[MaxStyled];
@@ -220,7 +267,7 @@ void Log(const wchar_t *format, ...)
     CloseHandle(file);
 }
 
-// "key=...|event=...|log=...|dump=...|verbose=1"
+// "key=...|event=...|log=...|dump=...|verbose=1|taskbarClasses=ClassA,ClassB"
 void ParseConfig(const wchar_t *data)
 {
     if (!data) return;
@@ -242,6 +289,7 @@ void ParseConfig(const wchar_t *data)
             else if (name == 3 && wcsncmp(data, L"log", 3) == 0) copy(g_config.log, ARRAYSIZE(g_config.log));
             else if (name == 4 && wcsncmp(data, L"dump", 4) == 0) copy(g_config.dump, ARRAYSIZE(g_config.dump));
             else if (name == 7 && wcsncmp(data, L"verbose", 7) == 0) g_config.verbose = valueLength == 1 && equals[1] == L'1';
+            else if (name == 14 && wcsncmp(data, L"taskbarClasses", 14) == 0) copy(g_config.taskbarClasses, ARRAYSIZE(g_config.taskbarClasses));
         }
         if (!end) break;
         data = end + 1;
@@ -317,14 +365,119 @@ DWORD ReadRequest()
     return value;
 }
 
+// A whole field of decimal digits, optionally after a minus sign. False when empty, not a number, or past 64 bits.
+bool Decimal(const wchar_t *text, size_t length, unsigned long long *value, bool *negative)
+{
+    *negative = length > 0 && text[0] == L'-';
+    size_t i = *negative ? 1 : 0;
+    if (i == length) return false;
+    unsigned long long number = 0;
+    for (; i < length; i++)
+    {
+        if (text[i] < L'0' || text[i] > L'9') return false;
+        unsigned digit = static_cast<unsigned>(text[i] - L'0');
+        if (number > (~0ull - digit) / 10) return false;
+        number = number * 10 + digit;
+    }
+    *value = number;
+    return true;
+}
+
+// One Taskbars entry, "hwnd=<decimal HWND>;look=<0-4>;color=<decimal ARGB>;line=<0|1>". Unknown fields are ignored. An
+// entry that lacks one of these four, or has a value that is not a number in range, is malformed.
+bool ParseWindowLook(const wchar_t *entry, WindowLook *out)
+{
+    WindowLook result{};
+    unsigned found = 0;
+    for (const wchar_t *field = entry;;)
+    {
+        const wchar_t *end = wcschr(field, L';');
+        size_t length = end ? static_cast<size_t>(end - field) : wcslen(field);
+        if (const wchar_t *equals = static_cast<const wchar_t *>(wmemchr(field, L'=', length)))
+        {
+            size_t name = static_cast<size_t>(equals - field);
+            auto is = [&](const wchar_t *known) { return wcslen(known) == name && wcsncmp(field, known, name) == 0; };
+            unsigned long long value = 0;
+            bool negative = false, number = Decimal(equals + 1, length - name - 1, &value, &negative);
+            if (is(L"hwnd"))
+            {
+                // A window handle written signed or unsigned, 32-bit or sign-extended to 64 bits.
+                bool valid = number && (negative ? value <= 0x80000000ull : value <= 0xFFFFFFFFull || (value >> 32) == 0xFFFFFFFFull);
+                result.window = static_cast<DWORD>(negative ? 0 - value : value);
+                if (!valid || !result.window) return false;
+                found |= 1;
+            }
+            else if (is(L"look"))
+            {
+                if (!number || negative || value > LookBlur) return false;
+                result.look.look = static_cast<DWORD>(value);
+                found |= 2;
+            }
+            else if (is(L"color"))
+            {
+                if (!number || negative || value > 0xFFFFFFFFull) return false;
+                result.look.color = static_cast<DWORD>(value);
+                found |= 4;
+            }
+            else if (is(L"line"))
+            {
+                if (!number || negative || value > 1) return false;
+                result.look.line = value != 0;
+                found |= 8;
+            }
+        }
+        if (!end) break;
+        field = end + 1;
+    }
+    if (found != 15) return false;
+    *out = result;
+    return true;
+}
+
+// Reads the Taskbars value into looks (at most MaxWindowLooks; malformed entries skipped, the first entry for a window
+// wins) and returns how many. *key is a hash of the whole value, or 0 when there is none.
+int ReadWindowLooks(WindowLook *looks, unsigned long long *key)
+{
+    *key = 0;
+    DWORD bytes = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER, g_config.key, L"Taskbars", RRF_RT_REG_MULTI_SZ, nullptr, nullptr, &bytes) != ERROR_SUCCESS ||
+        bytes < sizeof(wchar_t) || bytes > MaxTaskbarsBytes)
+        return 0;
+    // Two spare NULs beyond what Windows fills, so the list always ends.
+    wchar_t *text = static_cast<wchar_t *>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bytes + 2 * sizeof(wchar_t)));
+    if (!text) return 0;
+    int count = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER, g_config.key, L"Taskbars", RRF_RT_REG_MULTI_SZ, nullptr, text, &bytes) == ERROR_SUCCESS)
+    {
+        unsigned long long hash = 14695981039346656037ull; // FNV-1a
+        for (DWORD i = 0; i < bytes; i++) hash = (hash ^ reinterpret_cast<const BYTE *>(text)[i]) * 1099511628211ull;
+        *key = hash ? hash : 1;
+        for (const wchar_t *line = text; *line; line += wcslen(line) + 1)
+        {
+            WindowLook look;
+            if (!ParseWindowLook(line, &look))
+            {
+                Log(L"ignored taskbar entry: %ls", line);
+                continue;
+            }
+            bool known = false;
+            for (int i = 0; i < count; i++) known |= looks[i].window == look.window;
+            if (!known && count < MaxWindowLooks) looks[count++] = look;
+        }
+    }
+    HeapFree(GetProcessHeap(), 0, text);
+    return count;
+}
+
 void WriteStatus(DWORD look, DWORD request)
 {
-    int targets = 0, applied = 0, styled = 0, styleApplied = 0;
+    int targets = 0, applied = 0, styled = 0, styleApplied = 0, mapped = 0;
     HRESULT result = S_OK, styleResult = S_OK;
     AcquireSRWLockShared(&g_lock);
     targets = g_targetCount;
     for (int i = 0; i < g_targetCount; i++)
     {
+        if (g_targets[i].mapped) mapped++;
         if (SUCCEEDED(g_targets[i].result)) applied++;
         else if (SUCCEEDED(result)) result = g_targets[i].result;
     }
@@ -339,8 +492,9 @@ void WriteStatus(DWORD look, DWORD request)
     HKEY key;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, g_config.key, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return;
     wchar_t status[224];
-    _snwprintf(status, ARRAYSIZE(status), L"targets=%d applied=%d look=%lu hr=0x%08lX styled=%d styleApplied=%d styleHr=0x%08lX request=%lu", targets,
-               applied, look, static_cast<unsigned long>(result), styled, styleApplied, static_cast<unsigned long>(styleResult), request);
+    _snwprintf(status, ARRAYSIZE(status), L"targets=%d applied=%d look=%lu hr=0x%08lX styled=%d styleApplied=%d styleHr=0x%08lX request=%lu mapped=%d",
+               targets, applied, look, static_cast<unsigned long>(result), styled, styleApplied, static_cast<unsigned long>(styleResult), request,
+               mapped);
     status[ARRAYSIZE(status) - 1] = 0;
     DWORD version = HelperVersion, process = GetCurrentProcessId(), count = static_cast<DWORD>(targets);
     RegSetValueExW(key, L"Targets", 0, REG_DWORD, reinterpret_cast<const BYTE *>(&count), sizeof count);
@@ -400,6 +554,92 @@ void RemoveNode(InstanceHandle handle)
     }
 }
 
+Link *FindLink(InstanceHandle handle)
+{
+    for (size_t i = 0, slot = Slot(handle); i < LinkCapacity; i++, slot = (slot + 1) & (LinkCapacity - 1))
+    {
+        Link &link = g_links[slot];
+        if (!link.used && !link.deleted) return nullptr;
+        if (link.used && link.handle == handle) return &link;
+    }
+    return nullptr;
+}
+
+void PutLink(InstanceHandle handle, InstanceHandle parent, bool frame) // handle is not in the table yet
+{
+    for (size_t i = 0, slot = Slot(handle); i < LinkCapacity; i++, slot = (slot + 1) & (LinkCapacity - 1))
+    {
+        Link &link = g_links[slot];
+        if (link.used) continue;
+        if (link.deleted) g_linkDeleted--;
+        link = {handle, parent, true, false, frame};
+        g_linkCount++;
+        return;
+    }
+}
+
+// Removed elements leave markers that lengthen every lookup; when live links and markers fill most of the table, the
+// live links are put back in afresh.
+void CompactLinks()
+{
+    Link *live = static_cast<Link *>(HeapAlloc(GetProcessHeap(), 0, sizeof(Link) * static_cast<size_t>(g_linkCount > 0 ? g_linkCount : 1)));
+    if (!live) return;
+    int count = 0;
+    for (const Link &link : g_links)
+        if (link.used && count < g_linkCount) live[count++] = link;
+    memset(g_links, 0, sizeof g_links);
+    g_linkCount = g_linkDeleted = 0;
+    for (int i = 0; i < count; i++) PutLink(live[i].handle, live[i].parent, live[i].frame);
+    HeapFree(GetProcessHeap(), 0, live);
+}
+
+void SetLink(InstanceHandle handle, InstanceHandle parent, bool frame)
+{
+    if (Link *link = FindLink(handle))
+    {
+        link->parent = parent;
+        link->frame = frame;
+        return;
+    }
+    if (g_linkCount + g_linkDeleted >= LinkCapacity * 7 / 8) CompactLinks();
+    if (g_linkCount >= LinkCapacity * 3 / 4) return; // full enough: rectangles below an untracked element keep the global look
+    PutLink(handle, parent, frame);
+}
+
+void RemoveLink(InstanceHandle handle)
+{
+    if (Link *link = FindLink(handle))
+    {
+        link->used = false;
+        link->deleted = true;
+        g_linkCount--;
+        g_linkDeleted++;
+    }
+}
+
+// Elements whose size can stand for the taskbar a target is drawn in: its nearest Taskbar.TaskbarFrame, or else its
+// known ancestors from the top down (the first that is a FrameworkElement counts). Under g_lock.
+int SizeCandidates(InstanceHandle target, InstanceHandle *candidates)
+{
+    InstanceHandle chain[MaxChain];
+    int length = 0;
+    for (InstanceHandle handle = target; handle && length < MaxChain;)
+    {
+        const Link *link = FindLink(handle);
+        if (!link) break;
+        if (link->frame)
+        {
+            candidates[0] = handle;
+            return 1;
+        }
+        chain[length++] = handle;
+        handle = link->parent;
+    }
+    int count = 0;
+    for (int i = length - 1; i >= 0 && count < MaxSizeCandidates; i--) candidates[count++] = chain[i];
+    return count;
+}
+
 int FindTarget(InstanceHandle handle)
 {
     for (int i = 0; i < g_targetCount; i++)
@@ -443,8 +683,26 @@ void AppendDump(const ParentChildRelation &relation, const VisualElement &elemen
     g_dumpLength += static_cast<size_t>(bytes);
 }
 
-void ApplyOnThisThread();
+bool ApplyOnThisThread();
 void RestoreStylesOnThisThread();
+
+constexpr UINT_PTR RetryTimer = 1;
+constexpr LONG_PTR MaxRetries = 8;
+constexpr UINT RetryDelay = 250;
+
+// One pass on this XAML thread. When a taskbar with a Taskbars entry is not laid out yet (a display was just added), a
+// few more passes follow a quarter second apart. The count is kept on the dispatcher window and starts over on a signal.
+void Pass(HWND window, bool signalled)
+{
+    if (signalled) SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+    bool unsized = ApplyOnThisThread();
+    LONG_PTR retries = GetWindowLongPtrW(window, GWLP_USERDATA);
+    if (unsized && retries < MaxRetries)
+    {
+        SetWindowLongPtrW(window, GWLP_USERDATA, retries + 1);
+        SetTimer(window, RetryTimer, RetryDelay, nullptr);
+    }
+}
 
 LRESULT CALLBACK DispatchProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -452,7 +710,13 @@ LRESULT CALLBACK DispatchProc(HWND window, UINT message, WPARAM wParam, LPARAM l
     {
         MSG pending; // several signals may queue up; one pass covers them all
         while (PeekMessageW(&pending, window, ApplyMessage, ApplyMessage, PM_REMOVE)) {}
-        ApplyOnThisThread();
+        Pass(window, true);
+        return 0;
+    }
+    if (message == WM_TIMER && wParam == RetryTimer)
+    {
+        KillTimer(window, RetryTimer);
+        Pass(window, false);
         return 0;
     }
     if (message == RestoreStylesMessage)
@@ -521,6 +785,7 @@ public:
         if (g_dumpBuffer || g_config.dump[0]) AppendDump(relation, element, mutation);
         if (mutation == Add)
         {
+            SetLink(element.Handle, relation.Parent, Same(element.Type, L"Taskbar.TaskbarFrame") || Same(element.Name, L"TaskbarFrame"));
             const Node *parent = FindNode(relation.Parent);
             unsigned mask = parent ? parent->mask : 0;
             short background = parent && parent->background >= 0 && parent->background < MaxDepth ? static_cast<short>(parent->background + 1) : -1;
@@ -533,7 +798,7 @@ public:
             if (background > 0 && (stroke || Same(element.Name, L"BackgroundFill")) && Same(element.Type, L"Windows.UI.Xaml.Shapes.Rectangle") &&
                 FindTarget(element.Handle) < 0 && g_targetCount < MaxTargets)
             {
-                g_targets[g_targetCount++] = {element.Handle, thread, stroke, false, false, false, false, 0, nullptr, S_OK};
+                g_targets[g_targetCount++] = {element.Handle, thread, stroke, false, false, false, false, 0, nullptr, S_OK, nullptr, 0, false};
                 wake = matched = true;
             }
             for (int r = 0; r < g_ruleCount; r++)
@@ -545,6 +810,7 @@ public:
         }
         else if (mutation == Remove)
         {
+            RemoveLink(element.Handle);
             RemoveNode(element.Handle);
             int target = FindTarget(element.Handle);
             if (target >= 0)
@@ -903,18 +1169,146 @@ void RestoreStylesOnThisThread()
     }
 }
 
-void ApplyTargets(DWORD thread, const Settings &settings)
+// ---- which taskbar window a background rectangle is in (XAML thread, no lock held) ----
+
+struct TaskbarWindow
+{
+    HWND window;
+    double width, height; // DIPs
+};
+
+struct WindowSearch
+{
+    TaskbarWindow windows[MaxTaskbarWindows];
+    int count;
+};
+
+bool IsTaskbarClass(const wchar_t *name)
+{
+    if (CompareStringOrdinal(name, -1, L"Shell_TrayWnd", -1, TRUE) == CSTR_EQUAL ||
+        CompareStringOrdinal(name, -1, L"Shell_SecondaryTrayWnd", -1, TRUE) == CSTR_EQUAL)
+        return true;
+    for (const wchar_t *item = g_config.taskbarClasses; *item;)
+    {
+        const wchar_t *end = wcschr(item, L',');
+        int length = static_cast<int>(end ? end - item : static_cast<ptrdiff_t>(wcslen(item)));
+        if (length > 0 && CompareStringOrdinal(name, -1, item, length, TRUE) == CSTR_EQUAL) return true;
+        if (!end) break;
+        item = end + 1;
+    }
+    return false;
+}
+
+// EnumWindows callback: this process's taskbar windows with their size in DIPs. Sends no messages.
+BOOL CALLBACK AddTaskbarWindow(HWND window, LPARAM parameter)
+{
+    WindowSearch &search = *reinterpret_cast<WindowSearch *>(parameter);
+    if (search.count == MaxTaskbarWindows) return FALSE;
+    DWORD process = 0;
+    wchar_t name[128];
+    RECT bounds;
+    if (!GetWindowThreadProcessId(window, &process) || process != GetCurrentProcessId()) return TRUE;
+    if (!GetClassNameW(window, name, ARRAYSIZE(name)) || !IsTaskbarClass(name) || !GetWindowRect(window, &bounds)) return TRUE;
+    UINT dpi = GetDpiForWindow(window);
+    double scale = 96.0 / (dpi ? dpi : 96);
+    search.windows[search.count++] = {window, (bounds.right - bounds.left) * scale, (bounds.bottom - bounds.top) * scale};
+    return TRUE;
+}
+
+bool Listed(HWND window, const WindowSearch &search)
+{
+    for (int i = 0; i < search.count; i++)
+        if (search.windows[i].window == window) return true;
+    return false;
+}
+
+bool Near(double a, double b) { return a - b <= 2 && b - a <= 2; }
+
+// The one taskbar window of that size, or null when none or several match.
+HWND MatchWindow(double width, double height, const WindowSearch &search)
+{
+    HWND match = nullptr;
+    int matches = 0;
+    for (int i = 0; i < search.count; i++)
+        if (Near(search.windows[i].width, width) && Near(search.windows[i].height, height))
+        {
+            match = search.windows[i].window;
+            matches++;
+        }
+    return matches == 1 ? match : nullptr;
+}
+
+// The laid-out size of the first candidate that is a FrameworkElement. False when none is.
+bool CandidateSize(const InstanceHandle *candidates, int count, double *width, double *height)
+{
+    for (int i = 0; i < count; i++)
+    {
+        IInspectable *object = nullptr;
+        if (FAILED(g_diagnostics->GetIInspectableFromHandle(candidates[i], &object)) || !object) continue;
+        IFrameworkElementSize *element = nullptr;
+        HRESULT hr = object->QueryInterface(IidFrameworkElement, reinterpret_cast<void **>(&element));
+        object->Release();
+        if (FAILED(hr)) continue;
+        hr = element->get_ActualWidth(width);
+        if (SUCCEEDED(hr)) hr = element->get_ActualHeight(height);
+        element->Release();
+        return SUCCEEDED(hr);
+    }
+    return false;
+}
+
+const WindowLook *FindWindowLook(const WindowLook *looks, int count, HWND window)
+{
+    DWORD value = static_cast<DWORD>(reinterpret_cast<UINT_PTR>(window));
+    for (int i = 0; i < count; i++)
+        if (looks[i].window == value) return &looks[i];
+    return nullptr;
+}
+
+// Shows the look on this thread's background rectangles: a rectangle in a taskbar window that has a Taskbars entry gets
+// that entry's look, every other one the global look. Returns true when a taskbar's size read as zero (not laid out
+// yet), so another pass soon may find its window.
+bool ApplyTargets(DWORD thread, const Settings &settings, const WindowLook *looks, int lookCount, unsigned long long lookKey)
 {
     Target work[MaxTargets];
+    InstanceHandle candidates[MaxTargets][MaxSizeCandidates];
+    int candidateCounts[MaxTargets] = {};
     int count = 0;
     AcquireSRWLockShared(&g_lock);
     for (int i = 0; i < g_targetCount; i++)
-        if (g_targets[i].thread == thread) work[count++] = g_targets[i];
+    {
+        if (g_targets[i].thread != thread) continue;
+        if (lookCount > 0) candidateCounts[count] = SizeCandidates(g_targets[i].handle, candidates[count]);
+        work[count++] = g_targets[i];
+    }
     ReleaseSRWLockShared(&g_lock);
 
+    WindowSearch search{};
+    if (lookCount > 0) EnumWindows(AddTaskbarWindow, reinterpret_cast<LPARAM>(&search));
+    bool unsized = false;
     for (int i = 0; i < count; i++)
     {
         Target &target = work[i];
+        // A match stays while the Taskbars value is the same and its window is still there, so a later resize that
+        // makes two taskbars the same size does not undo it. Otherwise match by size now.
+        if (target.window && (target.mapKey != lookKey || !Listed(target.window, search))) target.window = nullptr;
+        if (!target.window && search.count > 0)
+        {
+            double width = 0, height = 0;
+            if (CandidateSize(candidates[i], candidateCounts[i], &width, &height))
+            {
+                if (width < 1 || height < 1) unsized = true;
+                else target.window = MatchWindow(width, height, search);
+                target.mapKey = lookKey;
+                if (g_config.verbose || target.window)
+                    Log(L"%ls in a %.1fx%.1f taskbar: window %lu of %d", target.stroke ? L"stroke" : L"fill", width, height,
+                        static_cast<unsigned long>(reinterpret_cast<UINT_PTR>(target.window)), search.count);
+            }
+        }
+        const WindowLook *entry = target.window ? FindWindowLook(looks, lookCount, target.window) : nullptr;
+        const Settings &look = entry ? entry->look : settings;
+        target.mapped = entry != nullptr;
+
         HRESULT hr = S_OK;
         if (!target.inspected)
         {
@@ -923,7 +1317,7 @@ void ApplyTargets(DWORD thread, const Settings &settings)
         }
         if (SUCCEEDED(hr))
         {
-            bool keepWindows = target.stroke ? settings.line : settings.look == LookDefault;
+            bool keepWindows = target.stroke ? look.line : look.look == LookDefault;
             if (keepWindows)
             {
                 if (target.modified) hr = Restore(target);
@@ -931,14 +1325,14 @@ void ApplyTargets(DWORD thread, const Settings &settings)
             }
             else
             {
-                hr = target.stroke ? ShowBrush(target, LookClear, 0) : ShowBrush(target, settings.look, settings.color);
+                hr = target.stroke ? ShowBrush(target, LookClear, 0) : ShowBrush(target, look.look, look.color);
                 if (SUCCEEDED(hr)) target.modified = true;
             }
         }
         target.result = hr;
         if (g_config.verbose || FAILED(hr))
-            Log(L"apply %ls look=%lu color=%08lX line=%d hr=0x%08lX", target.stroke ? L"stroke" : L"fill", settings.look,
-                static_cast<unsigned long>(settings.color), settings.line ? 1 : 0, static_cast<unsigned long>(hr));
+            Log(L"apply %ls look=%lu color=%08lX line=%d%ls hr=0x%08lX", target.stroke ? L"stroke" : L"fill", look.look,
+                static_cast<unsigned long>(look.color), look.line ? 1 : 0, entry ? L" (taskbar entry)" : L"", static_cast<unsigned long>(hr));
     }
 
     AcquireSRWLockExclusive(&g_lock);
@@ -948,6 +1342,7 @@ void ApplyTargets(DWORD thread, const Settings &settings)
         if (index >= 0) g_targets[index] = work[i];
     }
     ReleaseSRWLockExclusive(&g_lock);
+    return unsized;
 }
 
 // Applies pending styles on this thread one at a time: copy the entry and its rule under the lock, apply without it,
@@ -994,14 +1389,18 @@ void ApplyStyles(DWORD thread)
     }
 }
 
-void ApplyOnThisThread()
+bool ApplyOnThisThread()
 {
     DWORD thread = GetCurrentThreadId();
     DWORD request = static_cast<DWORD>(g_request); // the rules in place when this pass starts
     Settings settings = ReadSettings();
-    ApplyTargets(thread, settings);
+    WindowLook looks[MaxWindowLooks];
+    unsigned long long lookKey = 0;
+    int lookCount = ReadWindowLooks(looks, &lookKey);
+    bool unsized = ApplyTargets(thread, settings, looks, lookCount, lookKey);
     ApplyStyles(thread);
     WriteStatus(settings.look, request);
+    return unsized;
 }
 
 // ---- worker thread ----

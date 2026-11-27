@@ -17,11 +17,13 @@ internal sealed class OwnedRenderPath : IHostAudioPath
     private readonly BoundedFloatBus buffer = new(48000, 2, 9600);
     private readonly PcmDspProcessor processor;
     private readonly OutputCeilingSampleProvider guard;
+    private readonly AdaptiveResamplingSampleProvider resampler;
+    private readonly RenderHeadSampleProvider head;
     private OwnedAudioRouter.RenderSubscription? subscription;
     private string? failure;
     private bool started, disposed;
     public BridgeStatus Status => new(started && !disposed && failure is null && router.Failure is null,
-        buffer.BufferedFrames, buffer.DroppedFrames, buffer.SilentFrames,
+        buffer.BufferedFrames, buffer.DroppedFrames + resampler.DiscardedFrames, buffer.SilentFrames + resampler.InsertedSilenceFrames,
         processor.LimitedSamples, failure ?? router.Failure) { OutputPeak = started && !disposed ? guard.Peak : null };
     public OwnedRenderPath(OwnedAudioRouter router, OwnedAudioBus bus, string endpointId, DspSettings settings)
     {
@@ -36,9 +38,11 @@ internal sealed class OwnedRenderPath : IHostAudioPath
             var destination = acquired.AudioClient.MixFormat;
             if (destination.Channels == 1) source = new StereoToMonoSampleProvider(source) { LeftVolume = 0.5f, RightVolume = 0.5f };
             else if (destination.Channels != 2) throw new NotSupportedException("Owned playback supports mono or stereo destinations.");
-            if (destination.SampleRate != 48000) source = new WdlResamplingSampleProvider(source, destination.SampleRate);
-            guard = new(source, settings.OutputCeiling);
-            opened = new(acquired, AudioClientShareMode.Shared, true, 40); opened.Init(guard.ToWaveProvider());
+            // Sinc conversion that also follows the transport/device clock difference (also at 48 kHz to 48 kHz).
+            resampler = new AdaptiveResamplingSampleProvider(source, destination.SampleRate, buffer);
+            guard = new(resampler, settings.OutputCeiling);
+            head = new RenderHeadSampleProvider(guard);
+            opened = new(acquired, AudioClientShareMode.Shared, true, 40); opened.Init(head.ToWaveProvider());
             output = acquired; render = opened; render.PlaybackStopped += OnStopped;
         }
         catch (Exception error) { ResourceCleanup.Run(error, () => opened?.Dispose(), () => acquired?.Dispose(), enumerator.Dispose); throw; }
@@ -55,10 +59,13 @@ internal sealed class OwnedRenderPath : IHostAudioPath
         catch { Dispose(); throw; }
     }
     public void Update(DspSettings settings) { processor.UpdateSettings(settings); guard.SetCeiling(settings.OutputCeiling); }
+    public void BeginStop() { if (started && !disposed) head.BeginFadeOut(); }
     private void OnStopped(object? sender, StoppedEventArgs args) { if (started) Volatile.Write(ref failure, args.Exception?.Message ?? "Owned render stream stopped unexpectedly."); }
     public void Dispose()
     {
-        if (disposed) return; disposed = true; started = false;
+        if (disposed) return;
+        if (started && failure is null && render.PlaybackState == PlaybackState.Playing) head.FadeOutAndWait(40);
+        disposed = true; started = false;
         render.PlaybackStopped -= OnStopped;
         ResourceCleanup.Run(null, () => subscription?.Dispose(), render.Stop, render.Dispose, output.Dispose, enumerator.Dispose);
     }
@@ -74,12 +81,15 @@ internal sealed class OwnedMicrophonePath : IHostAudioPath
     private readonly BoundedFloatBus buffer;
     private readonly PcmDspProcessor processor;
     private readonly OutputCeilingSampleProvider guard;
+    private readonly AdaptiveResamplingSampleProvider resampler;
+    private readonly RenderHeadSampleProvider head;
     private readonly float[] decoded;
     private OwnedAudioRouter.MicrophoneSubscription? injection;
     private string? failure;
     private bool started, disposed;
     public BridgeStatus Status => new(started && !disposed && failure is null && router.Failure is null,
-        buffer.BufferedFrames, buffer.DroppedFrames, buffer.SilentFrames, processor.LimitedSamples, failure ?? router.Failure)
+        buffer.BufferedFrames, buffer.DroppedFrames + resampler.DiscardedFrames, buffer.SilentFrames + resampler.InsertedSilenceFrames,
+        processor.LimitedSamples, failure ?? router.Failure)
         { OutputPeak = started && !disposed ? guard.Peak : null };
     public OwnedMicrophonePath(OwnedAudioRouter router, string endpointId, DspSettings settings)
     {
@@ -96,8 +106,11 @@ internal sealed class OwnedMicrophonePath : IHostAudioPath
             processor = new(format.SampleRate, format.Channels, settings);
             ISampleProvider source = new DspSampleProvider(buffer, processor);
             if (format.Channels == 1) source = new MonoToStereoSampleProvider(source);
-            if (format.SampleRate != 48000) source = new WdlResamplingSampleProvider(source, 48000);
-            guard = new(source, settings.OutputCeiling); input = acquired; capture = opened;
+            // The transport consumes on the driver's clock: convert and follow that clock against the microphone's.
+            resampler = new AdaptiveResamplingSampleProvider(source, 48000, buffer);
+            guard = new(resampler, settings.OutputCeiling);
+            head = new RenderHeadSampleProvider(guard);
+            input = acquired; capture = opened;
             capture.DataAvailable += OnData; capture.RecordingStopped += OnStopped;
         }
         catch (Exception error) { ResourceCleanup.Run(error, () => opened?.Dispose(), () => acquired?.Dispose(), enumerator.Dispose); throw; }
@@ -105,12 +118,14 @@ internal sealed class OwnedMicrophonePath : IHostAudioPath
     public void Start()
     {
         ObjectDisposedException.ThrowIf(disposed, this); if (started) throw new InvalidOperationException("Path has already started.");
-        try { started = true; capture.StartRecording(); injection = router.Inject(guard); }
+        try { started = true; capture.StartRecording(); injection = router.Inject(head); }
         catch { Dispose(); throw; }
     }
     public void Update(DspSettings settings) { processor.UpdateSettings(settings); guard.SetCeiling(settings.OutputCeiling); }
+    public void BeginStop() { if (started && !disposed) head.BeginFadeOut(); }
     private void OnData(object? sender, WaveInEventArgs args)
     {
+        AudioThreadScheduling.RegisterCurrentThread();
         try
         {
             int block = decoded.Length / format.Channels * format.BlockAlign;
@@ -125,7 +140,10 @@ internal sealed class OwnedMicrophonePath : IHostAudioPath
     private void OnStopped(object? sender, StoppedEventArgs args) { if (started) Volatile.Write(ref failure, args.Exception?.Message ?? "Owned microphone stream stopped unexpectedly."); }
     public void Dispose()
     {
-        if (disposed) return; disposed = true; started = false;
+        if (disposed) return;
+        // The transport keeps about 20 ms queued in the driver; fade out before the injection lease ends.
+        if (started && failure is null && router.Failure is null && injection is not null) head.FadeOutAndWait(20);
+        disposed = true; started = false;
         capture.DataAvailable -= OnData; capture.RecordingStopped -= OnStopped;
         ResourceCleanup.Run(null, () => injection?.Dispose(), capture.StopRecording, capture.Dispose, input.Dispose, enumerator.Dispose);
     }

@@ -80,6 +80,31 @@ public partial class AudioPage : UserControl, IShellPage, IAsyncDisposable
         return true;
     }
 
+    /// <summary>The narrowest content the audio sections are laid out for; below it the page scrolls sideways.</summary>
+    internal const double MinimumContentWidth = 228;
+
+    /// <summary>
+    /// Narrow windows (or a large text scale) get slimmer page padding so the content keeps its room. Below the
+    /// narrowest usable width the page scrolls sideways with its scroll bar showing, instead of crushing controls.
+    /// </summary>
+    private void PageScroll_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        // The page's scroll bars are drawn over its edge, so the whole width is the page's.
+        double width = e.NewSize.Width;
+        Thickness standard = TryFindResource("Shell.PagePadding") is Thickness padding ? padding : new Thickness(40, 28, 40, 36);
+        double side = width >= 720 ? -1 : width >= 480 ? 24 : width >= 320 ? 12 : 8;
+        // The right side keeps room for the page's scroll bar, which is drawn over the page's edge.
+        double right = Math.Max(side, 16);
+        if (side < 0) PageContent.SetResourceReference(MarginProperty, "Shell.PagePadding");
+        else PageContent.Margin = new Thickness(side, standard.Top, right, standard.Bottom);
+        double used = side < 0 ? standard.Left + standard.Right : side + right;
+        bool scroll = width - used < MinimumContentWidth;
+        // A fixed width while scrolling: the column would otherwise take its full 900 px once the width is unlimited.
+        PageContent.Width = scroll ? MinimumContentWidth + used : double.NaN;
+        PageContent.HorizontalAlignment = HorizontalAlignment.Left;
+        PageScroll.HorizontalScrollBarVisibility = scroll ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
+    }
+
     public void OnShown()
     {
         shown = true;
@@ -141,8 +166,9 @@ public partial class AudioPage : UserControl, IShellPage, IAsyncDisposable
                         apps = new Views.WindowsMixerView();
                         apps.ConfigureRoutingDirectory(Path.Combine(context.Services.AudioPreferencesDirectory, "AppRouting"));
                         AppsHost.Content = apps;
+                        if (AudioPreview.Enabled) apps.ShowPreview(AudioPreview.Sessions());
                     }
-                    apps.Activate();
+                    if (!AudioPreview.Enabled) apps.Activate();
                     break;
                 case "sonar":
                     await EnsureSonarAsync();
@@ -164,7 +190,8 @@ public partial class AudioPage : UserControl, IShellPage, IAsyncDisposable
             mixer = new IndependentMixerWorkspace();
             mixer.OutputsChanged += (_, _) => (context.Owner as ShellWindow)?.RefreshTray();
         }
-        return mixerInitialization ??= InitializeMixerAsync();
+        // A render capture or layout check shows made-up state and never reaches the audio engine.
+        return mixerInitialization ??= AudioPreview.Enabled ? mixer.InitializeAsync(AudioPreview.CreateMixerConnection()) : InitializeMixerAsync();
     }
 
     private async Task InitializeMixerAsync()
@@ -200,6 +227,12 @@ public partial class AudioPage : UserControl, IShellPage, IAsyncDisposable
             });
             sonar.QuitRequested += (_, _) => (context.Owner as ShellWindow)?.RequestQuit();
             SonarHost.Content = sonar;
+            if (AudioPreview.Enabled)
+            {
+                // Never contacts Sonar: the preview goes through the same presentation path as a real snapshot.
+                sonar.ShowPreview(AudioPreview.Sonar(), AudioPreview.SonarChatMix(), AudioPreview.SonarPeaks());
+                sonarInitialization = Task.CompletedTask;
+            }
         }
         return sonarInitialization ??= sonar.InitializeAsync();
     }

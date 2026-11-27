@@ -8,6 +8,8 @@ public interface IHostAudioPath : IDisposable
     BridgeStatus Status { get; }
     void Start();
     void Update(DspSettings settings);
+    /// <summary>Starts a short fade to silence without waiting; Dispose then waits only for what is left of it.</summary>
+    void BeginStop() { }
 }
 
 /// <summary>All methods execute on the controller's single MTA owner.</summary>
@@ -127,6 +129,7 @@ public sealed class WindowsHostAudioBackend : IHostAudioBackend
         public BridgeStatus Status => bridge.Status;
         public void Start() => bridge.Start();
         public void Update(DspSettings settings) => bridge.UpdateSettings(settings);
+        public void BeginStop() => bridge.BeginStop();
         public void Dispose() => bridge.Dispose();
     }
 }

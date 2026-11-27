@@ -5,7 +5,12 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
     <Description>Independent PCM DSP and explicit WASAPI bridge; requires separately supplied audio endpoints.</Description>
+    <!-- LibraryImport string marshalling for the MMCSS registration (avrt.dll). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Soltex.Audio.Engine.Tests" />
+  </ItemGroup>
   <ItemGroup>
     <Compile Remove="Program.cs" />
     <PackageReference Include="NAudio.Wasapi" Version="2.3.0" />

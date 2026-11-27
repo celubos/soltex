@@ -51,7 +51,21 @@ internal static class Program
             ("Stalled stream send cannot grow or interrupt personal audio", StreamMixChecks.BoundedIndependentConsumers),
             ("Stream mix callbacks allocate no memory and reject duplicate capture ownership", StreamMixChecks.CallbackAllocationsAndValidation),
             ("Owned transport adapters carry real PCM through one capture and independent outputs", OwnedMixAdapterChecks.PcmAndLifetime),
-            ("Owned output initialization failure releases every prior adapter without starting audio", OwnedMixAdapterChecks.PartialConstruction)
+            ("Owned output initialization failure releases every prior adapter without starting audio", OwnedMixAdapterChecks.PartialConstruction),
+            ("EQ graph and PCM match the analytic RBJ curves for every type at 44.1-192 kHz", AudioQualityChecks.EqualizerMatchesAnalyticCurves),
+            ("EQ stays stable at extreme Q/gain, near Nyquist and under random live changes", AudioQualityChecks.EqualizerStableAtExtremes),
+            ("Full chain THD+N below -120 dB and silence stays exactly silent", AudioQualityChecks.ChainDistortionAndNoiseFloor),
+            ("EQ, dynamics, suppression, limiter, gain and stereo changes are click free", AudioQualityChecks.ParameterChangesAreClickFree),
+            ("Render start and stop are faded; converter primes then fades in", AudioQualityChecks.StartAndStopAreFaded),
+            ("Compressor static curve matches threshold, ratio and makeup", AudioQualityChecks.CompressorStaticCurve),
+            ("Gate closes after detector, hold and release times and reopens within attack", AudioQualityChecks.GateTimesMatchSettings),
+            ("Opt-in safety limiter is an exact delay below the ceiling and bounds true peaks", AudioQualityChecks.SafetyLimiterIsTransparentAndBounded),
+            ("Opt-in smooth residual removes musical noise and keeps an exact zero-reduction delay", AudioQualityChecks.SmoothResidualRemovesMusicalNoise),
+            ("Long digital silence leaves no subnormal processing state", AudioQualityChecks.NoSubnormalsAfterLongSilence),
+            ("Sinc resampler passband, THD+N, alias rejection and bit-exact 1:1 delay", AudioQualityChecks.ResamplerQuality),
+            ("Resampler, render head, limiter and smooth residual allocate nothing per callback", AudioQualityChecks.ResamplerAllocationFree),
+            ("Clock drift loop holds latency with no drops, underruns or clicks; stalls are concealed", AudioQualityChecks.DriftCompensationHoldsLatencyWithoutGlitches),
+            ("MMCSS registration is per thread, cached and never throws", AudioQualityChecks.RealtimeRegistrationIsSafe)
         ];
         int failed = 0;
         foreach (var (name, test) in tests)

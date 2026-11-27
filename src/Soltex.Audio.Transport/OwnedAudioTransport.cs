@@ -77,14 +77,33 @@ public sealed class OwnedAudioTransport : IDisposable
             for (int i = 0; i < samples.Length; i++)
             {
                 if (!float.IsFinite(samples[i])) throw new ArgumentException("PCM samples must be finite.", nameof(samples));
-                int value = (int)MathF.Round(Math.Clamp(samples[i], -1f, 1f) * 32768f);
-                BinaryPrimitives.WriteInt16LittleEndian(request.AsSpan(RequestSize + i * 2), (short)Math.Clamp(value, short.MinValue, short.MaxValue));
+                BinaryPrimitives.WriteInt16LittleEndian(request.AsSpan(RequestSize + i * 2), Quantize(samples[i]));
             }
             var result = Parse(device.Exchange(WriteControl, request, ResponseSize), bus, frames, hasPcm: false);
             if (result.Frames != frames || result.Generation != before.Generation) throw new IOException("Microphone stream generation changed during injection; packet was not confirmed.");
             return result;
         }
     }
+
+    /// <summary>
+    /// Float to PCM16 with TPDF dither (±1 LSB triangular), so low-level detail and fades turn into a constant, signal-
+    /// independent noise floor (about -101 dBFS RMS) instead of correlated quantization distortion. Values already exactly
+    /// representable in 16 bits (digital silence, unity-gain 16-bit sources) are written unchanged and stay bit exact.
+    /// Called under the transport lock.
+    /// </summary>
+    private short Quantize(float sample)
+    {
+        double scaled = Math.Clamp(sample, -1f, 1f) * 32768.0;
+        if (scaled != Math.Floor(scaled))
+        {
+            ditherState ^= ditherState << 13; ditherState ^= ditherState >> 17; ditherState ^= ditherState << 5;
+            uint first = ditherState;
+            ditherState ^= ditherState << 13; ditherState ^= ditherState >> 17; ditherState ^= ditherState << 5;
+            scaled += (first - (double)ditherState) / uint.MaxValue;
+        }
+        return (short)Math.Clamp(Math.Round(scaled, MidpointRounding.AwayFromZero), short.MinValue, short.MaxValue);
+    }
+    private uint ditherState = 0x9E3779B9;
 
     private OwnedAudioStatus QueryCore(OwnedAudioBus bus) => Parse(device.Exchange(QueryControl, Request(bus, 0), ResponseSize), bus, 0, hasPcm: false);
     private static byte[] Request(OwnedAudioBus bus, int frames, ulong sequence = 0, int payload = 0, ulong generation = 0)

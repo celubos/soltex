@@ -47,7 +47,7 @@ public sealed record TaskbarStyleRule(string Under, string Type, string Name, st
 /// A loaded helper stays in Explorer until Explorer restarts, so each build has its own event: before loading a new
 /// build, older builds still loaded are set back to Windows' look with no rules (<see cref="RetireOthersAsync"/>).
 /// </summary>
-internal sealed class TaskbarHelper(string key, string eventBase, string stagingDirectory, string? logPath, string? helperPath)
+internal sealed partial class TaskbarHelper(string key, string eventBase, string stagingDirectory, string? logPath, string? helperPath)
 {
     public static readonly Guid HelperClassId = new("053df8ec-d4d0-4868-bc22-f1eefc050065");
     public const string ExplorerKey = @"Software\Soltex\Taskbar", ExplorerEvent = @"Local\SoltexTaskbar2";
@@ -121,7 +121,7 @@ internal sealed class TaskbarHelper(string key, string eventBase, string staging
                 .Where(b => b != Build).Select(b => eventBase + "-" + b + suffix));
         foreach (string name in events.Where(Exists))
         {
-            Write(TaskbarLookState.Windows);
+            Write(TaskbarLookState.Windows, null, []); // also clears any per-taskbar entries
             Set(name);
             _ = await ConfirmAsync(TaskbarLookState.Windows, anyReport: true, cancellationToken).ConfigureAwait(true);
         }
@@ -168,7 +168,7 @@ internal sealed class TaskbarHelper(string key, string eventBase, string staging
         if (IsLoaded(pid)) return null;
         if (helperPath is null) return "The taskbar helper is missing from this copy of the app.";
         string staged = Stage(helperPath);
-        string data = "key=" + key + "|event=" + eventBase + "-" + Build + (logPath is null ? "" : "|log=" + logPath) + (DumpPath is null ? "" : "|dump=" + DumpPath);
+        string data = "key=" + key + "|event=" + eventBase + "-" + Build + (logPath is null ? "" : "|log=" + logPath) + (DumpPath is null ? "" : "|dump=" + DumpPath) + (TaskbarClasses is null ? "" : "|taskbarClasses=" + TaskbarClasses);
         byte[] payload = System.Text.Encoding.Unicode.GetBytes(data + "\0");
         using System.IO.MemoryMappedFiles.MemoryMappedFile map = System.IO.MemoryMappedFiles.MemoryMappedFile.CreateNew(
             @"Local\SoltexTaskbarInit." + pid.ToString(System.Globalization.CultureInfo.InvariantCulture), payload.Length);
@@ -268,34 +268,50 @@ internal sealed class TaskbarHelper(string key, string eventBase, string staging
 }
 
 /// <summary>
-/// The taskbar look (Taskbar page): clear, solid, acrylic or blurred backgrounds, an optional different look while a
-/// window is maximized, and the top line. Applies on start and after Explorer restarts; watches window states only
-/// when the maximized look differs.
+/// The taskbar look (Taskbar page): a look per taskbar state (TranslucentTB-class) on every taskbar, the line above it,
+/// and the details' style rules. Applies on start and after Explorer restarts. Windows are watched only while a state
+/// that depends on them is enabled, and battery saver only while its state is: with only the Desktop look, nothing is
+/// watched at all.
 /// </summary>
 public sealed class TaskbarLookService : IDisposable
 {
+    private const int PowerBroadcast = 0x0218, SettingChange = 0x001A, DisplayChange = 0x007E, ColorizationChanged = 0x0320, PowerSettingChange = 0x8013;
     private readonly AppSettingsStore settings;
     private readonly TaskbarHelper helper;
     private readonly string? bundled = TaskbarHelper.Bundled();
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly CancellationTokenSource lifetime = new(); // cancelled on Dispose: no helper work after the app quits
     private readonly TaskbarScrollVolume scrollVolume = new();
-    private (TaskbarLookKind, uint, bool, TaskbarLookKind?, string, bool) applied;
+    private readonly WindowEvents events;
+    private readonly DispatcherTimer settle;
+    private string applied;
+    private Drawn? drawn;
     private HwndSource? source;
-    private uint taskbarCreated;
-    private MaximizedWatcher? watcher;
-    private DispatcherTimer? settle;
-    private bool maximized, attached, disposed;
+    private uint taskbarCreated, accent = TaskbarStateProbe.FallbackAccent;
+    private nint powerNotification;
+    private bool attached, disposed, accentKnown;
+
+    /// <summary>What the helper was last told to draw, so a window change writes only when a look actually changes.</summary>
+    private sealed record Drawn(TaskbarLookState Global, TaskbarWindowLook[] PerTaskbar, string Rules, int Explorer)
+    {
+        public bool Same(Drawn? other) => other is not null && Global == other.Global && Rules == other.Rules && Explorer == other.Explorer
+            && PerTaskbar.SequenceEqual(other.PerTaskbar);
+    }
 
     public TaskbarLookService(AppSettingsStore settings, string dataRoot)
     {
         this.settings = settings;
         string directory = Path.Combine(dataRoot, "Taskbar");
         helper = new TaskbarHelper(TaskbarHelper.ExplorerKey, TaskbarHelper.ExplorerEvent, directory, Path.Combine(directory, "helper.log"), bundled);
-        applied = Snapshot(settings.Current);
+        applied = Key(settings.Current);
+        // Window events come in bursts (a drag moves a window many times a second): the states are worked out at most
+        // every 100 ms, and only while something is watched.
+        settle = new DispatcherTimer(TimeSpan.FromMilliseconds(100), DispatcherPriority.Background, (_, _) => Settle(), Dispatcher.CurrentDispatcher);
+        settle.Stop();
+        events = new WindowEvents(StateEvent, WindowEventKinds.None);
         settings.Changed += next =>
         {
-            if (!attached || Snapshot(next) == applied) return;
+            if (!attached || Key(next) == applied) return;
             Application.Current?.Dispatcher.InvokeAsync(() => _ = ApplyAsync());
         };
     }
@@ -315,11 +331,32 @@ public sealed class TaskbarLookService : IDisposable
     /// <summary>Set when Windows refused the scroll-for-volume hook.</summary>
     public string? ScrollVolumeProblem { get; private set; }
 
+    /// <summary>The window events watched right now (none unless a state that needs them is enabled).</summary>
+    internal WindowEventKinds Watching => events.Kinds;
+
+    /// <summary>How many WinEvent hooks are installed right now.</summary>
+    internal int WatchHooks => events.HookCount;
+
+    /// <summary>True while battery saver changes are listened for.</summary>
+    internal bool WatchingBatterySaver => powerNotification != 0;
+
     /// <summary>
-    /// True when the details are the only thing the helper changes (Windows' background and line, at least one detail),
-    /// so a <see cref="Problem"/> belongs next to the details rather than the background.
+    /// True when the details are the only thing the helper changes (Windows' background and line on the desktop, no
+    /// other state enabled, at least one detail), so a <see cref="Problem"/> belongs next to the details rather than
+    /// the look.
     /// </summary>
-    public static bool OnlyDetails(AppSettings s) => s.TaskbarLook == TaskbarLookKind.Default && s.TaskbarLine && s.TaskbarTweaks.Count > 0;
+    public static bool OnlyDetails(AppSettings s)
+    {
+        ArgumentNullException.ThrowIfNull(s);
+        return s.LookFor(TaskbarState.Desktop) is { Kind: TaskbarLookKind.Default, Line: true }
+            && Enum.GetValues<TaskbarState>().All(state => state == TaskbarState.Desktop || !s.LookFor(state).Enabled)
+            && s.TaskbarTweaks.Count > 0;
+    }
+
+    /// <summary>True when anything differs from Windows' own taskbar: a look in an enabled state, or a detail.</summary>
+    internal static bool Configured(AppSettings s) =>
+        Enum.GetValues<TaskbarState>().Any(state => TaskbarStateRules.Enabled(s.TaskbarStates, state) && s.LookFor(state) is not { Kind: TaskbarLookKind.Default, Line: true })
+        || TaskbarTweaks.RulesFor(s.TaskbarTweaks).Count > 0;
 
     /// <summary>Raised on the UI thread after each apply.</summary>
     public event Action? Changed;
@@ -330,8 +367,9 @@ public sealed class TaskbarLookService : IDisposable
         taskbarCreated = TaskbarNative.RegisterWindowMessageW("TaskbarCreated");
         source?.AddHook(Hook);
         attached = true;
+        UpdateWatching();
         UpdateScrollVolume();
-        if (!Nothing() || TaskbarHelper.ExplorerProcessId() is int pid && pid != 0 && helper.IsLoaded(pid))
+        if (Configured(settings.Current) || TaskbarHelper.ExplorerProcessId() is int pid && pid != 0 && helper.IsLoaded(pid))
             _ = ApplyAsync();
         else if (ScrollVolumeProblem is not null)
             Changed?.Invoke(); // no apply follows to report it
@@ -345,25 +383,30 @@ public sealed class TaskbarLookService : IDisposable
         try
         {
             if (disposed) return;
-            applied = Snapshot(settings.Current);
-            UpdateWatcher();
+            AppSettings s = settings.Current;
+            applied = Key(s);
+            UpdateWatching();
             UpdateScrollVolume();
-            TaskbarLookState state = Effective();
-            IReadOnlyList<TaskbarStyleRule> rules = TaskbarTweaks.RulesFor(settings.Current.TaskbarTweaks);
-            bool nothing = state.IsWindowsDefault && rules.Count == 0;
+            (TaskbarLookState global, TaskbarWindowLook[] perTaskbar) = Looks(s);
+            IReadOnlyList<TaskbarStyleRule> rules = TaskbarTweaks.RulesFor(s.TaskbarTweaks);
             (int pid, int thread) = TaskbarHelper.ExplorerTaskbar();
+            Drawn next = new(global, perTaskbar, string.Join("\n", rules.Select(r => r.Encode())), pid);
+            // A pass for a window change writes only when a taskbar's look actually changes.
+            if (!confirm && next.Same(drawn)) return;
+            bool nothing = !Configured(s);
             bool loaded = pid != 0 && helper.IsLoaded(pid);
             if (pid != 0 && !loaded && !nothing) await helper.RetireOthersAsync(pid, cancel).ConfigureAwait(true);
             cancel.ThrowIfCancellationRequested();
-            helper.Write(state, rules);
+            helper.Write(global, rules, Entries(global, perTaskbar));
+            drawn = next;
             string? problem = null, details = null;
             if (pid == 0) problem = nothing ? null : "The taskbar isn't running.";
             else if (loaded) helper.Signal(pid);
             else if (!nothing) problem = await helper.LoadAsync(pid, thread, cancel).ConfigureAwait(true);
             if (problem is null && confirm && pid != 0 && helper.IsLoaded(pid))
-                (problem, details) = await helper.ConfirmPartsAsync(state, cancellationToken: cancel).ConfigureAwait(true);
+                (problem, details) = await helper.ConfirmPartsAsync(Shown(global, perTaskbar), cancellationToken: cancel).ConfigureAwait(true);
             Problem = problem;
-            // An unconfirmed pass (a window was maximized or restored) leaves the details' last report in place.
+            // An unconfirmed pass (a state changed) leaves the details' last report in place.
             if (confirm || problem is not null) DetailsProblem = details;
         }
         catch (OperationCanceledException) when (disposed)
@@ -383,12 +426,63 @@ public sealed class TaskbarLookService : IDisposable
         Changed?.Invoke();
     }
 
-    private static (TaskbarLookKind, uint, bool, TaskbarLookKind?, string, bool) Snapshot(AppSettings s) =>
-        (s.TaskbarLook, s.TaskbarColor, s.TaskbarLine, s.TaskbarMaximizedLook,
-         string.Join(";", s.TaskbarTweaks.OrderBy(t => t.Key, StringComparer.Ordinal).Select(t => t.Key + "=" + t.Value)), s.TaskbarScrollVolume);
+    /// <summary>
+    /// The look for any taskbar the helper cannot tell apart (the Desktop look) and the look of each taskbar now. States
+    /// other than Desktop count only while the app is running with its window open.
+    /// </summary>
+    private (TaskbarLookState Global, TaskbarWindowLook[] PerTaskbar) Looks(AppSettings s)
+    {
+        IReadOnlyDictionary<TaskbarState, TaskbarStateLook> looks = s.TaskbarStates;
+        bool live = attached && !disposed;
+        WindowEventKinds kinds = live ? TaskbarStateRules.EventsFor(looks) : WindowEventKinds.None;
+        DesktopSnapshot snapshot = TaskbarStateProbe.Capture(kinds.HasFlag(WindowEventKinds.Windows), kinds.HasFlag(WindowEventKinds.Foreground),
+            live && TaskbarStateRules.Enabled(looks, TaskbarState.BatterySaver));
+        return LooksFor(snapshot, looks, UsesAccent(s) ? Accent() : TaskbarStateProbe.FallbackAccent);
+    }
 
-    /// <summary>True when Windows' own taskbar is wanted: no look and no details.</summary>
-    private bool Nothing() => TaskbarLookState.Windows.Equals(Effective()) && TaskbarTweaks.RulesFor(settings.Current.TaskbarTweaks).Count == 0;
+    /// <summary>
+    /// Each taskbar's look for <paramref name="snapshot"/>, and the look for any taskbar the helper cannot tell apart:
+    /// the one every taskbar shows when they all agree (battery saver, or a single display), otherwise the Desktop look.
+    /// Pure.
+    /// </summary>
+    internal static (TaskbarLookState Global, TaskbarWindowLook[] PerTaskbar) LooksFor(DesktopSnapshot snapshot,
+        IReadOnlyDictionary<TaskbarState, TaskbarStateLook> looks, uint accentRgb)
+    {
+        TaskbarStateLook Look(TaskbarState state) => looks.TryGetValue(state, out TaskbarStateLook? look) && look is not null ? look : TaskbarStateLook.DefaultFor(state);
+        TaskbarWindowLook[] perTaskbar = [.. TaskbarStateRules.Evaluate(snapshot, looks)
+            .Select(e => new TaskbarWindowLook(e.Taskbar, TaskbarStateRules.Resolve(Look(e.State), accentRgb)))];
+        TaskbarLookState global = perTaskbar.Length > 0 && perTaskbar.All(p => p.Look == perTaskbar[0].Look) ? perTaskbar[0].Look
+            : TaskbarStateRules.Resolve(Look(TaskbarState.Desktop), accentRgb);
+        return (global, perTaskbar);
+    }
+
+    /// <summary>
+    /// The per-taskbar entries worth writing: none when every taskbar shows the global look (Desktop alone, a single
+    /// look everywhere, or the look turned off), so no stale entries stay behind.
+    /// </summary>
+    internal static TaskbarWindowLook[] Entries(TaskbarLookState global, TaskbarWindowLook[] perTaskbar) =>
+        perTaskbar.All(p => p.Look == global) ? [] : perTaskbar;
+
+    /// <summary>The look the helper's report is checked against: one a taskbar actually shows.</summary>
+    private static TaskbarLookState Shown(TaskbarLookState global, TaskbarWindowLook[] perTaskbar) =>
+        perTaskbar.Length == 0 ? global : perTaskbar.Select(p => p.Look).FirstOrDefault(l => !l.IsWindowsDefault, TaskbarLookState.Windows);
+
+    private static string Key(AppSettings s) =>
+        string.Join(";", Enum.GetValues<TaskbarState>().Select(state => s.LookFor(state).ToString())) + "|"
+        + string.Join(";", s.TaskbarTweaks.OrderBy(t => t.Key, StringComparer.Ordinal).Select(t => t.Key + "=" + t.Value)) + "|" + s.TaskbarScrollVolume;
+
+    private static bool UsesAccent(AppSettings s) =>
+        Enum.GetValues<TaskbarState>().Any(state => TaskbarStateRules.Enabled(s.TaskbarStates, state) && s.LookFor(state).UseAccent);
+
+    private uint Accent()
+    {
+        if (!accentKnown)
+        {
+            accent = TaskbarStateProbe.AccentColor();
+            accentKnown = true;
+        }
+        return accent;
+    }
 
     private void UpdateScrollVolume()
     {
@@ -397,52 +491,54 @@ public sealed class TaskbarLookService : IDisposable
     }
 
     /// <summary>
-    /// The look for maximized windows, or null when there is none. It only applies on top of a chosen background: with
-    /// Windows default the page hides that choice, so it stays saved (for when a look is picked again) but has no effect.
+    /// Hooks exactly the window events the enabled states need (none for Desktop alone) and listens for battery saver
+    /// only while its state is enabled (on the app window, so not before <see cref="Attach"/>).
     /// </summary>
-    internal static TaskbarLookKind? MaximizedLook(AppSettings s) => s.TaskbarLook == TaskbarLookKind.Default ? null : s.TaskbarMaximizedLook;
-
-    private TaskbarLookState Effective()
+    internal void UpdateWatching()
     {
-        AppSettings s = settings.Current;
-        if (maximized && MaximizedLook(s) is { } look)
-            return look == TaskbarLookKind.Default ? TaskbarLookState.Windows : new(look, s.TaskbarColor, s.TaskbarLine);
-        return new(s.TaskbarLook, s.TaskbarColor, s.TaskbarLine);
+        IReadOnlyDictionary<TaskbarState, TaskbarStateLook> looks = settings.Current.TaskbarStates;
+        events.Watch(disposed ? WindowEventKinds.None : TaskbarStateRules.EventsFor(looks));
+        bool battery = !disposed && TaskbarStateRules.Enabled(looks, TaskbarState.BatterySaver);
+        if (battery && powerNotification == 0 && source is not null)
+            powerNotification = StateNative.RegisterPowerSettingNotification(source.Handle, StateNative.PowerSavingStatus, 0); // DEVICE_NOTIFY_WINDOW_HANDLE
+        else if (!battery && powerNotification != 0)
+        {
+            _ = StateNative.UnregisterPowerSettingNotification(powerNotification);
+            powerNotification = 0;
+        }
+        if (events.Kinds == WindowEventKinds.None && powerNotification == 0) settle.Stop();
     }
 
-    private void UpdateWatcher()
+    /// <summary>Something a state depends on may have changed: work the states out again soon.</summary>
+    private void StateEvent()
     {
-        AppSettings s = settings.Current;
-        bool wanted = MaximizedLook(s) is { } look && look != s.TaskbarLook;
-        if (wanted && watcher is null)
-        {
-            settle = new DispatcherTimer(TimeSpan.FromMilliseconds(150), DispatcherPriority.Background, (_, _) => Settle(), Dispatcher.CurrentDispatcher);
-            watcher = new MaximizedWatcher(() => { settle?.Stop(); settle?.Start(); });
-            maximized = MaximizedWatcher.AnyMaximized();
-        }
-        else if (!wanted && watcher is not null)
-        {
-            watcher.Dispose();
-            watcher = null;
-            settle?.Stop();
-            maximized = false;
-        }
+        if (!disposed && !settle.IsEnabled) settle.Start();
     }
 
     private void Settle()
     {
-        settle?.Stop();
-        bool now = MaximizedWatcher.AnyMaximized();
-        if (now == maximized) return;
-        maximized = now;
+        settle.Stop();
+        if (disposed || !attached) return;
+        (TaskbarLookState global, TaskbarWindowLook[] perTaskbar) = Looks(settings.Current);
+        if (drawn is { } last && last.Global == global && last.PerTaskbar.SequenceEqual(perTaskbar)) return;
         _ = ApplyAsync(confirm: false);
     }
 
     private IntPtr Hook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         // Explorer restarted: the new taskbar needs the helper again.
-        if (taskbarCreated != 0 && message == (int)taskbarCreated && !Nothing())
-            _ = ApplyAsync();
+        if (taskbarCreated != 0 && message == (int)taskbarCreated)
+        {
+            if (Configured(settings.Current)) _ = ApplyAsync();
+        }
+        else if (message == PowerBroadcast && wParam == PowerSettingChange && powerNotification != 0) StateEvent();
+        // Displays added or removed: taskbars come and go.
+        else if (message == DisplayChange && events.Kinds != WindowEventKinds.None) StateEvent();
+        else if (message == ColorizationChanged || (message == SettingChange && lParam != 0 && Marshal.PtrToStringUni(lParam) == "ImmersiveColorSet"))
+        {
+            accentKnown = false;
+            if (attached && UsesAccent(settings.Current)) StateEvent();
+        }
         return IntPtr.Zero;
     }
 
@@ -451,102 +547,37 @@ public sealed class TaskbarLookService : IDisposable
         if (disposed) return;
         disposed = true;
         lifetime.Cancel(); // an apply still waiting on the helper stops without loading or writing anything more
-        settle?.Stop();
-        LeaveMaximizedLook();
+        settle.Stop();
+        LeaveStates();
+        events.Dispose();
+        if (powerNotification != 0) _ = StateNative.UnregisterPowerSettingNotification(powerNotification);
+        powerNotification = 0;
         source?.RemoveHook(Hook);
-        watcher?.Dispose();
         scrollVolume.Dispose();
     }
 
     /// <summary>
-    /// The maximized look lasts only while the app watches windows. If it is showing when the app quits, the chosen look
-    /// goes back (without waiting for the helper's report), so the taskbar does not stay in it after the window is
-    /// restored. The chosen look and details themselves stay, like any other saved setting.
+    /// States other than Desktop last only while the app watches. If one is showing when the app quits, every taskbar
+    /// goes back to the Desktop look (without waiting for the helper's report), so it does not stay in, say, the
+    /// maximized look after the window is restored. The chosen looks and details themselves stay, like any other setting.
     /// </summary>
-    private void LeaveMaximizedLook()
+    private void LeaveStates()
     {
-        if (watcher is null || !maximized) return;
-        maximized = false;
+        if (drawn is not { } last) return;
+        TaskbarStateLook look = settings.Current.LookFor(TaskbarState.Desktop);
+        TaskbarLookState desktop = TaskbarStateRules.Resolve(look, look.UseAccent ? Accent() : TaskbarStateProbe.FallbackAccent);
+        if (last.Global == desktop && last.PerTaskbar.All(p => p.Look == desktop)) return;
         try
         {
             int pid = TaskbarHelper.ExplorerProcessId();
             if (pid == 0 || !helper.IsLoaded(pid)) return;
-            helper.Write(Effective(), TaskbarTweaks.RulesFor(settings.Current.TaskbarTweaks));
+            helper.Write(desktop, TaskbarTweaks.RulesFor(settings.Current.TaskbarTweaks), []); // no per-taskbar entries left behind
             helper.Signal(pid);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
             // Quitting: the next start puts the right look back.
         }
-    }
-}
-
-/// <summary>Tells the taskbar service when windows are maximized, restored, moved, shown, hidden or switched (no polling).</summary>
-internal sealed unsafe class MaximizedWatcher : IDisposable
-{
-    private const uint OutOfContext = 0;
-    private static readonly (uint Min, uint Max)[] Ranges =
-    [
-        (0x0003, 0x0003), // EVENT_SYSTEM_FOREGROUND
-        (0x0016, 0x0017), // EVENT_SYSTEM_MINIMIZESTART..MINIMIZEEND
-        (0x8001, 0x8003), // EVENT_OBJECT_DESTROY..HIDE
-        (0x800B, 0x800B), // EVENT_OBJECT_LOCATIONCHANGE
-        (0x8017, 0x8018)  // EVENT_OBJECT_CLOAKED..UNCLOAKED
-    ];
-    private static readonly List<MaximizedWatcher> watchers = []; // UI thread only
-    private static bool found;
-    private readonly List<nint> hooks = [];
-    private readonly Action changed;
-
-    public MaximizedWatcher(Action changed)
-    {
-        this.changed = changed;
-        watchers.Add(this);
-        delegate* unmanaged<nint, uint, nint, int, int, uint, uint, void> callback = &OnEvent;
-        foreach ((uint min, uint max) in Ranges)
-        {
-            nint hook = TaskbarNative.SetWinEventHook(min, max, 0, (nint)callback, 0, 0, OutOfContext);
-            if (hook != 0) hooks.Add(hook);
-        }
-    }
-
-    /// <summary>True when any visible, uncloaked, ordinary window is maximized.</summary>
-    public static bool AnyMaximized()
-    {
-        found = false;
-        delegate* unmanaged<nint, nint, int> callback = &OnWindow;
-        _ = TaskbarNative.EnumWindows((nint)callback, 0);
-        return found;
-    }
-
-    [UnmanagedCallersOnly]
-    private static void OnEvent(nint hook, uint eventType, nint window, int objectId, int childId, uint thread, uint time)
-    {
-        if (window == 0 || objectId != 0 || childId != 0) return; // whole windows only (OBJID_WINDOW, CHILDID_SELF)
-        foreach (MaximizedWatcher watcher in watchers.ToArray())
-        {
-            try { watcher.changed(); }
-            catch (InvalidOperationException) { }
-        }
-    }
-
-    [UnmanagedCallersOnly]
-    private static int OnWindow(nint window, nint parameter)
-    {
-        const int ToolWindow = 0x00000080, ExStyle = -20, Cloaked = 14;
-        if (!TaskbarNative.IsWindowVisible(window) || !TaskbarNative.IsZoomed(window) || TaskbarNative.IsIconic(window)) return 1;
-        if ((TaskbarNative.GetWindowLongPtrW(window, ExStyle) & ToolWindow) != 0) return 1;
-        int cloaked = 0;
-        if (TaskbarNative.DwmGetWindowAttribute(window, Cloaked, &cloaked, sizeof(int)) == 0 && cloaked != 0) return 1;
-        found = true;
-        return 0;
-    }
-
-    public void Dispose()
-    {
-        foreach (nint hook in hooks) _ = TaskbarNative.UnhookWinEvent(hook);
-        hooks.Clear();
-        watchers.Remove(this);
     }
 }
 

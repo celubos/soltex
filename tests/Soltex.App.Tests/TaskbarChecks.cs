@@ -37,7 +37,10 @@ internal static class TaskbarChecks
             TaskbarHelper helper = new(key, @"Local\SoltexTaskbarTest" + id, work, Path.Combine(work, "helper.log"), helperPath);
 
             Show(helper, host, thread, new(TaskbarLookKind.Clear, 0x00000000, Line: true), "fill=#00000000 stroke=#FF404040", "#101010");
-            True(helper.ReadStatus() is { Targets: 2, Applied: 2, Result: 0 }, "The helper did not report both background rectangles.");
+            // Two rectangles in each of the host's two islands (stand-ins for two taskbars); without Taskbars entries all
+            // of them show the one look.
+            True(helper.ReadStatus() is { Targets: 4, Applied: 4, Result: 0 }, $"The helper did not report both islands' background rectangles: {helper.ReadStatus()}");
+            True(Ask(host, "fill 2") == "fill=#00000000 stroke=#FF404040", "The second island did not get the look.");
             Show(helper, host, thread, new(TaskbarLookKind.Opaque, 0x40CC3300, Line: false), "fill=#FFCC3300 stroke=#00000000", "#CC3300");
             Show(helper, host, thread, new(TaskbarLookKind.Clear, 0x80000000, Line: true), "fill=#80000000 stroke=#FF404040", null);
             // Acrylic falls back to its tint colour when acrylic cannot render (Transparency effects off, Energy Saver).
@@ -97,7 +100,9 @@ internal static class TaskbarChecks
                 new("", Border, "Inside", "UIElement.Visibility", "Collapsed")
             ];
             Style(helper, host, thread, rules, "inside=o:0.50,v:1,w:40 outside=o:1.00,v:0,w:12 templated=r:3");
-            True(helper.ReadStatus() is { Styled: 3, StyleApplied: 3, StyleResult: 0 }, $"Expected three styled elements: {helper.ReadStatus()}");
+            // Three elements in each of the host's two islands.
+            True(helper.ReadStatus() is { Styled: 6, StyleApplied: 6, StyleResult: 0 }, $"Expected six styled elements: {helper.ReadStatus()}");
+            True(Ask(host, "probe 2") == "inside=o:0.50,v:1,w:40 outside=o:1.00,v:0,w:12 templated=r:3", "The second island was not styled the same.");
 
             // A template-bound value (like the taskbar buttons' corner radius) comes back exactly.
             Style(helper, host, thread, [new("Windows.UI.Xaml.Controls.ContentControl", Border, "TemplatedBorder", "Border.CornerRadius", "0")],
@@ -147,6 +152,149 @@ internal static class TaskbarChecks
         }
     }
 
+    /// <summary>
+    /// A look per taskbar window (the Taskbars value): the test host's two islands stand in for two taskbars of different
+    /// sizes. Each shows its own entry, a taskbar without an entry shows the global look, clearing the entries returns
+    /// both to it, taskbars of the same size cannot be told apart (global look), and malformed entries are skipped.
+    /// </summary>
+    public static void HelperAppliesALookPerTaskbarWindow()
+    {
+        (string hostPath, string helperPath) = NativeArtifacts();
+        string id = Guid.NewGuid().ToString("N");
+        string key = @"Software\Soltex\TaskbarTest\" + id;
+        string work = Path.Combine(Path.GetTempPath(), "soltex-taskbar-test-" + id);
+        using Process host = Process.Start(new ProcessStartInfo(hostPath) { RedirectStandardInput = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true })!;
+        try
+        {
+            string ready = ReadLine(host);
+            string[] parts = ready.Split(' ');
+            True(ready.StartsWith("ready ", StringComparison.Ordinal) && parts.Length >= 5, "The XAML test host did not start with two windows: " + ready + HostExit(host));
+            System.Globalization.CultureInfo invariant = System.Globalization.CultureInfo.InvariantCulture;
+            int thread = int.Parse(parts[2], invariant);
+            nint first = (nint)long.Parse(parts[3], invariant), second = (nint)long.Parse(parts[4], invariant);
+            // Matching works on laid-out sizes: start once both islands have theirs.
+            WaitSize(host, 1, 1200, 48);
+            WaitSize(host, 2, 800, 48);
+            TaskbarHelper helper = new(key, @"Local\SoltexTaskbarTest" + id, work, Path.Combine(work, "helper.log"), helperPath)
+            {
+                TaskbarClasses = "SoltexTaskbarTestHost,SoltexTaskbarTestHost2"
+            };
+
+            TaskbarLookState global = new(TaskbarLookKind.Opaque, 0xFF00AA00, Line: true);
+            TaskbarWindowLook red = new(first, new(TaskbarLookKind.Clear, 0x80FF0000, Line: true));
+            TaskbarWindowLook blue = new(second, new(TaskbarLookKind.Opaque, 0x400000FF, Line: false));
+            const string Global = "fill=#FF00AA00 stroke=#FF404040", Red = "fill=#80FF0000 stroke=#FF404040", Blue = "fill=#FF0000FF stroke=#00000000";
+
+            // Each taskbar shows its own entry: both rectangles of both taskbars count as mapped.
+            PerTaskbar(helper, host, thread, global, [red, blue], Red, Blue, 4);
+            WaitPixel(host, 2, "#0000FF");
+            using (RegistryKey? settings = Registry.CurrentUser.OpenSubKey(key))
+                True(settings?.GetValue("Taskbars") is string[] written && written.SequenceEqual(
+                    [$"hwnd={(long)first};look=1;color=2164195328;line=1", $"hwnd={(long)second};look=2;color=1073742079;line=0"]),
+                    "Taskbars was not written in the agreed format.");
+
+            // A taskbar without an entry shows the global look.
+            PerTaskbar(helper, host, thread, global, [blue], Global, Blue, 2);
+            WaitPixel(host, 1, "#00AA00");
+
+            // A match stays while the Taskbars value stays the same, even when the taskbars become the same size.
+            PerTaskbar(helper, host, thread, global, [red, blue], Red, Blue, 4);
+            Resize(host, 2, 1200, 48);
+            PerTaskbar(helper, host, thread, global with { Color = 0xFF008800 }, [red, blue], Red, Blue, 4);
+
+            // Clearing the entries returns both taskbars to the global look.
+            PerTaskbar(helper, host, thread, global, [], Global, Global, 0);
+            using (RegistryKey? settings = Registry.CurrentUser.OpenSubKey(key))
+                True(settings?.GetValue("Taskbars") is null, "Empty entries must delete the Taskbars value.");
+            WaitPixel(host, 1, "#00AA00");
+            WaitPixel(host, 2, "#00AA00");
+
+            // Two taskbars of the same size cannot be told apart: both keep the global look.
+            PerTaskbar(helper, host, thread, global, [red, blue], Global, Global, 0);
+            // Sizes differ again: the next pass matches both.
+            Resize(host, 2, 800, 48);
+            PerTaskbar(helper, host, thread, global, [red, blue], Red, Blue, 4);
+
+            // Malformed entries are skipped (bad number, look out of range, missing field, no fields at all) and unknown
+            // fields are ignored. Taskbars written by hand, then the global look through the old Write, which leaves it.
+            using (RegistryKey settings = Registry.CurrentUser.CreateSubKey(key))
+                settings.SetValue("Taskbars", new[]
+                {
+                    "hwnd=abc;look=1;color=0;line=1", $"hwnd={(long)first};look=9;color=0;line=1", $"hwnd={(long)first};look=1;color=0", "garbage",
+                    $"hwnd={(long)second};look=2;color=4278190335;line=0;later=1"
+                }, RegistryValueKind.MultiString);
+            helper.Write(global);
+            helper.Signal(host.Id);
+            True(Await(helper.ConfirmAsync(global)) is null, "Malformed entries: the helper did not answer.");
+            True(helper.ReadMappedCount() == 2, $"Malformed entries: expected mapped=2, saw {helper.ReadStatus()}");
+            True(Ask(host, "fill") == Global && Ask(host, "fill 2") == Blue, "Malformed entries were not skipped.");
+
+            // Windows' look everywhere puts every original brush back.
+            PerTaskbar(helper, host, thread, TaskbarLookState.Windows, [], "fill=#FF202020 stroke=#FF404040", "fill=#FF202020 stroke=#FF404040", 0);
+            WaitPixel(host, 2, "#202020");
+            True(!File.ReadAllText(Path.Combine(work, "helper.log")).Contains("hr=0x8", StringComparison.Ordinal), "The helper logged a failed call.");
+        }
+        catch (InvalidOperationException error)
+        {
+            string log = Path.Combine(work, "helper.log");
+            throw new InvalidOperationException(error.Message + (File.Exists(log) ? Environment.NewLine + File.ReadAllText(log) : ""), error);
+        }
+        finally
+        {
+            if (!host.HasExited)
+            {
+                host.StandardInput.WriteLine("quit");
+                if (!host.WaitForExit(5000)) host.Kill();
+            }
+            Registry.CurrentUser.DeleteSubKeyTree(key, throwOnMissingSubKey: false);
+            using (RegistryKey? parent = Registry.CurrentUser.OpenSubKey(@"Software\Soltex\TaskbarTest"))
+                if (parent is { SubKeyCount: 0, ValueCount: 0 }) Registry.CurrentUser.DeleteSubKey(@"Software\Soltex\TaskbarTest", throwOnMissingSubKey: false);
+            try { Directory.Delete(work, recursive: true); }
+            catch (IOException) { }
+        }
+    }
+
+    /// <summary>Writes the global look with per-taskbar entries, signals (or loads) the helper and checks both islands.</summary>
+    private static void PerTaskbar(TaskbarHelper helper, Process host, int thread, TaskbarLookState global, TaskbarWindowLook[] perTaskbar,
+        string first, string second, int mapped)
+    {
+        helper.Write(global, null, perTaskbar);
+        True(helper.ReadMappedCount() is null, "A new request must clear the last report.");
+        if (helper.IsLoaded(host.Id)) helper.Signal(host.Id);
+        else True(Await(helper.LoadAsync(host.Id, thread)) is null, "The helper did not load into the test host.");
+        string label = $"{global.Kind} with {perTaskbar.Length} entr{(perTaskbar.Length == 1 ? "y" : "ies")}";
+        string? problem = Await(helper.ConfirmAsync(global));
+        True(problem is null, $"{label}: {problem}");
+        True(helper.ReadMappedCount() == mapped, $"{label}: expected mapped={mapped}, saw {helper.ReadStatus()} ({helper.ReadMappedCount()})");
+        string seenFirst = Ask(host, "fill"), seenSecond = Ask(host, "fill 2");
+        True(seenFirst == first && seenSecond == second, $"{label}: expected {first} | {second}, saw {seenFirst} | {seenSecond}");
+    }
+
+    private static void Resize(Process host, int island, int width, int height)
+    {
+        string answer = Ask(host, $"resize {island} {width} {height}");
+        True(answer == "resized", "The test host did not resize its window: " + answer);
+        WaitSize(host, island, width, height);
+    }
+
+    private static void WaitSize(Process host, int island, int width, int height)
+    {
+        string expected = $"size={width}x{height}", seen = "";
+        for (int wait = 0; wait < 60 && (seen = Ask(host, island == 1 ? "size" : "size 2")) != expected; wait++) Thread.Sleep(50);
+        True(seen == expected, $"Island {island} was not laid out at {width}x{height}: {seen}");
+    }
+
+    private static void WaitPixel(Process host, int island, string pixel)
+    {
+        string rendered = "";
+        for (int attempt = 0; attempt < 20 && rendered != "pixel=" + pixel; attempt++)
+        {
+            rendered = Ask(host, island == 1 ? "pixel" : "pixel 2");
+            Thread.Sleep(50);
+        }
+        True(rendered == "pixel=" + pixel, $"Island {island}: expected pixel {pixel}, saw {rendered}");
+    }
+
     public static void TweakCatalogIsAnchoredAndNormalized()
     {
         foreach (TaskbarTweak tweak in TaskbarTweaks.All)
@@ -192,21 +340,17 @@ internal static class TaskbarChecks
     }
 
     /// <summary>
-    /// The look for maximized windows only applies on top of a chosen background, and helper problems show next to the
-    /// details when they are the only thing in use.
+    /// Helper problems show next to the details when they are the only thing in use: Windows' look on the desktop, no
+    /// other taskbar state enabled. (The maximized look is now a taskbar state; its migration is checked in ShellChecks.)
     /// </summary>
     public static void MaximizedLookNeedsAChosenLook()
     {
-        AppSettings clear = new() { TaskbarLook = TaskbarLookKind.Clear, TaskbarMaximizedLook = TaskbarLookKind.Opaque };
-        True(TaskbarLookService.MaximizedLook(clear) == TaskbarLookKind.Opaque, "Clear with Solid when maximized must turn solid on maximize.");
-        AppSettings windows = clear with { TaskbarLook = TaskbarLookKind.Default };
-        True(TaskbarLookService.MaximizedLook(windows) is null, "With Windows default the hidden maximized choice must have no effect.");
-        True(windows.Normalize().TaskbarMaximizedLook == TaskbarLookKind.Opaque, "The maximized choice must stay saved for when a look is picked again.");
-
         Dictionary<string, string> clock = new() { ["clock"] = "time" };
-        True(TaskbarLookService.OnlyDetails(new AppSettings { TaskbarTweaks = clock }), "Only a detail in use: its problems belong to the details.");
-        True(!TaskbarLookService.OnlyDetails(new AppSettings { TaskbarTweaks = clock, TaskbarLook = TaskbarLookKind.Clear }), "A look in use keeps problems under Background.");
-        True(!TaskbarLookService.OnlyDetails(new AppSettings { TaskbarTweaks = clock, TaskbarLine = false }), "A hidden line is part of the look.");
+        AppSettings details = new AppSettings { TaskbarTweaks = clock }.Normalize();
+        True(TaskbarLookService.OnlyDetails(details), "Only a detail in use: its problems belong to the details.");
+        True(!TaskbarLookService.OnlyDetails(details.WithTaskbarState(TaskbarState.Desktop, l => l with { Kind = TaskbarLookKind.Clear })), "A look in use keeps problems under Background.");
+        True(!TaskbarLookService.OnlyDetails(details.WithTaskbarState(TaskbarState.Desktop, l => l with { Line = false })), "A hidden line is part of the look.");
+        True(!TaskbarLookService.OnlyDetails(details.WithTaskbarState(TaskbarState.StartOpen, l => l with { Enabled = true })), "An enabled state is part of the look.");
         True(!TaskbarLookService.OnlyDetails(new AppSettings()), "Nothing in use: problems stay under Background.");
     }
 

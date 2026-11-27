@@ -16,8 +16,18 @@ public sealed record CompressorSettings(bool Enabled = false, double ThresholdDb
 public sealed record DownwardExpanderSettings(bool Enabled = false, double ThresholdDb = -45,
     double Ratio = 2, double MaximumAttenuationDb = 24, double AttackMs = 5, double ReleaseMs = 100);
 
-/// <summary>Frequency-selective suppression against a manually set stationary RMS noise floor; not learned speech separation.</summary>
-public sealed record SpectralNoiseSuppressionSettings(bool Enabled = false, double NoiseFloorDb = -50, double ReductionDb = 18);
+/// <summary>Frequency-selective suppression against a manually set stationary RMS noise floor; not learned speech separation.
+/// SmoothResidual (opt-in, off by default) uses a decision-directed a-priori SNR estimate with Wiener gains: the remaining
+/// noise is steady instead of "musical" (warbling tones), and noise-only passages sit closer to the reduction floor, so it
+/// sounds different from the default rule.</summary>
+public sealed record SpectralNoiseSuppressionSettings(bool Enabled = false, double NoiseFloorDb = -50, double ReductionDb = 18, bool SmoothResidual = false);
+
+/// <summary>
+/// Opt-in transparent output limiter at <see cref="DspSettings.OutputCeiling"/>. Off by default: when on it adds a fixed
+/// lookahead delay (about 1.6 ms) and replaces hard clipping above the ceiling with a smooth, channel-linked gain
+/// reduction. TruePeak also limits 4x-interpolated inter-sample peaks. Below the ceiling it changes nothing.
+/// </summary>
+public sealed record SafetyLimiterSettings(bool Enabled = false, double ReleaseMs = 80, bool TruePeak = true);
 
 /// <summary>Two-channel image controls and delayed low-pass headphone crossfeed; not surround/HRTF rendering.</summary>
 public sealed record StereoSettings(bool Enabled = false, double Width = 1, double Pan = 0,
@@ -39,6 +49,7 @@ public sealed record DspSettings
     public DownwardExpanderSettings NoiseAttenuation { get; init; } = new();
     public SpectralNoiseSuppressionSettings NoiseSuppression { get; init; } = new();
     public StereoSettings Stereo { get; init; } = new();
+    public SafetyLimiterSettings Limiter { get; init; } = new();
 
     public static EqBand[] FlatBands() => [new(31), new(62), new(125), new(250), new(500),
         new(1000), new(2000), new(4000), new(8000), new(16000)];
@@ -66,6 +77,8 @@ public sealed record DspSettings
         ArgumentNullException.ThrowIfNull(NoiseAttenuation);
         ArgumentNullException.ThrowIfNull(NoiseSuppression);
         ArgumentNullException.ThrowIfNull(Stereo);
+        ArgumentNullException.ThrowIfNull(Limiter);
+        Range(Limiter.ReleaseMs, 5, 2000, nameof(Limiter.ReleaseMs));
         Range(NoiseSuppression.NoiseFloorDb, -90, -20, nameof(NoiseSuppression.NoiseFloorDb));
         Range(NoiseSuppression.ReductionDb, 0, 36, nameof(NoiseSuppression.ReductionDb));
         Range(Stereo.Width, 0, 2, nameof(Stereo.Width));

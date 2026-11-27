@@ -91,6 +91,7 @@ public sealed class MicrophoneTestRecorder : IDisposable
 
     private void DataAvailable(object? sender, WaveInEventArgs args)
     {
+        AudioThreadScheduling.RegisterCurrentThread();
         try
         {
             recording.TryWrite(args.Buffer.AsSpan(0, args.BytesRecorded));
@@ -160,9 +161,9 @@ public sealed class MicrophoneTestReplay : IDisposable
                 (1, 1) or (2, 2) => source,
                 _ => throw new NotSupportedException("Test replay supports mono/stereo endpoints.")
             };
-            if (source.WaveFormat.SampleRate != destination.SampleRate) source = new WdlResamplingSampleProvider(source, destination.SampleRate);
+            if (source.WaveFormat.SampleRate != destination.SampleRate) source = new AdaptiveResamplingSampleProvider(source, destination.SampleRate);
             acquiredRender = new WasapiOut(acquiredDevice, AudioClientShareMode.Shared, true, 40);
-            acquiredRender.Init(new OutputCeilingSampleProvider(source, 0.25).ToWaveProvider());
+            acquiredRender.Init(new RenderHeadSampleProvider(new OutputCeilingSampleProvider(source, 0.25)).ToWaveProvider());
             render = acquiredRender; reader = acquiredReader; replayBuffer = acquiredBuffer; device = acquiredDevice;
             render.PlaybackStopped += Stopped;
         }

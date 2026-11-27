@@ -22,6 +22,8 @@ public sealed class StreamMixPcmSource
     public long ProcessedFrames => Interlocked.Read(ref processedFrames);
     public StreamMixQueueStatus PersonalQueue => Snapshot(personalBus);
     public StreamMixQueueStatus StreamQueue => Snapshot(streamBus);
+    internal BoundedFloatBus PersonalBus => personalBus;
+    internal BoundedFloatBus StreamBus => streamBus;
 
     public StreamMixPcmSource(int sampleRate, int channels, int capacityFrames, DspSettings dsp,
         StreamMixSendSettings personalSettings, StreamMixSendSettings streamSettings)
@@ -64,6 +66,7 @@ public sealed class StreamMixPcmSource
             for (int frame = offset; frame < offset + read; frame += WaveFormat.Channels)
             {
                 gain = destination + (gain - destination) * coefficient;
+                if (Math.Abs(gain - destination) < 1e-15) gain = destination; // a muted send never decays into subnormals
                 for (int c = 0; c < WaveFormat.Channels; c++) buffer[frame + c] *= (float)gain;
             }
             return read;

@@ -39,6 +39,7 @@ internal sealed class IndependentMixerDspWindow : Window
         AddField(basic, "Ceiling", "Output ceiling", settings.OutputCeiling);
         AddSwitch(basic, "EqBypass", "Bypass equalizer", settings.EqBypass);
         AddSwitch(basic, "Mute", "Mute processing", settings.Mute);
+        AddSwitch(basic, "Limiter", "Safety limiter", settings.Limiter.Enabled, "Catches peaks above the ceiling. Adds 1.6 ms.");
         body.Children.Add(graph);
         bands = new(settings.Bands.Select((band, index) => new BandEdit(index + 1, band)));
         grid = new() { ItemsSource = bands, AutoGenerateColumns = false, CanUserAddRows = false, CanUserDeleteRows = false, MinHeight = 250, RowHeight = 27, HeadersVisibility = DataGridHeadersVisibility.Column };
@@ -69,6 +70,7 @@ internal sealed class IndependentMixerDspWindow : Window
         WrapPanel suppression = Section(body, "Spectral noise suppression", settings.NoiseSuppression.Enabled);
         AddField(suppression, "NoiseFloor", "Noise floor dB", settings.NoiseSuppression.NoiseFloorDb);
         AddField(suppression, "NoiseReduction", "Reduction dB", settings.NoiseSuppression.ReductionDb);
+        AddSwitch(suppression, "SmoothResidual", "Smooth background", settings.NoiseSuppression.SmoothResidual, "Smoother background, slightly different sound.");
         body.Children.Add(new TextBlock { Text = "Stationary noise reduction with a manual noise floor; adds about 20–40 ms of algorithm delay when enabled.", TextWrapping = TextWrapping.Wrap });
         switches["Spectral noise suppression"].ToolTip = "Enabling or disabling changes algorithm delay and may cause a short transition. Noise floor/reduction edits preserve buffered audio.";
         WrapPanel stereo = Section(body, "Stereo", settings.Stereo.Enabled);
@@ -84,10 +86,20 @@ internal sealed class IndependentMixerDspWindow : Window
         WrapPanel panel = new() { Margin = new Thickness(0, 15, 0, 0) }; body.Children.Add(panel);
         AddSwitch(panel, name, name, enabled); return panel;
     }
-    private void AddSwitch(Panel parent, string key, string label, bool value)
+    private void AddSwitch(Panel parent, string key, string label, bool value, string? note = null)
     {
         CheckBox box = new() { Content = label, IsChecked = value, MinWidth = 140, Margin = new Thickness(0, 0, 14, 7) };
-        switches.Add(key, box); parent.Children.Add(box);
+        switches.Add(key, box);
+        if (note is null) { parent.Children.Add(box); return; }
+        // A short, honest note under the switch (also its tooltip and help text).
+        box.ToolTip = note; box.Margin = new Thickness(0);
+        System.Windows.Automation.AutomationProperties.SetHelpText(box, note);
+        StackPanel withNote = new() { Margin = new Thickness(0, 0, 14, 7), MaxWidth = 260 };
+        withNote.Children.Add(box);
+        TextBlock text = new() { Text = note, FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(22, 2, 0, 0) };
+        text.SetResourceReference(TextBlock.ForegroundProperty, "MutedBrush");
+        withNote.Children.Add(text);
+        parent.Children.Add(withNote);
     }
     private void AddField(Panel parent, string key, string label, double value)
     {
@@ -100,21 +112,50 @@ internal sealed class IndependentMixerDspWindow : Window
     private static double Parse(string text, string name) => double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out double number) && double.IsFinite(number)
         ? number : throw new ArgumentException(name + " must be a finite number.");
     private bool Enabled(string key) => switches[key].IsChecked == true;
+    /// <summary>
+    /// The settings as edited. Every section starts from the saved record (<c>with</c>), so fields this window does not
+    /// show (for example the limiter's release time) are kept exactly as saved. Throws when a value is not a number.
+    /// </summary>
+    internal DspSettings Read()
+    {
+        grid.CommitEdit(DataGridEditingUnit.Cell, true); grid.CommitEdit(DataGridEditingUnit.Row, true);
+        DspSettings saved = Settings;
+        return saved with
+        {
+            HeadroomDb = Number("Headroom"), GainDb = Number("Gain"), Mute = Enabled("Mute"), OutputCeiling = Number("Ceiling"), EqBypass = Enabled("EqBypass"),
+            Bands = bands.Select(b => new EqBand(Parse(b.Frequency, "Frequency"), Parse(b.Gain, "Gain"), b.QValue(), b.Type, b.Bypass)).ToArray(),
+            Gate = saved.Gate with
+            {
+                Enabled = Enabled("Gate"), ThresholdDb = Number("GateThreshold"), HysteresisDb = Number("GateHysteresis"), AttackMs = Number("GateAttack"),
+                HoldMs = Number("GateHold"), ReleaseMs = Number("GateRelease"), ClosedGainDb = Number("GateFloor")
+            },
+            Compressor = saved.Compressor with
+            {
+                Enabled = Enabled("Compressor"), ThresholdDb = Number("CompThreshold"), Ratio = Number("CompRatio"), AttackMs = Number("CompAttack"),
+                ReleaseMs = Number("CompRelease"), MakeupDb = Number("CompMakeup")
+            },
+            NoiseSuppression = saved.NoiseSuppression with
+            {
+                Enabled = Enabled("Spectral noise suppression"), NoiseFloorDb = Number("NoiseFloor"), ReductionDb = Number("NoiseReduction"), SmoothResidual = Enabled("SmoothResidual")
+            },
+            Stereo = saved.Stereo with
+            {
+                Enabled = Enabled("Stereo"), Width = Number("Width"), Pan = Number("Pan"), Crossfeed = Number("Crossfeed"), SwapChannels = Enabled("Swap"), Mono = Enabled("Mono")
+            },
+            NoiseAttenuation = saved.NoiseAttenuation with
+            {
+                Enabled = Enabled("Downward expander"), ThresholdDb = Number("ExpThreshold"), Ratio = Number("ExpRatio"), MaximumAttenuationDb = Number("ExpMaximum"),
+                AttackMs = Number("ExpAttack"), ReleaseMs = Number("ExpRelease")
+            },
+            Limiter = saved.Limiter with { Enabled = Enabled("Limiter") }
+        };
+    }
+
     private void Validate(bool apply)
     {
         try
         {
-            grid.CommitEdit(DataGridEditingUnit.Cell, true); grid.CommitEdit(DataGridEditingUnit.Row, true);
-            var candidate = Settings with
-            {
-                HeadroomDb = Number("Headroom"), GainDb = Number("Gain"), Mute = Enabled("Mute"), OutputCeiling = Number("Ceiling"), EqBypass = Enabled("EqBypass"),
-                Bands = bands.Select(b => new EqBand(Parse(b.Frequency, "Frequency"), Parse(b.Gain, "Gain"), b.QValue(), b.Type, b.Bypass)).ToArray(),
-                Gate = new(Enabled("Gate"), Number("GateThreshold"), Number("GateHysteresis"), Number("GateAttack"), Number("GateHold"), Number("GateRelease"), Number("GateFloor")),
-                Compressor = new(Enabled("Compressor"), Number("CompThreshold"), Number("CompRatio"), Number("CompAttack"), Number("CompRelease"), Number("CompMakeup")),
-                NoiseSuppression = new(Enabled("Spectral noise suppression"), Number("NoiseFloor"), Number("NoiseReduction")),
-                Stereo = new(Enabled("Stereo"), Number("Width"), Number("Pan"), Number("Crossfeed"), Enabled("Swap"), Enabled("Mono")),
-                NoiseAttenuation = new(Enabled("Downward expander"), Number("ExpThreshold"), Number("ExpRatio"), Number("ExpMaximum"), Number("ExpAttack"), Number("ExpRelease"))
-            };
+            var candidate = Read();
             _ = new PcmDspProcessor(192000, 2, candidate); int rate = PreviewRate(candidate); graph.SetResponse(candidate, rate);
             feedback.Text = $"Settings validated. Response preview at {rate / 1000.0:0.#} kHz; actual stream format is checked by the host.";
             if (apply) { Settings = candidate; DialogResult = true; }

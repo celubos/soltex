@@ -25,6 +25,11 @@ internal static class IntegrationChecks
         Check(launch.Mixer && launch.Audio && launch.Tray && !launch.Quit && launch.Panel == "audio", "Audio/tray/capture flags lost their meaning.");
         Check(launch.Theme == Soltex.App.Settings.ThemePreference.Dark && launch.Scale == 150, "Render theme and scale were not parsed.");
         Check(SuiteLaunchOptions.Parse(["--audio"]).Audio, "--audio did not open audio.");
+        Check(launch.CaptureWidth is null && launch.CaptureHeight is null, "Without --size the capture must keep the canonical size.");
+        foreach (string panel in new[] { "audio", "audio-mic", "audio-apps", "audio-sonar" })
+            Check(SuiteLaunchOptions.Parse(["--render-smoke", capture, "--panel", panel]).Panel == panel, "Audio capture panel was not accepted: " + panel);
+        var sized = SuiteLaunchOptions.Parse(["--render-smoke", capture, "--panel", "audio-sonar", "--size", "760x820", "--scale", "200"]);
+        Check(sized is { CaptureWidth: 760, CaptureHeight: 820, Scale: 200 }, "Render size was not parsed.");
         Check(launch.ProfileDirectory == Path.GetFullPath(profile) && launch.CapturePath == Path.GetFullPath(capture),
             "Explicit profile and capture paths must be normalized without using the current profile.");
         Check(SuiteLaunchOptions.Parse(["--quit"]).Quit, "Explicit quit was not parsed.");
@@ -41,7 +46,11 @@ internal static class IntegrationChecks
             ["--render-smoke", capture, "--theme", "sepia"],
             ["--render-smoke", capture, "--scale", "250"],
             ["--render-smoke", capture, "--scale", "99"],
-            ["--render-smoke", capture, "--scale", "1.5"]
+            ["--render-smoke", capture, "--scale", "1.5"],
+            ["--size", "1280x820"], ["--render-smoke", capture, "--size"], ["--render-smoke", capture, "--size", "1280"],
+            ["--render-smoke", capture, "--size", "1280x"], ["--render-smoke", capture, "--size", "x820"], ["--render-smoke", capture, "--size", "1280*820"],
+            ["--render-smoke", capture, "--size", "100x820"], ["--render-smoke", capture, "--size", "1280x9999"], ["--render-smoke", capture, "--size", "-1280x820"],
+            ["--render-smoke", capture, "--panel", "audio-unknown"]
         })
         {
             try { SuiteLaunchOptions.Parse(invalid); }
@@ -109,8 +118,8 @@ internal static class IntegrationChecks
             rendered.Render(view);
             Check(Descendants(view).OfType<TextBox>().Count() == 2,
                 "The real populated session item templates were not instantiated during rendering.");
-            ProgressBar[] sessionMeters = Descendants(view).OfType<ProgressBar>().Where(bar => bar.DataContext is WindowsSessionRow).ToArray();
-            Check(sessionMeters.Length == 2 && sessionMeters.All(bar => BindingOperations.GetBinding(bar, RangeBase.ValueProperty)?.Mode == BindingMode.OneWay),
+            Soltex.Audio.UI.SignalMeter[] sessionMeters = Descendants(view).OfType<Soltex.Audio.UI.SignalMeter>().Where(meter => meter.DataContext is WindowsSessionRow).ToArray();
+            Check(sessionMeters.Length == 2 && sessionMeters.All(meter => BindingOperations.GetBinding(meter, Soltex.Audio.UI.SignalMeter.LevelProperty)?.Mode == BindingMode.OneWay),
                 "Session meters must bind one-way to read-only observed signal properties.");
             Check(view.Rows.Count == 2 && view.Rows[0].Key != view.Rows[1].Key,
                 "Same-name and same-PID sessions were merged despite distinct instance identities.");

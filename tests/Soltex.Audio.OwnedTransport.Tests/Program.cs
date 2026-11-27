@@ -31,6 +31,26 @@ fake.Corruption = 0; fake.ChangeGeneration = true;
 Throws<IOException>(() => transport.WriteMicrophone([0, 0]));
 transport.Dispose(); transport.Dispose(); Check(fake.DisposeCount == 1);
 Throws<ObjectDisposedException>(() => transport.Query(OwnedAudioBus.Game));
+// PCM16 conversion: exact values and digital silence stay bit exact; other values get unbiased TPDF dither within ±1 LSB.
+var ditherDevice = new FakeDevice();
+using (var dithered = new OwnedAudioTransport(ditherDevice))
+{
+    dithered.WriteMicrophone(new float[960]);
+    Check(Enumerable.Range(0, 960).All(i => BinaryPrimitives.ReadInt16LittleEndian(ditherDevice.LastRequest.AsSpan(32 + i * 2)) == 0));
+    double sum = 0; int outside = 0, count = 0; var levels = new HashSet<short>();
+    float quarterLsb = 0.25f / 32768f;
+    for (int block = 0; block < 50; block++)
+    {
+        dithered.WriteMicrophone(Enumerable.Repeat(quarterLsb, 960).ToArray());
+        for (int i = 0; i < 960; i++)
+        {
+            short value = BinaryPrimitives.ReadInt16LittleEndian(ditherDevice.LastRequest.AsSpan(32 + i * 2));
+            sum += value; count++; levels.Add(value); if (Math.Abs(value - 0.25) > 1.25) outside++;
+        }
+    }
+    Check(outside == 0 && levels.SetEquals(new short[] { -1, 0, 1 }));
+    Check(Math.Abs(sum / count - 0.25) < 0.02); // the mean keeps the sub-LSB level instead of rounding it away
+}
 Console.WriteLine($"PASS {checks} managed transport checks; no driver opened and no audio endpoints touched.");
 
 sealed class FakeDevice : IOwnedAudioDevice

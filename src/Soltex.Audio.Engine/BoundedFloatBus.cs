@@ -7,16 +7,45 @@ public sealed class BoundedFloatBus : ISampleProvider
 {
     private readonly object sync = new();
     private readonly float[] ring;
-    private int readIndex, count;
-    private long droppedFrames, silentFrames;
+    private readonly TimeProvider clock;
+    private int readIndex, count, lastWriteFrames;
+    private long droppedFrames, silentFrames, lastWriteTimestamp;
     public WaveFormat WaveFormat { get; }
+    /// <summary>Seconds since the most recent write (0 before the first), on the bus clock.</summary>
+    public double SecondsSinceLastWrite
+    {
+        get
+        {
+            long last = Volatile.Read(ref lastWriteTimestamp);
+            return last == 0 ? 0 : Math.Max(0, (double)(clock.GetTimestamp() - last) / clock.TimestampFrequency);
+        }
+    }
     public int CapacityFrames => ring.Length / WaveFormat.Channels;
     public int BufferedFrames { get { lock (sync) return count / WaveFormat.Channels; } }
     public long DroppedFrames { get { lock (sync) return droppedFrames; } }
     public long SilentFrames { get { lock (sync) return silentFrames; } }
+    /// <summary>Frames in the most recent write (the producer's packet size), for consumers that size their margin.</summary>
+    public int LastWriteFrames => Volatile.Read(ref lastWriteFrames);
 
-    public BoundedFloatBus(int sampleRate, int channels, int capacityFrames)
+    /// <summary>Removes up to <paramref name="frames"/> of the oldest frames (a consumer skipping backlog). Returns frames removed.</summary>
+    public int Discard(int frames)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(frames);
+        lock (sync)
+        {
+            int removed = Math.Min(frames, count / WaveFormat.Channels);
+            readIndex = (readIndex + removed * WaveFormat.Channels) % ring.Length;
+            count -= removed * WaveFormat.Channels;
+            return removed;
+        }
+    }
+
+    public BoundedFloatBus(int sampleRate, int channels, int capacityFrames) : this(sampleRate, channels, capacityFrames, null) { }
+
+    /// <summary>The clock times writes for drift-compensating consumers; tests may supply a virtual one.</summary>
+    public BoundedFloatBus(int sampleRate, int channels, int capacityFrames, TimeProvider? clock)
+    {
+        this.clock = clock ?? TimeProvider.System;
         ArgumentOutOfRangeException.ThrowIfLessThan(sampleRate, 8000);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(sampleRate, 192000);
         ArgumentOutOfRangeException.ThrowIfLessThan(channels, 1);
@@ -31,6 +60,8 @@ public sealed class BoundedFloatBus : ISampleProvider
     {
         int channels = WaveFormat.Channels;
         if (samples.Length % channels != 0) throw new ArgumentException("Only complete frames may be written.", nameof(samples));
+        Volatile.Write(ref lastWriteFrames, samples.Length / channels);
+        Volatile.Write(ref lastWriteTimestamp, Math.Max(1, clock.GetTimestamp()));
         lock (sync)
         {
             if (samples.Length > ring.Length)
