@@ -271,9 +271,19 @@ A later update-installing phase must then provide transactional activation, roll
 
 - NuGet: the only third-party package is NAudio.Wasapi 2.3.0 (and its NAudio.Core dependency), pinned by exact version.
   Its MIT notice ships in `src/Soltex.Audio.Engine/THIRD-PARTY-NOTICES.txt`.
+- Vendored source: RNNoise 0.2 (Xiph.Org, BSD 3-Clause), the only third-party code compiled into Soltex. The files kept
+  from the `rnnoise-0.2.tar.gz` release (archive SHA-256 `90FCE4B0...0D37`) sit unmodified in
+  `native/third_party/rnnoise`; `native/Soltex.Rnnoise/source.lock.json` records each file's size and SHA-256, and
+  `native/Soltex.Rnnoise/build.ps1` refuses to build when a file differs or an unlisted file appears. None of the
+  archive's scripts are run. The built `soltex-rnnoise.dll` must import only `KERNEL32.dll` and the UCRT API sets and
+  export exactly the names in `soltex-rnnoise.def`; the build is reproducible. Its BSD notice is in
+  `src/Soltex.Audio.Engine/THIRD-PARTY-NOTICES.txt` and every package's `licenses/rnnoise/`, and the package scripts fail
+  unless the same DLL sits next to every copy of the audio engine. The engine loads it by full path from its own folder
+  only (never through the DLL search path) and calls it through function pointers.
 - Native toolchains: `native/Soltex.TaskbarStyle/toolchain.lock.json` and `native/Soltex.Audio.Driver/toolchain.lock.json`
-  pin each download by URL, byte size and SHA-256. The taskbar build script refuses an archive that does not match and
-  checks that the built DLL imports only Windows system libraries.
+  pin each download by URL, byte size and SHA-256 (the RNNoise build uses the taskbar helper's pin). The taskbar and
+  RNNoise build scripts refuse an archive that does not match and check that the built DLLs import only Windows system
+  libraries; both ship the notices of the runtime pieces they link statically in `licenses/llvm-mingw-runtime/`.
 - CI: every GitHub Action is pinned to a full commit SHA. Checkout never keeps credentials.
 - Installer: `eng/soltex.iss` is compiled with Inno Setup 6.7.1. CI gets it through `eng/installer/get-inno-setup.ps1`,
   which installs exactly that Chocolatey package version when it is missing (Chocolatey checks the Inno Setup download

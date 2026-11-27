@@ -83,6 +83,12 @@ ceiling with a channel-linked lookahead limiter (about 1.5 ms, true-peak aware) 
 ceiling. Noise suppression is not machine-learning speech isolation, and the stereo tools are not HRTF. Details are in
 `src/Soltex.Audio.Engine/README.md`.
 
+Not original code: **neural noise removal** (off by default) runs Xiph's RNNoise 0.2, a small recurrent network trained
+to keep speech and remove noise, on every channel before noise suppression and the EQ. It is a separate DLL
+(`soltex-rnnoise.dll`, built from the unmodified BSD-licensed sources) next to the engine; without it the option does
+nothing. It adds about 30 ms of delay (1439 frames at 48 kHz) and has a maximum-reduction cap that mixes the aligned dry
+signal back in. It is not Sonar's algorithm and not echo cancellation.
+
 The Sonar tab's percentages map to Sonar's own controls; Soltex's DSP uses dB. The two engines are separate and their
 settings are never combined.
 
