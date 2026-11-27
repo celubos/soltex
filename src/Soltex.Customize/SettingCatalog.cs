@@ -1,6 +1,6 @@
 namespace Soltex.Customize;
 
-public enum SettingGroup { StartAndSearch, Taskbar, TipsAndSuggestions, Privacy, FileExplorer, Appearance, Multitasking }
+public enum SettingGroup { StartAndSearch, Taskbar, TipsAndSuggestions, Privacy, FileExplorer, Appearance, Multitasking, DesktopIcons, Input, Gaming }
 
 public enum TakesEffect { Immediately, NextStartOpen, ExplorerRestart, AppRestart, SignOut }
 
@@ -179,6 +179,9 @@ public static class CalmCatalog
         SettingGroup.Privacy => "Privacy",
         SettingGroup.Appearance => "Appearance",
         SettingGroup.Multitasking => "Multitasking",
+        SettingGroup.DesktopIcons => "Desktop icons",
+        SettingGroup.Input => "Keyboard, mouse and clipboard",
+        SettingGroup.Gaming => "Gaming",
         _ => "File Explorer"
     };
 }

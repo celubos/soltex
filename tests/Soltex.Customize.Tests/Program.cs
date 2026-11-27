@@ -11,6 +11,8 @@ List<(string Name, Action Test)> tests =
     ("Apply is idempotent and journals intent before completion", ApplyIsIdempotentAndJournalled),
     ("Apply back to Windows default removes the value", ApplyDefaultRemovesValue),
     ("A write that does not stick is reported failed, not applied", VerifyCatchesFailedWrite),
+    ("A write Windows denies says so plainly, rolls back and leaves nothing to undo", AccessDeniedIsPlain),
+    ("New taskbar, File Explorer, desktop icon, input and gaming rows are well formed", NewRowsAreWellFormed),
     ("A multi-value setting rolls back when one value fails", MultiValueRollsBack),
     ("Undo restores the previous value and absence", UndoRestoresPrevious),
     ("Undo keeps a newer change made by the user or another app", UndoKeepsNewerChange),
@@ -135,7 +137,104 @@ static void VerifyCatchesFailedWrite()
     Check(journal.Records[^1].Kind == JournalKind.Failed && !engine.Inspect(widgets).CanUndo, "A failed change must be journalled and not be undoable.");
     registry.Throw.Add("Enabled");
     ChangeResult denied = engine.Apply(Find("privacy.inking"), calm: true);
-    Check(denied.Outcome == ChangeOutcome.Failed && denied.Message.Contains("denied", StringComparison.OrdinalIgnoreCase), "Access denied must surface.");
+    // Access denied surfaces in plain words (no raw exception text); see AccessDeniedIsPlain.
+    Check(denied.Outcome == ChangeOutcome.Failed && denied.BlockedByWindows && denied.Message == ChangeEngine.BlockedByWindowsMessage, "Access denied must surface.");
+}
+
+static void NewRowsAreWellFormed()
+{
+    string[] ids =
+    [
+        "taskbar.alldisplays", "taskbar.mmmode", "explorer.expandfolder", "explorer.allfolders", "explorer.statusbar", "explorer.separateprocess",
+        "appearance.scrollbars", "desktop.thispc", "desktop.recyclebin", "desktop.userfiles", "desktop.network", "desktop.controlpanel",
+        "multitasking.shake", "input.clipboard", "input.inactivescroll", "input.stickykeys", "input.filterkeys", "input.togglekeys",
+        "gaming.gamebar", "gaming.gamemode", "gaming.captures"
+    ];
+    (ChangeEngine engine, _, _, _) = New();
+    foreach (string id in ids)
+    {
+        Check(CalmCatalog.All.Count(d => d.Id == id) == 1, id + " must exist exactly once.");
+        SettingDefinition d = Find(id);
+        Check(!d.InCalmProfile, id + " must not join the De-Windows profile.");
+        Check(d.Targets.All(t => t.Implied is { Exists: true }), id + " needs the value Windows assumes while nothing is set.");
+        Check(d.Options.Count >= 2 && d.Options.All(o => o.Label.Length > 0 && o.Values.Count == d.Targets.Count && o.Values.All(v => v.Exists)), id + " has malformed options.");
+        Check(d.Options.Select(o => string.Join("|", o.Values)).Distinct().Count() == d.Options.Count, id + " has two options with the same values.");
+        Check(d.IsSwitch == (d.Options.Count == 2 && d.Options[0].Label == "Off"), id + ": a switch is [Off, On], a list is not a switch.");
+        // A PC that never changed the value shows Windows' own default as one of the options, never "custom".
+        Check(engine.Inspect(d).Choice >= 0, id + ": Windows' implied value is not one of its options.");
+    }
+    Check(Find("taskbar.mmmode").Options.Select(o => o.Label).SequenceEqual(["All taskbars", "Main taskbar and where the window is open", "Taskbar where the window is open"]),
+        "The taskbar apps list must offer Windows' three choices in order.");
+
+    const string NewStartPanel = @"Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel";
+    SettingDefinition[] icons = [.. CalmCatalog.All.Where(d => d.Group == SettingGroup.DesktopIcons)];
+    Check(icons.Length == 5 && icons.All(d => d.Id.StartsWith("desktop.", StringComparison.Ordinal)), "Five desktop icons are expected.");
+    foreach (SettingDefinition d in icons)
+    {
+        RegistryTarget t = d.Targets.Single();
+        Check(t.Path == NewStartPanel, d.Id + " must use the NewStartPanel key.");
+        Check(t.Name.Length == 38 && t.Name[0] == '{' && t.Name[^1] == '}' && Guid.TryParseExact(t.Name, "B", out _), d.Id + " must be named by its CLSID in braces: " + t.Name);
+        Check(d.Options[1].Values[0] == RegistryValue.Dword(0) && d.Options[0].Values[0] == RegistryValue.Dword(1), d.Id + ": shown is 0, hidden is 1.");
+    }
+    Check(icons.Select(d => d.Targets[0].Name.ToUpperInvariant()).Distinct().Count() == icons.Length, "Each desktop icon needs its own CLSID.");
+    Check(engine.Inspect(Find("desktop.recyclebin")).Choice == 1 && engine.Inspect(Find("desktop.thispc")).Choice == 0,
+        "Windows shows the Recycle Bin and hides This PC until told otherwise.");
+
+    Check(CalmCatalog.GroupTitle(SettingGroup.DesktopIcons) == "Desktop icons" && CalmCatalog.GroupTitle(SettingGroup.Input) == "Keyboard, mouse and clipboard"
+        && CalmCatalog.GroupTitle(SettingGroup.Gaming) == "Gaming", "The new groups need their headings.");
+    Check(Find("multitasking.pointerprecision").Group == SettingGroup.Input, "Pointer precision moves to the keyboard and mouse group, keeping its id.");
+    Check(CalmCatalog.All.Where(d => d.Group == SettingGroup.Input).Select(d => d.Id)
+            .SequenceEqual(["input.clipboard", "multitasking.pointerprecision", "input.inactivescroll", "input.stickykeys", "input.filterkeys", "input.togglekeys"]),
+        "Keyboard, mouse and clipboard rows are out of order.");
+    Check(CalmCatalog.All.Where(d => d.Group == SettingGroup.Gaming).Select(d => d.Id).SequenceEqual(["gaming.gamebar", "gaming.gamemode", "gaming.captures"]),
+        "Gaming rows are out of order.");
+
+    // Game captures: both values change together, and undo puts both back.
+    (ChangeEngine captures, MemoryRegistry registry, _, _) = New();
+    SettingDefinition clips = Find("gaming.captures");
+    Check(clips.Targets.Count == 2 && captures.Inspect(clips).Choice == 1, "Game captures are two values, on by default.");
+    Check(captures.ApplyChoice(clips, 0).Outcome == ChangeOutcome.Applied && clips.Targets.All(t => registry.Get(t) == RegistryValue.Dword(0)), "Off must write 0 to both values.");
+    Check(captures.Undo(clips).Outcome == UndoOutcome.Restored && clips.Targets.All(t => !registry.Get(t).Exists), "Undo must remove both values again.");
+    // Sticky Keys: the pop-up bit only, as text, the way Windows stores the flags.
+    SettingDefinition sticky = Find("input.stickykeys");
+    Check(captures.ApplyChoice(sticky, 0).Outcome == ChangeOutcome.Applied && registry.Get(sticky.Targets[0]) == RegistryValue.FromText("506"), "Sticky Keys off must write \"506\".");
+}
+
+static void AccessDeniedIsPlain()
+{
+    (ChangeEngine engine, MemoryRegistry registry, ChangeJournal journal, _) = New();
+    SettingDefinition widgets = Find("taskbar.widgets");
+    registry.Throw.Add(widgets.Targets[0].Name); // as Windows' UCPD driver refuses TaskbarDa on 24H2 and later
+    ChangeResult result = engine.ApplyChoice(widgets, 0);
+    Check(result.Outcome == ChangeOutcome.Failed && result.BlockedByWindows, "A denied write must be reported as blocked by Windows.");
+    Check(result.Message.StartsWith("Windows doesn't let apps change this", StringComparison.Ordinal) && result.Message.Contains("Windows Settings", StringComparison.Ordinal)
+        && !result.Message.Contains("registry", StringComparison.OrdinalIgnoreCase), "The message must be plain, not the raw exception: " + result.Message);
+    Check(journal.Records[^1].Kind == JournalKind.Failed && !engine.Inspect(widgets).CanUndo, "A blocked change is journalled as failed and has nothing to undo.");
+    Check(engine.History(CalmCatalog.All) is [{ } entry] && entry.Summary == "Could not change: " + ChangeEngine.BlockedByWindowsMessage,
+        "History must use the same plain words.");
+
+    // Any denied value, not one setting in particular: the second value of a two-value switch, and the other exception Windows uses.
+    registry.Throw.Add("AppCaptureEnabled");
+    SettingDefinition clips = Find("gaming.captures");
+    ChangeResult partial = engine.ApplyChoice(clips, 0);
+    Check(partial.BlockedByWindows && !registry.Get(clips.Targets[0]).Exists, "The value written first must be rolled back when the second is blocked.");
+    registry.ThrowSecurity = true;
+    registry.Throw.Add("ShowTaskViewButton");
+    ChangeResult security = engine.ApplyChoice(Find("taskbar.taskview"), 0);
+    Check(security.BlockedByWindows && security.Message == ChangeEngine.BlockedByWindowsMessage, "A security exception from the registry is access denied too.");
+
+    // A write Windows quietly discards is a failure, but not "Windows doesn't let apps": it may work another time.
+    registry.Ignore.Add("TaskbarBadges");
+    ChangeResult discarded = engine.ApplyChoice(Find("taskbar.badges"), 0);
+    Check(discarded.Outcome == ChangeOutcome.Failed && !discarded.BlockedByWindows && discarded.Message.Contains("did not keep", StringComparison.Ordinal),
+        "A discarded write keeps its own message.");
+
+    // Undo that Windows refuses says so in the same words.
+    SettingDefinition seconds = Find("taskbar.seconds");
+    Check(engine.ApplyChoice(seconds, 1).Outcome == ChangeOutcome.Applied, "Setup: seconds on.");
+    registry.Throw.Add("ShowSecondsInSystemClock");
+    UndoResult undo = engine.Undo(seconds);
+    Check(undo.Outcome == UndoOutcome.Failed && undo.Message == "Could not undo: " + ChangeEngine.BlockedByWindowsMessage, "A refused undo must be plain: " + undo.Message);
 }
 
 static void MultiValueRollsBack()
@@ -648,6 +747,8 @@ internal sealed class MemoryRegistry : IRegistryStore
     private readonly Dictionary<string, RegistryValue> values = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> Ignore { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> Throw { get; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Throw as the registry does when the key cannot be opened for writing, instead of access denied on the value.</summary>
+    public bool ThrowSecurity { get; set; }
 
     private static string Key(RegistryHive2 hive, string path, string name) => hive + "|" + path + "|" + name;
 
@@ -657,7 +758,8 @@ internal sealed class MemoryRegistry : IRegistryStore
     public void Write(string currentUserPath, string name, RegistryValue value)
     {
         NeverTouch.Guard(RegistryHive2.CurrentUser, currentUserPath, name);
-        if (Throw.Contains(name)) throw new UnauthorizedAccessException("Access to the registry key is denied.");
+        if (Throw.Contains(name))
+            throw ThrowSecurity ? new System.Security.SecurityException("Requested registry access is not allowed.") : new UnauthorizedAccessException("Access to the registry key is denied.");
         if (Ignore.Contains(name)) return;
         if (value.Exists) values[Key(RegistryHive2.CurrentUser, currentUserPath, name)] = value;
         else values.Remove(Key(RegistryHive2.CurrentUser, currentUserPath, name));

@@ -5,7 +5,14 @@
         <Grid Margin="{DynamicResource Shell.PagePadding}">
         <Grid.ColumnDefinitions><ColumnDefinition Width="*" MaxWidth="900" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
         <StackPanel>
-            <TextBlock x:Name="PageTitleText" Style="{StaticResource Shell.PageTitle}" Margin="0,0,0,20" />
+            <DockPanel Margin="0,0,0,20">
+                <!-- Windows Settings' own page for this area; hidden where there is none (File Explorer). -->
+                <TextBlock x:Name="SettingsLinkText" DockPanel.Dock="Right" Style="{StaticResource Shell.Secondary}" TextWrapping="NoWrap"
+                           VerticalAlignment="Bottom" Margin="16,0,0,6" Visibility="Collapsed">
+                    <Hyperlink x:Name="SettingsLink" Click="SettingsLink_Click" AutomationProperties.Name="More in Windows Settings">More in Windows Settings</Hyperlink>
+                </TextBlock>
+                <TextBlock x:Name="PageTitleText" Style="{StaticResource Shell.PageTitle}" Margin="0" />
+            </DockPanel>
 
             <Border x:Name="RestartBar" Style="{StaticResource Studio.Row}" Visibility="Collapsed" Margin="0,0,0,16">
                 <DockPanel>

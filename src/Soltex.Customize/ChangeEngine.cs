@@ -17,7 +17,14 @@ public sealed record SettingState(
     public int Choice { get; init; } = -1;
 }
 
-public sealed record ChangeResult(SettingDefinition Definition, ChangeOutcome Outcome, string Message);
+public sealed record ChangeResult(SettingDefinition Definition, ChangeOutcome Outcome, string Message)
+{
+    /// <summary>
+    /// The change failed because Windows denied the write. Windows guards some values from apps (for example the
+    /// Widgets button on 24H2 and later), so only Windows Settings can change them; <see cref="Message"/> says so plainly.
+    /// </summary>
+    public bool BlockedByWindows { get; init; }
+}
 public sealed record UndoResult(SettingDefinition Definition, UndoOutcome Outcome, string Message);
 
 /// <summary>One operation as the user sees it in History.</summary>
@@ -42,6 +49,12 @@ public sealed class ChangeEngine
     private readonly int windowsBuild;
     private readonly Func<DateTimeOffset> clock;
     private bool? home;
+
+    /// <summary>What a change or undo says when Windows denied the write, instead of the raw access-denied error.</summary>
+    public const string BlockedByWindowsMessage = "Windows doesn't let apps change this. Use Windows Settings instead.";
+
+    /// <summary>Access denied: Windows (or a driver guarding the value) refused the write to this user's own key.</summary>
+    private static bool IsAccessDenied(Exception error) => error is UnauthorizedAccessException or System.Security.SecurityException;
 
     public ChangeEngine(IRegistryStore registry, ChangeJournal journal, int windowsBuild, ISettingsChangeNotifier? notifier = null, Func<DateTimeOffset>? clock = null)
     {
@@ -123,8 +136,14 @@ public sealed class ChangeEngine
             if (Equivalent(before, desired, target.Implied)) continue;
             journal.Append(new(JournalKind.Intent, operation, definition.Id, target.Path, target.Name, before, desired, clock()));
             string? failure = null;
+            bool blocked = false;
             try { registry.Write(target.Path, target.Name, desired); }
-            catch (Exception error) when (error is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+            catch (Exception error) when (IsAccessDenied(error))
+            {
+                failure = BlockedByWindowsMessage;
+                blocked = true;
+            }
+            catch (IOException error)
             {
                 failure = error.Message;
             }
@@ -140,7 +159,7 @@ public sealed class ChangeEngine
             journal.Append(new(JournalKind.Failed, operation, definition.Id, target.Path, target.Name, before, desired, clock(), failure));
             RollBack(operation, definition, done);
             if (notify) notifier?.Notify();
-            return new(definition, ChangeOutcome.Failed, failure);
+            return new(definition, ChangeOutcome.Failed, failure) { BlockedByWindows = blocked };
         }
         if (notify) notifier?.Notify();
         return new(definition, ChangeOutcome.Applied, success);
@@ -200,9 +219,9 @@ public sealed class ChangeEngine
                 journal.Append(change with { Kind = JournalKind.Undone, Before = change.After, After = change.Before, At = clock(), Note = null });
                 restored++;
             }
-            catch (Exception error) when (error is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+            catch (Exception error) when (IsAccessDenied(error) || error is IOException)
             {
-                failure = error.Message;
+                failure = IsAccessDenied(error) ? BlockedByWindowsMessage : error.Message;
             }
         }
         if (notify) notifier?.Notify();

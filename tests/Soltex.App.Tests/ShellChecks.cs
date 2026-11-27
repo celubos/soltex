@@ -175,6 +175,103 @@ internal static class ShellChecks
         Program.True(shell.Services.Calm.Inspect(CalmCatalog.All.Single(d => d.Id == "privacy.typinginsights")).CanUndo, "The applied change must be undoable.");
     }
 
+    public static void CustomizeSectionsLinksAndAutoHide()
+    {
+        // Render-only shell with the in-memory registry; the auto-hide switch is read from Windows but never toggled here.
+        using TestShell shell = new();
+        (Destination Page, string[] Headings)[] expected =
+        [
+            (Destination.Taskbar, ["Look", "Details", "Behavior"]),
+            (Destination.Start, []),
+            (Destination.Explorer, []),
+            (Destination.Appearance, ["Desktop icons"]),
+            (Destination.Multitasking, ["Keyboard, mouse and clipboard", "Gaming"]),
+            (Destination.Customize, ["Tips and suggestions"]),
+        ];
+        foreach ((Destination destination, string[] headings) in expected)
+        {
+            shell.Window.Navigate(destination);
+            Pump();
+            CustomizePage page = (CustomizePage)shell.Window.Page(destination);
+            UIElement[] children = [.. page.Groups.Children.OfType<UIElement>()];
+            List<(int Index, StackPanel Panel, string Text)> found = [];
+            for (int i = 0; i < children.Length; i++)
+                if (children[i] is StackPanel { Orientation: Orientation.Horizontal, Children: [TextBlock { Text: { } text } title, ..] } heading
+                    && ReferenceEquals(title.Style, page.FindResource("Shell.CardTitle")))
+                    found.Add((i, heading, text));
+            Program.True(found.Select(h => h.Text).SequenceEqual(headings),
+                $"{destination}: headings are [{string.Join(", ", found.Select(h => h.Text))}], expected [{string.Join(", ", headings)}].");
+            Program.True(found.All(h => h.Text != page.Title && h.Panel.IsVisible && h.Panel.ActualHeight > 0), $"{destination}: a heading repeats the page title or is not shown.");
+            Program.True(found.All(h => h.Panel.Margin.Top == (h.Index == 0 ? 0 : 18)), $"{destination}: only a heading at the very top has no top margin.");
+
+            // Each group's rows sit under that group's heading.
+            foreach ((int index, _, string text) in found)
+            {
+                SettingGroup? group = Enum.GetValues<SettingGroup>().Cast<SettingGroup?>().FirstOrDefault(g => CalmCatalog.GroupTitle(g!.Value) == text);
+                if (group is null) continue;
+                int next = found.FirstOrDefault(h => h.Index > index).Index is int n and > 0 ? n : children.Length;
+                foreach (SettingDefinition d in CalmCatalog.All.Where(d => d.Group == group))
+                {
+                    int row = Array.FindIndex(children, c => Descendants(c).OfType<Control>().Any(x => ReferenceEquals(x.Tag, d)));
+                    Program.True(row > index && row < next, $"{destination}: {d.Id} is not under \"{text}\".");
+                }
+            }
+
+            string? uri = CustomizePage.SettingsUriFor(destination);
+            Program.True(destination == Destination.Explorer ? uri is null && page.SettingsLinkText.Visibility == Visibility.Collapsed
+                    : uri is not null && uri.StartsWith("ms-settings:", StringComparison.Ordinal) && page.SettingsLinkText.IsVisible,
+                $"{destination}: the Windows Settings link is wrong ({uri}).");
+            string linkName = System.Windows.Automation.AutomationProperties.GetName(page.SettingsLink);
+            string linkText = string.Concat(page.SettingsLink.Inlines.OfType<System.Windows.Documents.Run>().Select(r => r.Text));
+            Program.True(linkName == "More in Windows Settings" && linkText == linkName,
+                $"{destination}: the Windows Settings link needs its name (name \"{linkName}\", text \"{linkText}\").");
+        }
+        Program.True(CustomizePage.SettingsUriFor(Destination.Taskbar) == "ms-settings:taskbar" && CustomizePage.SettingsUriFor(Destination.Start) == "ms-settings:personalization-start"
+            && CustomizePage.SettingsUriFor(Destination.Appearance) == "ms-settings:personalization-colors" && CustomizePage.SettingsUriFor(Destination.Multitasking) == "ms-settings:multitasking"
+            && CustomizePage.SettingsUriFor(Destination.Customize) == "ms-settings:privacy-general", "A page links to the wrong Windows Settings page.");
+
+        // Automatically hide the taskbar: first row of Behavior, named, searchable.
+        shell.Window.Navigate(Destination.Taskbar);
+        Pump();
+        CustomizePage taskbar = (CustomizePage)shell.Window.Page(Destination.Taskbar);
+        CheckBox autoHide = taskbar.AutoHideSwitch ?? throw new InvalidOperationException("The Taskbar page has no auto-hide switch.");
+        UIElement[] rows = [.. taskbar.Groups.Children.OfType<UIElement>()];
+        int behavior = Array.FindIndex(rows, c => c is StackPanel { Children: [TextBlock { Text: "Behavior" }, ..] });
+        Program.True(behavior >= 0 && behavior + 1 < rows.Length && Descendants(rows[behavior + 1]).Contains(autoHide), "Auto-hide must be the first row under Behavior.");
+        Program.True(System.Windows.Automation.AutomationProperties.GetName(autoHide) == "Automatically hide the taskbar", "The auto-hide switch needs its name.");
+        Program.True(First([.. shell.Search("auto-hide")]) is { Destination: Destination.Taskbar, Anchor: "autohide" }
+            && First([.. shell.Search("automatically hide")]) is { Anchor: "autohide" }, "Search does not find auto-hide.");
+        Program.True(First([.. shell.Search("desktop icons recycle")]) is { Destination: Destination.Appearance, Anchor: "desktop.recyclebin" }
+            && First([.. shell.Search("game mode")]) is { Destination: Destination.Multitasking, Anchor: "gaming.gamemode" }, "Search does not find the new rows by their heading.");
+    }
+
+    public static void CustomizeRowSaysWhenWindowsRefuses()
+    {
+        // TaskbarDa (Widgets) is guarded by Windows' UCPD driver on 24H2 and later: the write fails with access denied.
+        DenyingRegistry registry = new("TaskbarDa");
+        using TestShell shell = new(calmFactory: journal => new ChangeEngine(registry, new ChangeJournal(journal), 26300));
+        shell.Window.Navigate(Destination.Taskbar);
+        Pump();
+        CustomizePage page = (CustomizePage)shell.Window.Page(Destination.Taskbar);
+        CheckBox widgets = Descendants(page).OfType<CheckBox>().First(c => c.Tag is SettingDefinition { Id: "taskbar.widgets" });
+        TextBlock note = page.NoteFor("taskbar.widgets") ?? throw new InvalidOperationException("The Widgets row has no note.");
+        Program.True(widgets.IsChecked == true && note.Visibility == Visibility.Collapsed, "Setup: Widgets starts on, with no note.");
+        ((IToggleProvider)UIElementAutomationPeer.CreatePeerForElement(widgets).GetPattern(PatternInterface.Toggle)).Toggle();
+        DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+        while ((registry.Denied == 0 || page.Busy.Visibility == Visibility.Visible || !note.Inlines.OfType<System.Windows.Documents.Hyperlink>().Any()) && DateTime.UtcNow < deadline)
+        {
+            Pump();
+            Thread.Sleep(5);
+        }
+        string text = string.Concat(note.Inlines.OfType<System.Windows.Documents.Run>().Select(r => r.Text));
+        Program.True(registry.Denied == 1 && note.IsVisible && text.StartsWith("Windows doesn't let apps change this.", StringComparison.Ordinal)
+            && !text.Contains("registry", StringComparison.OrdinalIgnoreCase), "The row must say plainly that Windows refused: " + text);
+        Program.True(note.Inlines.OfType<System.Windows.Documents.Hyperlink>().SingleOrDefault() is { } link
+            && System.Windows.Automation.AutomationProperties.GetName(link) == "Open Windows Settings", "The row must link to Windows Settings.");
+        Program.True(widgets.IsChecked == true && !shell.Services.Calm.Inspect(CalmCatalog.All.Single(d => d.Id == "taskbar.widgets")).CanUndo,
+            "The switch must show what Windows kept, with nothing to undo.");
+    }
+
     public static void TaskbarLookSavesChoicesAndShowsRelevantRows()
     {
         // The shell is created render-only, so the taskbar service is never attached: nothing reaches Explorer.
@@ -636,6 +733,24 @@ internal static class ShellChecks
             NeverTouch.Guard(RegistryHive2.CurrentUser, currentUserPath, name);
             string key = RegistryHive2.CurrentUser + "|" + currentUserPath + "|" + name;
             if (value.Exists) values[key] = value; else values.Remove(key);
+        }
+    }
+
+    /// <summary>In-memory registry that refuses one value with access denied, as Windows does for values it guards from apps.</summary>
+    private sealed class DenyingRegistry(string deniedName) : IRegistryStore
+    {
+        private readonly MemoryRegistry inner = new();
+        private int denied;
+        public int Denied => Volatile.Read(ref denied);
+        public RegistryValue Read(RegistryHive2 hive, string path, string name) => inner.Read(hive, path, name);
+        public void Write(string currentUserPath, string name, RegistryValue value)
+        {
+            if (string.Equals(name, deniedName, StringComparison.OrdinalIgnoreCase))
+            {
+                Interlocked.Increment(ref denied);
+                throw new UnauthorizedAccessException("Access to the registry key is denied.");
+            }
+            inner.Write(currentUserPath, name, value);
         }
     }
 
