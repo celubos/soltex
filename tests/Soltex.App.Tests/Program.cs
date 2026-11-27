@@ -60,6 +60,7 @@ internal static class Program
             ("Application routing UI requires explicit preflight and preserves device identity", IntegrationChecks.RoutingWindowIsInert),
             ("Windows mixer chooses initial visible controls and retains explicit missing devices", IntegrationChecks.InitialDeviceSelection),
             ("App settings survive corrupt and future files, normalize and round-trip", ShellChecks.SettingsStoreResilience),
+            ("A window the driver shows blank switches to software drawing until Windows restarts", ShellChecks.BlankWindowSwitchesToSoftwareUntilRestart),
             ("Settings that fail to load are copied before any automatic save, shown as a caution, and never greeted as a first run", ShellChecks.UnreadableSettingsAreKeptAndShown),
             ("Notices and search status are live regions read once when they appear", ShellChecks.NoticesAndStatusAreAnnounced),
             ("In high contrast the selected rail item uses HighlightText", ShellChecks.HighContrastSelectionUsesHighlightText),

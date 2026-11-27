@@ -81,6 +81,15 @@ public partial class App : Application
 
         services = new ShellServices(options.ProfileDirectory, store, Dispatcher);
         bool renderSmoke = options.CapturePath is not null;
+        DrawingCheck? drawing = null;
+        if (!renderSmoke)
+        {
+            // Before the first window: a driver that showed a blank window earlier this boot gets software drawing at once.
+            ShellServices shared = services;
+            drawing = new DrawingCheck(Path.Combine(services.DataRoot, "Settings", "software-drawing.txt"),
+                message => shared.Report(NoticeSeverity.Information, "Display", message));
+            drawing.ApplyAtStartup();
+        }
         if (!renderSmoke) services.Start();
         else
         {
@@ -91,6 +100,7 @@ public partial class App : Application
         }
         ShellWindow window = new(services, renderSmoke);
         MainWindow = window;
+        drawing?.Watch(window);
         if (options.Scale is not null) ThemeService.ApplyScale((FrameworkElement)window.Content, effective);
         window.Closed += (_, _) => Shutdown();
 

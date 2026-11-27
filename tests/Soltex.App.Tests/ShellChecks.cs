@@ -37,6 +37,28 @@ internal static class ShellChecks
         ThemeService.Apply(app, new AppSettings());
     }
 
+    public static void BlankWindowSwitchesToSoftwareUntilRestart()
+    {
+        const int width = 200, height = 120;
+        uint[] flat = Enumerable.Repeat(0x00FF_FFFFu, width * height).ToArray();
+        Program.True(DrawingCheck.IsBlank(flat, width, height), "A window that came out as one flat color is blank.");
+        uint[] drawn = (uint[])flat.Clone();
+        for (int y = 40; y < 43; y++)
+            for (int x = 30; x < 33; x++) drawn[(y * width) + x] = 0x0020_2020;
+        Program.True(!DrawingCheck.IsBlank(drawn, width, height), "A window with even one small glyph drawn is not blank.");
+        Program.True(!DrawingCheck.IsBlank(new uint[40 * 40], 40, 40), "A capture too small to judge is never called blank.");
+        Program.True(!DrawingCheck.IsBlank(flat, width, height + 10), "A capture shorter than its size is never called blank.");
+
+        string file = Path.Combine(NewRoot(), "Settings", "software-drawing.txt");
+        DateTime boot = new(2026, 11, 25, 18, 58, 40, DateTimeKind.Utc);
+        Program.True(!DrawingCheck.BlankSeenThisBoot(file, boot), "With nothing remembered the graphics card is used.");
+        DrawingCheck.RememberBlank(file, boot);
+        Program.True(DrawingCheck.BlankSeenThisBoot(file, boot.AddSeconds(5)), "A blank window this boot means software drawing from the first frame.");
+        Program.True(!DrawingCheck.BlankSeenThisBoot(file, boot.AddHours(6)), "After Windows restarts the graphics card is tried again.");
+        File.WriteAllText(file, "not a time");
+        Program.True(!DrawingCheck.BlankSeenThisBoot(file, boot), "An unreadable record is ignored.");
+    }
+
     public static void SettingsStoreResilience()
     {
         string root = NewRoot();
