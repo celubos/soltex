@@ -272,7 +272,9 @@ internal sealed partial class TaskbarHelper(string key, string eventBase, string
     /// </summary>
     public async Task<(string? Look, string? Styles)> ConfirmPartsAsync(TaskbarLookState state, bool anyReport = false, CancellationToken cancellationToken = default)
     {
-        for (int wait = 0; wait < 40; wait++)
+        // Up to 6 s: a change of style rules first puts every old style back, and the helper gives each taskbar thread
+        // up to 5 s for that before it walks the tree again, so a busy PC can take well over a second to report.
+        for (int wait = 0; wait < 120; wait++)
         {
             if (ReadStatus() is { } status && (anyReport || status.Request == request))
             {
