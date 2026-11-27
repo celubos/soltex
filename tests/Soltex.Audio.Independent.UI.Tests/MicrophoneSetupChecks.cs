@@ -54,6 +54,30 @@ internal static class MicrophoneSetupChecks
         foreach (MicrophoneSound sound in new[] { MicrophoneSound.Natural, MicrophoneSound.Broadcast, MicrophoneSound.NoisyRoom })
             check(MicrophoneSetup.ApplySound(sound, new DspSettings()).Limiter.Enabled, sound + " chosen now turns the safety limiter on");
         check(!MicrophoneSetup.ApplySound(MicrophoneSound.Clean, new DspSettings()).Limiter.Enabled, "Clean keeps the plain clipping guard");
+
+        // Noisy room uses neural noise removal at full strength now, and nothing that only handled steady noise.
+        DspSettings noisy = MicrophoneSetup.ApplySound(MicrophoneSound.NoisyRoom, new DspSettings());
+        check(noisy.NeuralNoiseRemoval is { Enabled: true, MaximumReductionDb: 100 } && !noisy.NoiseSuppression.Enabled && !noisy.NoiseAttenuation.Enabled,
+            "Noisy room removes noise with the neural network alone");
+        check(MicrophonePath.DescribeProcessing(Blank with { Dsp = noisy }).SequenceEqual(["AI noise removal", "Low cut at 80 Hz", "Compressor", "Safety limiter at −1 dB"]),
+            "Noisy room is described exactly as what it does: " + string.Join(", ", MicrophonePath.DescribeProcessing(Blank with { Dsp = noisy })));
+        check(MicrophoneSetup.Identify(noisy with { NeuralNoiseRemoval = new NeuralNoiseRemovalSettings(Enabled: true, MaximumReductionDb: 24) }) == MicrophoneSound.Custom,
+            "A lighter noise removal than the preset's reads as Custom");
+        // A Noisy room saved by an earlier version (steady-noise suppression and expander) is still Noisy room and kept as saved.
+        EqBand[] lowCut = DspSettings.FlatBands();
+        lowCut[0] = new EqBand(80, 0, 0.7071067811865476, EqFilterType.HighPass);
+        DspSettings legacyNoisy = new()
+        {
+            GainDb = 2, HeadroomDb = -3, OutputCeiling = 0.89, Bands = lowCut,
+            Compressor = new CompressorSettings(Enabled: true, ThresholdDb: -24, Ratio: 3, AttackMs: 10, ReleaseMs: 150, MakeupDb: 6),
+            Limiter = new SafetyLimiterSettings(Enabled: true),
+            NoiseSuppression = new SpectralNoiseSuppressionSettings(Enabled: true, NoiseFloorDb: -50, ReductionDb: 15),
+            NoiseAttenuation = new DownwardExpanderSettings(Enabled: true, ThresholdDb: -48, Ratio: 2, MaximumAttenuationDb: 18)
+        };
+        check(MicrophoneSetup.Identify(legacyNoisy) == MicrophoneSound.NoisyRoom, "A Noisy room saved before neural noise removal is still recognized as Noisy room");
+        HostChannelProfile legacyProfile = Blank with { Enabled = true, CaptureEndpointId = "webcam", RenderEndpointId = "cable-in", Dsp = legacyNoisy };
+        (HostChannelProfile? keptLegacy, _) = MicrophoneSetup.Build(legacyProfile, Endpoints, "interface", null, "cable-in", MicrophoneSound.NoisyRoom);
+        check(keptLegacy is not null && MicrophoneSetup.SameSound(keptLegacy.Dsp, legacyNoisy), "Saving the setup without choosing another preset keeps an old Noisy room exactly as saved");
         DspSettings savedNatural = MicrophoneSetup.ApplySound(MicrophoneSound.Natural, new DspSettings()) with { Limiter = new SafetyLimiterSettings() };
         check(MicrophoneSetup.Identify(savedNatural) == MicrophoneSound.Natural, "A Natural preset saved before the limiter existed is still recognized as Natural");
         HostChannelProfile savedProfile = Blank with { Enabled = true, CaptureEndpointId = "webcam", RenderEndpointId = "cable-in", Dsp = savedNatural };
@@ -91,7 +115,7 @@ internal static class MicrophoneSetupChecks
     {
         try
         {
-            _ = new PcmDspProcessor(48000, 2, settings);
+            using (new PcmDspProcessor(48000, 2, settings)) { }
             return true;
         }
         catch (ArgumentException) { return false; }

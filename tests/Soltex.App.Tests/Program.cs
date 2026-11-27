@@ -140,6 +140,7 @@ internal static class Program
             ("Processing editor keeps untouched values and presets", MicrophoneChecks.ProcessingEditorKeepsPresetsAndEdits),
             ("The curve equalizer draws the engine's response and edits exactly one band", MicrophoneChecks.CurveEqualizerEditsExactlyOneBand),
             ("The sound editor plays changes live and puts the old sound back on Cancel", MicrophoneChecks.SoundEditorPlaysChangesLiveAndPutsThemBack),
+            ("AI noise removal shows, keeps and edits its saved settings, and Noisy room turns it on", MicrophoneChecks.AiNoiseRemovalSectionKeepsAndEditsItsSettings),
             ("Playback stages routing until Apply and saves one channel's sound", PlaybackChecks.PlaybackStagesAppliesAndEditsSound),
             ("Microphone card explains the connection and shows refusals", MicrophoneChecks.CardExplainsConnectionAndRefusals),
             ("Playback shows refusals and the output all channels share", PlaybackChecks.PlaybackShowsRefusalsAndSharedOutput),

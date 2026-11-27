@@ -336,6 +336,38 @@ internal static class MicrophoneChecks
         finally { window.Close(); }
     }
 
+    public static void AiNoiseRemovalSectionKeepsAndEditsItsSettings()
+    {
+        Program.True(PcmDspProcessor.NeuralNoiseRemovalAvailable, "The noise removal library must be next to the engine in the app's folder.");
+        DspSettings saved = new() { NeuralNoiseRemoval = new NeuralNoiseRemovalSettings(Enabled: true, MaximumReductionDb: 100) };
+        ProcessingEditor editor = new(saved, microphone: true);
+        Window window = Host(new System.Windows.Controls.ScrollViewer { Content = editor });
+        try
+        {
+            Pump();
+            System.Windows.Controls.CheckBox on = Find<System.Windows.Controls.CheckBox>(editor, "AI noise removal on");
+            System.Windows.Controls.Slider strength = Find<System.Windows.Controls.Slider>(editor, "Noise removal strength");
+            Program.True(on.IsChecked == true && strength.Value == strength.Maximum && System.Windows.Automation.AutomationProperties.GetItemStatus(strength) == "Full",
+                "A saved full-strength noise removal must show on and at Full.");
+            Program.True(editor.Result().NeuralNoiseRemoval == saved.NeuralNoiseRemoval, "Opening and saving must keep noise removal exactly.");
+            strength.Value = 24;
+            Program.True(editor.Result().NeuralNoiseRemoval is { Enabled: true, MaximumReductionDb: 24 }, "Strength must set how far noise is turned down.");
+            strength.Value = strength.Maximum;
+            Program.True(editor.Result().NeuralNoiseRemoval.MaximumReductionDb == 100, "The last notch must be the network's full result.");
+            on.IsChecked = false;
+            Program.True(!editor.Result().NeuralNoiseRemoval.Enabled, "The switch must turn noise removal off.");
+
+            editor.PresetChoice!.SelectedItem = MicrophoneSetup.Sounds.First(s => s.Sound == MicrophoneSound.NoisyRoom);
+            Pump();
+            Program.True(editor.Result().NeuralNoiseRemoval is { Enabled: true, MaximumReductionDb: 100 } &&
+                Find<System.Windows.Controls.CheckBox>(editor, "AI noise removal on").IsChecked == true, "Noisy room must turn noise removal on in the editor.");
+            ((System.Windows.Controls.ScrollViewer)window.Content).ScrollToVerticalOffset(0);
+            Pump();
+            SaveRender(window, "processing-editor-noise-removal");
+        }
+        finally { window.Close(); }
+    }
+
     public static void SoundEditorPlaysChangesLiveAndPutsThemBack()
     {
         DspSettings opened = MicrophoneSetup.ApplySound(MicrophoneSound.Natural, new DspSettings());

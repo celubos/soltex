@@ -42,7 +42,7 @@ internal static class DspWindowChecks
             check(!switchedOff.NoiseSuppression.SmoothResidual && switchedOff.NoiseSuppression.ReductionDb == 20 &&
                 switchedOff.Limiter is { Enabled: false, ReleaseMs: 300, TruePeak: false },
                 "turning both switches off changes only those two settings");
-            _ = new PcmDspProcessor(48000, 2, switchedOff);
+            using (new PcmDspProcessor(48000, 2, switchedOff)) { }
             check(true, "the edited settings pass the engine's own validation");
         }
         finally { window.Close(); }

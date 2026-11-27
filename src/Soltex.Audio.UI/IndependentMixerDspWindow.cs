@@ -156,7 +156,7 @@ internal sealed class IndependentMixerDspWindow : Window
         try
         {
             var candidate = Read();
-            _ = new PcmDspProcessor(192000, 2, candidate); int rate = PreviewRate(candidate); graph.SetResponse(candidate, rate);
+            using (new PcmDspProcessor(192000, 2, candidate)) { } int rate = PreviewRate(candidate); graph.SetResponse(candidate, rate);
             feedback.Text = $"Settings validated. Response preview at {rate / 1000.0:0.#} kHz; actual stream format is checked by the host.";
             if (apply) { Settings = candidate; DialogResult = true; }
         }

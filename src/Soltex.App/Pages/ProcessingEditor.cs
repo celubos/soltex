@@ -30,7 +30,10 @@ public sealed class ProcessingEditor : UserControl
     private TextBlock bandFrequencyText = null!, bandGainText = null!, bandQText = null!;
     private bool syncingBand;
     private CheckBox gateOn = null!, expanderOn = null!, suppressionOn = null!, eqOn = null!, compressorOn = null!, stereoOn = null!, mono = null!, swap = null!;
-    private CheckBox smoothResidual = null!, limiter = null!;
+    private CheckBox smoothResidual = null!, limiter = null!, neuralOn = null!;
+    private Slider neuralStrength = null!;
+    /// <summary>The Strength slider's last notch: the network's full result (no cap on how far noise is turned down).</summary>
+    private const double FullStrength = 48;
     private bool loading;
 
     public ProcessingEditor(DspSettings settings, bool microphone)
@@ -105,6 +108,23 @@ public sealed class ProcessingEditor : UserControl
         gain = AddSlider(level, "Level", s.GainDb, -24, 24, 0.5, Db);
 
         // The sections follow the signal: noise removal, then tone, then dynamics, then the output.
+        StackPanel neural = Section("AI noise removal", s.NeuralNoiseRemoval.Enabled, microphone
+            ? "Removes what isn't your voice (keyboards, mouse clicks, fans, hum, traffic) as you talk, using RNNoise, a neural network trained on speech by Xiph. Adds about 30 ms."
+            : "Removes what isn't a voice from this channel, using RNNoise, a neural network trained on speech by Xiph. Made for voices, such as Chat; it would strip music and game sound. Adds about 30 ms.",
+            out neuralOn);
+        neuralStrength = AddSlider(neural, "Strength", Math.Min(s.NeuralNoiseRemoval.MaximumReductionDb, FullStrength), 6, FullStrength, 1,
+            v => v >= FullStrength ? "Full" : v.ToString("0", CultureInfo.InvariantCulture) + " dB less noise");
+        AutomationProperties.SetName(neuralStrength, "Noise removal strength");
+        AutomationProperties.SetHelpText(neuralStrength, "How far noise is turned down. Full is the network's own result; lower keeps a little of the room for a more natural sound.");
+        if (!PcmDspProcessor.NeuralNoiseRemovalAvailable)
+        {
+            // Off and greyed out, unless it was saved on (so it can still be turned off).
+            TextBlock missing = new() { Text = "Not available: the noise removal library is missing from this installation. Reinstall Soltex to restore it.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
+            missing.SetResourceReference(TextBlock.ForegroundProperty, "Studio.CautionBrush");
+            neural.Children.Add(missing);
+            if (!s.NeuralNoiseRemoval.Enabled) neuralOn.IsEnabled = false;
+        }
+
         StackPanel suppression = Section("Background noise suppression", s.NoiseSuppression.Enabled,
             "Reduces steady noise such as fans and hum against a noise level you set. It can't pick out your voice, so it won't remove talking or music.", out suppressionOn);
         suppressionStrength = AddSlider(suppression, "Strength", s.NoiseSuppression.ReductionDb, 0, 36, 1, v => v.ToString("0", CultureInfo.InvariantCulture) + " dB less noise");
@@ -156,6 +176,11 @@ public sealed class ProcessingEditor : UserControl
                 Enabled = expanderOn.IsChecked == true,
                 ThresholdDb = Pick(expanderThreshold, s.NoiseAttenuation.ThresholdDb, v => v),
                 MaximumAttenuationDb = Pick(expanderDepth, s.NoiseAttenuation.MaximumAttenuationDb, v => v)
+            },
+            NeuralNoiseRemoval = s.NeuralNoiseRemoval with
+            {
+                Enabled = neuralOn.IsChecked == true,
+                MaximumReductionDb = Pick(neuralStrength, s.NeuralNoiseRemoval.MaximumReductionDb, v => v >= FullStrength ? 100 : v)
             },
             NoiseSuppression = s.NoiseSuppression with
             {

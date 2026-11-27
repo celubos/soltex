@@ -102,6 +102,7 @@ public static class MicrophonePath
         if (Math.Abs(gain) >= 0.05) steps.Add("Gain " + Decibels(gain));
         if (dsp.Gate.Enabled) steps.Add("Noise gate");
         if (dsp.NoiseAttenuation.Enabled) steps.Add("Quiet-noise reduction");
+        if (dsp.NeuralNoiseRemoval.Enabled) steps.Add("AI noise removal");
         if (dsp.NoiseSuppression.Enabled) steps.Add("Background noise suppression");
         if (!dsp.EqBypass)
         {

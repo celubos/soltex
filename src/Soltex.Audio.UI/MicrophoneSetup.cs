@@ -34,7 +34,7 @@ public static class MicrophoneSetup
     [
         new(MicrophoneSound.Natural, "Natural voice", "Removes rumble below 80 Hz and evens out loud and soft words. A good default for most microphones."),
         new(MicrophoneSound.Broadcast, "Broadcast", "For dynamic microphones: low cut, a little less boom, more clarity, firmer leveling and a gentle gate between words."),
-        new(MicrophoneSound.NoisyRoom, "Noisy room", "Natural voice plus steady background-noise reduction (fans, hum) and quieter pauses. Speech can sound slightly processed."),
+        new(MicrophoneSound.NoisyRoom, "Noisy room", "Natural voice plus AI noise removal: keyboards, fans, hum and room noise drop away while you talk. Adds about 30 ms."),
         new(MicrophoneSound.Clean, "Clean (no processing)", "Your microphone exactly as the interface delivers it, with only a clipping guard.")
     ];
 
@@ -134,10 +134,28 @@ public static class MicrophoneSetup
             MicrophoneSound.NoisyRoom => clean with
             {
                 HeadroomDb = -3, OutputCeiling = 0.89, Bands = natural, Compressor = leveling, Limiter = limiter,
-                NoiseSuppression = new SpectralNoiseSuppressionSettings(Enabled: true, NoiseFloorDb: -50, ReductionDb: 15),
-                NoiseAttenuation = new DownwardExpanderSettings(Enabled: true, ThresholdDb: -48, Ratio: 2, MaximumAttenuationDb: 18)
+                NeuralNoiseRemoval = new NeuralNoiseRemovalSettings(Enabled: true)
             },
             _ => current
+        };
+    }
+
+    /// <summary>
+    /// "Noisy room" as saved before it used neural noise removal: steady-noise suppression and a downward expander. Still
+    /// recognised as Noisy room, so a saved copy is kept as it is; choosing the preset again gives the current one.
+    /// </summary>
+    private static DspSettings LegacyNoisyRoom(DspSettings current)
+    {
+        EqBand[] natural = DspSettings.FlatBands();
+        natural[0] = new EqBand(80, 0, 0.7071067811865476, EqFilterType.HighPass);
+        return new DspSettings
+        {
+            InputChannel = current.InputChannel, GainDb = current.GainDb, Mute = current.Mute, GainSmoothingMs = current.GainSmoothingMs,
+            HeadroomDb = -3, OutputCeiling = 0.89, Bands = natural,
+            Compressor = new CompressorSettings(Enabled: true, ThresholdDb: -24, Ratio: 3, AttackMs: 10, ReleaseMs: 150, MakeupDb: 6),
+            Limiter = new SafetyLimiterSettings(Enabled: true),
+            NoiseSuppression = new SpectralNoiseSuppressionSettings(Enabled: true, NoiseFloorDb: -50, ReductionDb: 15),
+            NoiseAttenuation = new DownwardExpanderSettings(Enabled: true, ThresholdDb: -48, Ratio: 2, MaximumAttenuationDb: 18)
         };
     }
 
@@ -147,7 +165,7 @@ public static class MicrophoneSetup
         ArgumentNullException.ThrowIfNull(settings);
         foreach (MicrophoneSoundChoice choice in Sounds)
             if (SameSound(ApplySound(choice.Sound, settings), settings)) return choice.Sound;
-        return MicrophoneSound.Custom;
+        return SameSound(LegacyNoisyRoom(settings), settings) ? MicrophoneSound.NoisyRoom : MicrophoneSound.Custom;
     }
 
     /// <summary>
@@ -160,7 +178,8 @@ public static class MicrophoneSetup
         ArgumentNullException.ThrowIfNull(b);
         return a.HeadroomDb.Equals(b.HeadroomDb) && a.OutputCeiling.Equals(b.OutputCeiling) && a.EqBypass == b.EqBypass &&
             a.Bands.SequenceEqual(b.Bands) && a.Gate == b.Gate && a.Compressor == b.Compressor &&
-            a.NoiseAttenuation == b.NoiseAttenuation && a.NoiseSuppression == b.NoiseSuppression && a.Stereo == b.Stereo;
+            a.NoiseAttenuation == b.NoiseAttenuation && a.NoiseSuppression == b.NoiseSuppression && a.NeuralNoiseRemoval == b.NeuralNoiseRemoval &&
+            a.Stereo == b.Stereo;
     }
 
     /// <summary>Builds the microphone channel to save, or explains in one sentence what is missing.</summary>
