@@ -259,6 +259,133 @@ internal static class MicrophoneChecks
         finally { window.Close(); }
     }
 
+    public static void CurveEqualizerEditsExactlyOneBand()
+    {
+        DspSettings broadcast = MicrophoneSetup.ApplySound(MicrophoneSound.Broadcast, new DspSettings());
+        ProcessingEditor editor = new(broadcast, microphone: true);
+        Window window = Host(new System.Windows.Controls.ScrollViewer { Content = editor });
+        try
+        {
+            Pump();
+            global::Soltex.App.Controls.EqEditor curve = FindType<global::Soltex.App.Controls.EqEditor>(editor);
+            Program.True(editor.Result().Bands.SequenceEqual(broadcast.Bands), "Opening the curve must keep every band exactly.");
+            Program.True(curve.ActualHeight >= 200 && curve.ActualWidth > 400, $"The curve must be large enough to drag on ({curve.ActualWidth:0}x{curve.ActualHeight:0}).");
+            double[] drawn = global::Soltex.App.Controls.EqEditor.Response(curve.Bands)!;
+            double[] engine = EqualizerResponse.Decibels(new DspSettings { Bands = broadcast.Bands }, 48000,
+                Enumerable.Range(0, 241).Select(i => 20 * Math.Pow(1000, i / 240.0)).ToArray());
+            Program.True(drawn.Zip(engine).All(p => Math.Abs(p.First - p.Second) < 1e-9), "The curve must be the engine's exact response.");
+            ((System.Windows.Controls.ScrollViewer)window.Content).ScrollToVerticalOffset(curve.TranslatePoint(new Point(0, 0), editor).Y - 90);
+            Pump();
+            SaveRender(window, "processing-editor-eq");
+
+            // Pick band 6 (1 kHz bell) by number key, then raise it 0.5 dB with the Up arrow.
+            curve.Focus();
+            Key(curve, System.Windows.Input.Key.D6);
+            Program.True(curve.SelectedIndex == 5, "Number keys must pick a band.");
+            EqBand before = curve.Bands[5];
+            Key(curve, System.Windows.Input.Key.Up);
+            DspSettings raised = editor.Result();
+            Program.True(Math.Abs(raised.Bands[5].GainDb - (before.GainDb + 0.5)) < 1e-9 &&
+                raised.Bands.Where((_, i) => i != 5).SequenceEqual(broadcast.Bands.Where((_, i) => i != 5)),
+                "The Up arrow must raise only the picked band by 0.5 dB.");
+            Program.True(editor.PresetChoice?.SelectedItem is MicrophoneSoundChoice { Sound: MicrophoneSound.Custom }, "A curve edit must turn the preset label to Custom.");
+            Key(curve, System.Windows.Input.Key.Right);
+            Program.True(Math.Abs(editor.Result().Bands[5].FrequencyHz - 1060) < 1e-9, $"Right must move the band up a twelfth of an octave (got {editor.Result().Bands[5].FrequencyHz}).");
+            Key(curve, System.Windows.Input.Key.PageUp);
+            Program.True(Math.Abs(editor.Result().Bands[5].Q - Math.Round(before.Q * 1.25, 2)) < 1e-9, "Page Up must make the band narrower.");
+            Key(curve, System.Windows.Input.Key.Space);
+            Program.True(editor.Result().Bands[5].Bypass, "Space must turn the band off.");
+            Key(curve, System.Windows.Input.Key.Delete);
+            Program.True(editor.Result().Bands[5] is { GainDb: 0, Bypass: false } reset && Math.Abs(reset.Q - 0.7071067811865476) < 1e-12 && reset.Type == before.Type,
+                "Delete must reset the band to flat and on, keeping its shape.");
+
+            // The details below the curve edit the same band, and show it.
+            System.Windows.Controls.Slider level = Find<System.Windows.Controls.Slider>(editor, "Band level");
+            Program.True(level.Value == 0 && System.Windows.Automation.AutomationProperties.GetItemStatus(level).Length > 0,
+                "The level slider must show and read out the picked band.");
+            level.Value = -4;
+            Program.True(editor.Result().Bands[5].GainDb == -4 && curve.Bands[5].GainDb == -4, "The level slider must edit the picked band on the curve too.");
+            System.Windows.Controls.ComboBox shape = Find<System.Windows.Controls.ComboBox>(editor, "Shape");
+            shape.SelectedValue = EqFilterType.Notch;
+            Program.True(editor.Result().Bands[5].Type == EqFilterType.Notch && !level.IsEnabled, "A notch has no level: the level slider must be off for it.");
+            System.Windows.Controls.ComboBox band = Find<System.Windows.Controls.ComboBox>(editor, "Band");
+            band.SelectedIndex = 0;
+            Program.True(curve.SelectedIndex == 0, "Picking a band in the list must pick it on the curve.");
+
+            // Flat clears every level, keeps shapes and frequencies.
+            var shapes = editor.Result().Bands.Select(b => (b.Type, b.FrequencyHz, b.Q, b.Bypass)).ToArray();
+            FindButton(editor, "Flat").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            DspSettings flat = editor.Result();
+            Program.True(flat.Bands.All(b => b.GainDb == 0) && flat.Bands.Select(b => (b.Type, b.FrequencyHz, b.Q, b.Bypass)).SequenceEqual(shapes),
+                "Flat must clear every level and keep shapes, frequencies, widths and on/off.");
+        }
+        finally { window.Close(); }
+    }
+
+    public static void SoundEditorPlaysChangesLiveAndPutsThemBack()
+    {
+        DspSettings opened = MicrophoneSetup.ApplySound(MicrophoneSound.Natural, new DspSettings());
+        List<DspSettings> sent = [];
+        ProcessingWindow window = new("Microphone sound", opened, microphone: true, settings => { sent.Add(settings); return Task.CompletedTask; })
+        {
+            ShowInTaskbar = false, ShowActivated = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = -32000, Top = -32000
+        };
+        window.Show();
+        Pump();
+        Find<System.Windows.Controls.Slider>(window.Editor, "Starts at").Value = -33;
+        Find<System.Windows.Controls.Slider>(window.Editor, "Starts at").Value = -34;
+        DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+        while (sent.Count == 0 && DateTime.UtcNow < deadline) { Pump(); Thread.Sleep(10); }
+        Program.True(sent.Count == 1 && sent[0].Compressor.ThresholdDb == -34, $"Quick changes must be heard once, with the latest value ({sent.Count} sent).");
+        window.Close();
+        deadline = DateTime.UtcNow.AddSeconds(5);
+        while (sent.Count < 2 && DateTime.UtcNow < deadline) { Pump(); Thread.Sleep(10); }
+        Program.True(sent.Count == 2 && sent[1] == opened, "Closing without Save must put the opening sound back.");
+
+        sent.Clear();
+        ProcessingWindow untouched = new("Microphone sound", opened, microphone: true, settings => { sent.Add(settings); return Task.CompletedTask; })
+        {
+            ShowInTaskbar = false, ShowActivated = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = -32000, Top = -32000
+        };
+        untouched.Show();
+        Pump();
+        untouched.Close();
+        for (int i = 0; i < 20; i++) { Pump(); Thread.Sleep(10); }
+        Program.True(sent.Count == 0, "A sound editor closed without changes must not send anything.");
+    }
+
+    private static void Key(UIElement target, System.Windows.Input.Key key)
+    {
+        PresentationSource source = PresentationSource.FromVisual(target) ?? throw new InvalidOperationException("Not shown.");
+        target.RaiseEvent(new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice, source, 0, key)
+        { RoutedEvent = System.Windows.Input.Keyboard.KeyDownEvent });
+        Pump();
+    }
+
+    private static T FindType<T>(DependencyObject root) where T : DependencyObject
+    {
+        Queue<DependencyObject> queue = new([root]);
+        while (queue.Count > 0)
+        {
+            DependencyObject node = queue.Dequeue();
+            if (node is T found) return found;
+            foreach (object child in LogicalTreeHelper.GetChildren(node)) if (child is DependencyObject d) queue.Enqueue(d);
+        }
+        throw new InvalidOperationException("No " + typeof(T).Name);
+    }
+
+    private static System.Windows.Controls.Button FindButton(DependencyObject root, string content)
+    {
+        Queue<DependencyObject> queue = new([root]);
+        while (queue.Count > 0)
+        {
+            DependencyObject node = queue.Dequeue();
+            if (node is System.Windows.Controls.Button { Content: string text } button && text == content) return button;
+            foreach (object child in LogicalTreeHelper.GetChildren(node)) if (child is DependencyObject d) queue.Enqueue(d);
+        }
+        throw new InvalidOperationException("No button " + content);
+    }
+
     public static void ProcessingEditorKeepsLimiterAndSmoothBackground()
     {
         DspSettings saved = new()

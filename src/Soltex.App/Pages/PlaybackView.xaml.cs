@@ -41,6 +41,7 @@ public partial class PlaybackView : UserControl
     {
         ArgumentNullException.ThrowIfNull(workspace);
         this.workspace = workspace;
+        EditSound = OpenProcessingWindow;
         InitializeComponent();
         PlaybackChannels = workspace.Channels.Where(c => c.Bus != AudioBus.Microphone).OrderBy(c => c.Bus).ToArray();
         // One set of strips: the microphone first, then Game, Chat, Media and Aux. They wrap together into even rows.
@@ -69,11 +70,19 @@ public partial class PlaybackView : UserControl
     public MicStripInfo Mic { get; } = new();
 
     /// <summary>Opens a channel's sound editor and returns the result, or null when cancelled. Replaceable for tests.</summary>
-    public Func<string, DspSettings, DspSettings?> EditSound { get; set; } = (title, settings) =>
+    public Func<string, DspSettings, DspSettings?> EditSound { get; set; }
+
+    /// <summary>The channel the sound editor is open for; live changes go to it.</summary>
+    private AudioBus? editingBus;
+
+    private DspSettings? OpenProcessingWindow(string title, DspSettings settings)
     {
-        ProcessingWindow window = new(title + " sound", settings, microphone: false) { Owner = Application.Current?.MainWindow };
+        ProcessingWindow window = new(title + " sound", settings, microphone: false, PreviewSoundAsync) { Owner = Application.Current?.MainWindow };
         return window.ShowDialog() == true ? window.Result : null;
-    };
+    }
+
+    private Task PreviewSoundAsync(DspSettings settings) =>
+        editingBus is { } bus ? workspace.ApplyChannelDspAsync(bus, settings) : Task.CompletedTask;
 
     internal void Sync()
     {
@@ -247,6 +256,7 @@ public partial class PlaybackView : UserControl
     internal async Task<bool> AdjustSoundAsync(AudioBus bus)
     {
         IndependentMixerChannel row = workspace.Channels.Single(c => c.Bus == bus);
+        editingBus = bus;
         if (EditSound(row.Title, workspace.ConfirmedChannel(bus).Dsp) is not { } edited) return false;
         try
         {

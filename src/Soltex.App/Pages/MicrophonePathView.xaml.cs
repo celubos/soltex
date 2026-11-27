@@ -65,7 +65,7 @@ public partial class MicrophonePathView : UserControl
         TestButton.ToolTip = "Listens for " + MicrophonePath.TestDurationText + " and tells you what it heard. Nothing is played or sent.";
         EditSound = settings =>
         {
-            ProcessingWindow window = new("Microphone sound", settings, microphone: true) { Owner = Window.GetWindow(this) };
+            ProcessingWindow window = new("Microphone sound", settings, microphone: true, PreviewSoundAsync) { Owner = Window.GetWindow(this) };
             return window.ShowDialog() == true ? window.Result : null;
         };
         polling.Tick += async (_, _) => await PollAsync();
@@ -447,11 +447,20 @@ public partial class MicrophonePathView : UserControl
 
     private async void SoundButton_Click(object sender, RoutedEventArgs e) => await AdjustSoundAsync();
 
+    /// <summary>The microphone as it was when the sound editor opened; live changes are sent on top of it.</summary>
+    private HostChannelProfile? editing;
+
+    /// <summary>Live preview from the sound editor: the edited processing on the microphone the editor opened with.</summary>
+    private Task PreviewSoundAsync(DspSettings settings) => source is { } live && editing is { } profile
+        ? live.ApplyMicrophoneAsync(profile with { Dsp = settings with { InputChannel = profile.Dsp.InputChannel } })
+        : Task.CompletedTask;
+
     /// <summary>Opens the processing editor for the microphone and saves the result.</summary>
     internal async Task<bool> AdjustSoundAsync()
     {
         if (source is null || busy) return false;
         HostChannelProfile current = CurrentMicrophone();
+        editing = current;
         if (EditSound(current.Dsp) is not { } edited) return false;
         busy = true; Render(source.Latest);
         try

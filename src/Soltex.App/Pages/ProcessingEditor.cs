@@ -1,8 +1,10 @@
 using System.Globalization;
+using System.IO;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Threading;
+using Soltex.App.Controls;
 using Soltex.Audio.Engine;
 using Soltex.Audio.UI;
 
@@ -21,7 +23,12 @@ public sealed class ProcessingEditor : UserControl
     private ComboBox? preset;
     private Slider gain = null!, gateThreshold = null!, expanderThreshold = null!, expanderDepth = null!, suppressionStrength = null!, suppressionFloor = null!;
     private Slider compressorThreshold = null!, compressorRatio = null!, compressorMakeup = null!, width = null!, pan = null!, crossfeed = null!, ceiling = null!;
-    private Slider[] bands = [];
+    private EqEditor curve = null!;
+    private ComboBox bandChoice = null!, bandType = null!;
+    private CheckBox bandOn = null!;
+    private Slider bandFrequency = null!, bandGain = null!, bandQ = null!;
+    private TextBlock bandFrequencyText = null!, bandGainText = null!, bandQText = null!;
+    private bool syncingBand;
     private CheckBox gateOn = null!, expanderOn = null!, suppressionOn = null!, eqOn = null!, compressorOn = null!, stereoOn = null!, mono = null!, swap = null!;
     private CheckBox smoothResidual = null!, limiter = null!;
     private bool loading;
@@ -97,28 +104,23 @@ public sealed class ProcessingEditor : UserControl
         StackPanel level = Section("Level", null, "Raises or lowers this channel before any other processing.", out _);
         gain = AddSlider(level, "Level", s.GainDb, -24, 24, 0.5, Db);
 
-        StackPanel gate = Section("Noise gate", s.Gate.Enabled, "Closes between words so breathing and keyboard noise drop away. Too high a threshold cuts off quiet syllables.", out gateOn);
-        gateThreshold = AddSlider(gate, "Opens above", s.Gate.ThresholdDb, -90, -10, 1, Dbfs);
-
-        StackPanel expander = Section("Quiet-noise reduction", s.NoiseAttenuation.Enabled, "Turns down everything quieter than the threshold, more gently than a gate.", out expanderOn);
-        expanderThreshold = AddSlider(expander, "Below", s.NoiseAttenuation.ThresholdDb, -90, -10, 1, Dbfs);
-        expanderDepth = AddSlider(expander, "At most", s.NoiseAttenuation.MaximumAttenuationDb, 0, 60, 1, v => "−" + Db(v).TrimStart('+'));
-
+        // The sections follow the signal: noise removal, then tone, then dynamics, then the output.
         StackPanel suppression = Section("Background noise suppression", s.NoiseSuppression.Enabled,
             "Reduces steady noise such as fans and hum against a noise level you set. It can't pick out your voice, so it won't remove talking or music.", out suppressionOn);
         suppressionStrength = AddSlider(suppression, "Strength", s.NoiseSuppression.ReductionDb, 0, 36, 1, v => v.ToString("0", CultureInfo.InvariantCulture) + " dB less noise");
         suppressionFloor = AddSlider(suppression, "Noise level", s.NoiseSuppression.NoiseFloorDb, -90, -20, 1, Dbfs);
         smoothResidual = AddCheck(suppression, "Smooth background", s.NoiseSuppression.SmoothResidual, "Smoother background, slightly different sound.");
 
-        StackPanel eq = Section("Equalizer", !s.EqBypass, "Shapes the tone. Small changes go a long way.", out eqOn);
-        bands = new Slider[s.Bands.Count];
-        for (int i = 0; i < s.Bands.Count; i++)
-        {
-            EqBand band = s.Bands[i];
-            bool shapes = band.Type is EqFilterType.HighPass or EqFilterType.LowPass or EqFilterType.Notch;
-            bands[i] = AddSlider(eq, BandName(band), band.GainDb, -12, 12, 0.5, Db);
-            if (shapes) { bands[i].IsEnabled = false; AutomationProperties.SetHelpText(bands[i], "This band is a filter with no level to adjust."); }
-        }
+        StackPanel eq = Section("Equalizer", !s.EqBypass,
+            "Drag a point to shape the tone: left and right is pitch, up and down is level. The mouse wheel makes a band wider or narrower, a double-click resets it and a right-click changes its shape.", out eqOn);
+        BuildEqualizer(eq, s.Bands);
+
+        StackPanel gate = Section("Noise gate", s.Gate.Enabled, "Closes between words so breathing and keyboard noise drop away. Too high a threshold cuts off quiet syllables.", out gateOn);
+        gateThreshold = AddSlider(gate, "Opens above", s.Gate.ThresholdDb, -90, -10, 1, Dbfs);
+
+        StackPanel expander = Section("Quiet-noise reduction", s.NoiseAttenuation.Enabled, "Turns down everything quieter than the threshold, more gently than a gate.", out expanderOn);
+        expanderThreshold = AddSlider(expander, "Below", s.NoiseAttenuation.ThresholdDb, -90, -10, 1, Dbfs);
+        expanderDepth = AddSlider(expander, "At most", s.NoiseAttenuation.MaximumAttenuationDb, 0, 60, 1, v => "−" + Db(v).TrimStart('+'));
 
         StackPanel compressor = Section("Compressor", s.Compressor.Enabled, "Evens out loud and soft words so you sit at a steady level.", out compressorOn);
         compressorThreshold = AddSlider(compressor, "Starts at", s.Compressor.ThresholdDb, -60, 0, 1, Dbfs);
@@ -164,7 +166,8 @@ public sealed class ProcessingEditor : UserControl
             },
             Limiter = s.Limiter with { Enabled = limiter.IsChecked == true },
             EqBypass = eqOn.IsChecked != true,
-            Bands = s.Bands.Select((band, i) => band with { GainDb = Pick(bands[i], band.GainDb, v => v) }).ToArray(),
+            // Bands nobody touched are the saved records themselves, so they stay exactly as saved.
+            Bands = curve.Bands.ToArray(),
             Compressor = s.Compressor with
             {
                 Enabled = compressorOn.IsChecked == true,
@@ -190,6 +193,128 @@ public sealed class ProcessingEditor : UserControl
             };
         }
         return result;
+    }
+
+    /// <summary>
+    /// The curve plus the selected band's details. The curve is for the mouse; the details below are ordinary controls,
+    /// so every band can also be set exactly, from the keyboard and with a screen reader.
+    /// </summary>
+    private void BuildEqualizer(Panel parent, IReadOnlyList<EqBand> saved)
+    {
+        curve = new EqEditor { Height = 220, Margin = new Thickness(0, 4, 0, 10) };
+        curve.SetBands(saved);
+        parent.Children.Add(curve);
+
+        WrapPanel choices = new() { Margin = new Thickness(0, 0, 0, 4) };
+        bandChoice = new ComboBox { MinWidth = 120, Margin = new Thickness(0, 0, 8, 6) };
+        AutomationProperties.SetName(bandChoice, "Band");
+        bandChoice.ItemsSource = Enumerable.Range(1, saved.Count).Select(i => "Band " + i.ToString(CultureInfo.InvariantCulture)).ToArray();
+        bandType = new ComboBox { MinWidth = 130, Margin = new Thickness(0, 0, 8, 6) };
+        AutomationProperties.SetName(bandType, "Shape");
+        bandType.ItemsSource = Enum.GetValues<EqFilterType>().Select(t => new KeyValuePair<EqFilterType, string>(t, EqEditor.TypeName(t))).ToArray();
+        bandType.DisplayMemberPath = "Value";
+        bandType.SelectedValuePath = "Key";
+        bandOn = new CheckBox { Content = "Band on", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 12, 6) };
+        AutomationProperties.SetName(bandOn, "Band on");
+        Button reset = new() { Content = "Reset band", Margin = new Thickness(0, 0, 8, 6) };
+        Button flat = new() { Content = "Flat", Margin = new Thickness(0, 0, 0, 6) };
+        AutomationProperties.SetHelpText(flat, "Every band back to no level change. Frequencies and shapes stay.");
+        choices.Children.Add(bandChoice);
+        choices.Children.Add(bandType);
+        choices.Children.Add(bandOn);
+        choices.Children.Add(reset);
+        choices.Children.Add(flat);
+        parent.Children.Add(choices);
+
+        double octave = Math.Log10(2);
+        bandFrequency = DetailSlider(parent, "Frequency", "Band frequency", Math.Log10(EqEditor.MinimumFrequency), Math.Log10(EqEditor.MaximumFrequency), octave / 12, octave / 3, out bandFrequencyText);
+        bandGain = DetailSlider(parent, "Level", "Band level", -EqEditor.GainRange, EqEditor.GainRange, 0.5, 3, out bandGainText);
+        bandQ = DetailSlider(parent, "Width (Q)", "Band width (Q)", Math.Log10(EqEditor.MinimumQ), Math.Log10(EqEditor.MaximumQ), Math.Log10(1.1), Math.Log10(1.5), out bandQText);
+        AutomationProperties.SetHelpText(bandQ, "Higher Q is narrower.");
+
+        curve.SelectionChanged += (_, _) => ShowBand();
+        curve.BandsChanged += (_, _) => { ShowBand(); Raise(); };
+        bandChoice.SelectionChanged += (_, _) => { if (!syncingBand && bandChoice.SelectedIndex >= 0) curve.SelectedIndex = bandChoice.SelectedIndex; };
+        bandType.SelectionChanged += (_, _) => EditBand(b => bandType.SelectedValue is EqFilterType type ? b with { Type = type } : b);
+        bandOn.Checked += (_, _) => EditBand(b => b with { Bypass = false });
+        bandOn.Unchecked += (_, _) => EditBand(b => b with { Bypass = true });
+        bandFrequency.ValueChanged += (_, e) => EditBand(b => b with { FrequencyHz = EqEditor.RoundFrequency(Math.Pow(10, e.NewValue)) });
+        bandGain.ValueChanged += (_, e) => EditBand(b => b with { GainDb = Math.Round(e.NewValue, 1) });
+        bandQ.ValueChanged += (_, e) => EditBand(b => b with { Q = Math.Round(Math.Pow(10, e.NewValue), 2) });
+        reset.Click += (_, _) => EditBand(EqEditor.Reset);
+        flat.Click += (_, _) =>
+        {
+            curve.SetBands(curve.Bands.Select(b => b.GainDb != 0 ? b with { GainDb = 0 } : b).ToArray());
+            ShowBand();
+            Raise();
+        };
+        // Start on the first band that does something, so the details show what this sound is about.
+        int first = Math.Max(0, saved.ToList().FindIndex(b => !b.Bypass && (Math.Abs(b.GainDb) > 0.04 || !EqEditor.HasGain(b.Type))));
+        curve.SelectedIndex = first;
+        ShowBand();
+    }
+
+    private static Slider DetailSlider(Panel parent, string label, string automationName, double minimum, double maximum, double small, double large, out TextBlock readout)
+    {
+        Grid row = new() { Margin = new Thickness(0, 2, 0, 2) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+        TextBlock name = new() { Text = label, VerticalAlignment = VerticalAlignment.Center };
+        name.SetResourceReference(StyleProperty, "Shell.Body");
+        Slider slider = new()
+        {
+            Minimum = minimum, Maximum = maximum, SmallChange = small, LargeChange = large,
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 8, 0)
+        };
+        AutomationProperties.SetName(slider, automationName);
+        readout = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Right };
+        readout.SetResourceReference(StyleProperty, "Shell.Secondary");
+        Grid.SetColumn(slider, 1);
+        Grid.SetColumn(readout, 2);
+        row.Children.Add(name);
+        row.Children.Add(slider);
+        row.Children.Add(readout);
+        parent.Children.Add(row);
+        return slider;
+    }
+
+    /// <summary>Shows the selected band in the detail controls without editing it.</summary>
+    private void ShowBand()
+    {
+        int index = curve.SelectedIndex;
+        EqBand band = curve.Bands[index];
+        syncingBand = true;
+        try
+        {
+            bandChoice.SelectedIndex = index;
+            bandType.SelectedValue = band.Type;
+            bandOn.IsChecked = !band.Bypass;
+            bandFrequency.Value = Math.Log10(Math.Clamp(band.FrequencyHz, EqEditor.MinimumFrequency, EqEditor.MaximumFrequency));
+            bandGain.Value = Math.Clamp(band.GainDb, -EqEditor.GainRange, EqEditor.GainRange);
+            bandQ.Value = Math.Log10(Math.Clamp(band.Q, EqEditor.MinimumQ, EqEditor.MaximumQ));
+            bool hasGain = EqEditor.HasGain(band.Type);
+            bandGain.IsEnabled = hasGain;
+            AutomationProperties.SetHelpText(bandGain, hasGain ? "" : "A " + EqEditor.TypeName(band.Type).ToLowerInvariant() + " has no level to adjust.");
+            bandFrequencyText.Text = EqEditor.FrequencyText(band.FrequencyHz);
+            bandGainText.Text = hasGain ? Db(band.GainDb) : "—";
+            bandQText.Text = band.Q.ToString("0.00", CultureInfo.InvariantCulture);
+            AutomationProperties.SetItemStatus(bandFrequency, bandFrequencyText.Text);
+            AutomationProperties.SetItemStatus(bandGain, bandGainText.Text);
+            AutomationProperties.SetItemStatus(bandQ, bandQText.Text);
+        }
+        finally { syncingBand = false; }
+    }
+
+    private void EditBand(Func<EqBand, EqBand> change)
+    {
+        if (syncingBand || loading) return;
+        int index = curve.SelectedIndex;
+        EqBand before = curve.Bands[index], after = change(before);
+        if (after == before) return;
+        curve.SetBand(index, after);
+        ShowBand();
+        Raise();
     }
 
     private double Pick(Slider slider, double saved, Func<double, double> convert)
@@ -295,31 +420,27 @@ public sealed class ProcessingEditor : UserControl
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
-    internal static string BandName(EqBand band)
-    {
-        string frequency = band.FrequencyHz >= 1000
-            ? (band.FrequencyHz / 1000).ToString("0.#", CultureInfo.InvariantCulture) + " kHz"
-            : band.FrequencyHz.ToString("0", CultureInfo.InvariantCulture) + " Hz";
-        return band.Type switch
-        {
-            EqFilterType.HighPass => "Low cut " + frequency,
-            EqFilterType.LowPass => "High cut " + frequency,
-            EqFilterType.Notch => "Notch " + frequency,
-            EqFilterType.LowShelf => "Bass " + frequency,
-            EqFilterType.HighShelf => "Treble " + frequency,
-            _ => frequency
-        };
-    }
-
     private static string Db(double value) => MicrophonePath.Decibels(value);
     private static string Dbfs(double value) => value.ToString("0.#", CultureInfo.InvariantCulture).Replace("-", "−", StringComparison.Ordinal) + " dBFS";
 }
 
-/// <summary>A themed dialog around the processing editor. Nothing is applied until Save.</summary>
+/// <summary>
+/// A themed dialog around the processing editor. With a preview, every change is heard as it is made (the latest one
+/// at most every 80 ms) and Cancel or closing puts the sound it opened with back; without one, nothing changes until Save.
+/// </summary>
 public sealed class ProcessingWindow : Window
 {
-    public ProcessingWindow(string title, DspSettings settings, bool microphone)
+    private readonly Func<DspSettings, Task>? preview;
+    private readonly DspSettings opened;
+    private readonly DispatcherTimer previewTimer = new() { Interval = TimeSpan.FromMilliseconds(80) };
+    private readonly TextBlock? previewNote;
+    private Task previewing = Task.CompletedTask;
+    private bool previewed, previewQueued;
+
+    public ProcessingWindow(string title, DspSettings settings, bool microphone, Func<DspSettings, Task>? preview = null)
     {
+        this.preview = preview;
+        opened = settings;
         Title = title;
         Width = 720; Height = 780; MinWidth = 520; MinHeight = 420;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -336,14 +457,66 @@ public sealed class ProcessingWindow : Window
         footer.Children.Add(save);
         footer.Children.Add(cancel);
         root.Children.Add(footer);
-        TextBlock heading = new() { Text = title, Margin = new Thickness(0, 0, 0, 12) };
+        TextBlock heading = new() { Text = title, Margin = new Thickness(0, 0, 0, preview is null ? 12 : 2) };
         heading.SetResourceReference(StyleProperty, "Shell.SectionTitle");
         DockPanel.SetDock(heading, Dock.Top);
         root.Children.Add(heading);
+        if (preview is not null)
+        {
+            previewNote = new TextBlock { Text = LiveText, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 12) };
+            previewNote.SetResourceReference(StyleProperty, "Shell.Secondary");
+            AutomationProperties.SetLiveSetting(previewNote, AutomationLiveSetting.Polite);
+            DockPanel.SetDock(previewNote, Dock.Top);
+            root.Children.Add(previewNote);
+            Editor.Changed += (_, _) => { previewTimer.Stop(); previewTimer.Start(); };
+            previewTimer.Tick += (_, _) => { previewTimer.Stop(); QueuePreview(); };
+            Closed += (_, _) => { previewTimer.Stop(); if (DialogResult != true && previewed) _ = RevertAsync(); };
+        }
         root.Children.Add(new ScrollViewer { Content = Editor, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false });
         Content = root;
     }
 
+    private const string LiveText = "You hear each change as you make it while audio is on. Cancel puts the old sound back.";
+
     public ProcessingEditor Editor { get; }
     public DspSettings? Result { get; private set; }
+
+    /// <summary>The preview that is running now; completes when the helper has the latest change.</summary>
+    internal Task Previewing => previewing;
+
+    /// <summary>Sends the editor's current sound; while one is on its way, only the newest waiting change follows it.</summary>
+    private void QueuePreview()
+    {
+        if (preview is null) return;
+        if (!previewing.IsCompleted) { previewQueued = true; return; }
+        previewing = SendPreviewsAsync();
+    }
+
+    private async Task SendPreviewsAsync()
+    {
+        do
+        {
+            previewQueued = false;
+            previewed = true;
+            try
+            {
+                await preview!(Editor.Result());
+                if (previewNote is not null) previewNote.Text = LiveText;
+            }
+            catch (Exception error) when (error is IOException or InvalidOperationException or ArgumentException or OperationCanceledException or TimeoutException)
+            {
+                if (previewNote is not null) previewNote.Text = "Not playing live right now (" + error.Message.TrimEnd('.') + "). Save still keeps your changes.";
+            }
+        }
+        while (previewQueued);
+    }
+
+    /// <summary>After Cancel: waits for any preview on its way, then puts the opening sound back.</summary>
+    private async Task RevertAsync()
+    {
+        previewQueued = false;
+        try { await previewing; } catch (Exception error) when (error is IOException or InvalidOperationException or ArgumentException or OperationCanceledException or TimeoutException) { }
+        try { await preview!(opened); }
+        catch (Exception error) when (error is IOException or InvalidOperationException or ArgumentException or OperationCanceledException or TimeoutException) { }
+    }
 }

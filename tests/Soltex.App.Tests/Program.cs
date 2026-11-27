@@ -138,6 +138,8 @@ internal static class Program
             ("Microphone card names the app input and guides a capture-only test", MicrophoneChecks.CardDescribesRouteAndGuidesTest),
             ("Microphone setup saves the route, never starts audio and fixes the input in one click", MicrophoneChecks.SetupSavesRouteAndFixesInput),
             ("Processing editor keeps untouched values and presets", MicrophoneChecks.ProcessingEditorKeepsPresetsAndEdits),
+            ("The curve equalizer draws the engine's response and edits exactly one band", MicrophoneChecks.CurveEqualizerEditsExactlyOneBand),
+            ("The sound editor plays changes live and puts the old sound back on Cancel", MicrophoneChecks.SoundEditorPlaysChangesLiveAndPutsThemBack),
             ("Playback stages routing until Apply and saves one channel's sound", PlaybackChecks.PlaybackStagesAppliesAndEditsSound),
             ("Microphone card explains the connection and shows refusals", MicrophoneChecks.CardExplainsConnectionAndRefusals),
             ("Playback shows refusals and the output all channels share", PlaybackChecks.PlaybackShowsRefusalsAndSharedOutput),
