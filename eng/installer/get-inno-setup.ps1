@@ -24,16 +24,32 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# ISCC.exe itself carries no version resource, so the version is read from the Inno Setup files that do
+# (the compiler DLL or the IDE), falling back to the version Inno Setup's own installer recorded.
+function Get-InnoVersion([string] $directory) {
+    foreach ($name in 'ISCmplr.dll', 'Compil32.exe', 'ISCC.exe') {
+        $file = Join-Path $directory $name
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { continue }
+        $info = (Get-Item -LiteralPath $file).VersionInfo
+        if ($info.FileMajorPart -gt 0) { return '{0}.{1}.{2}' -f $info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart }
+        if ($info.ProductVersion -match '^(\d+\.\d+\.\d+)') { return $Matches[1] }
+    }
+    foreach ($key in 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1',
+                     'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1',
+                     'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1') {
+        $entry = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
+        if ($entry -and $entry.PSObject.Properties['DisplayVersion'] -and $entry.DisplayVersion -match '(\d+\.\d+\.\d+)') { return $Matches[1] }
+    }
+    return '0.0.0'
+}
+
 function Find-Iscc {
     foreach ($root in (@(${env:ProgramFiles(x86)}, $env:ProgramFiles) | Select-Object -Unique)) {
         if (-not $root) { continue }
-        $candidate = Join-Path $root 'Inno Setup 6\ISCC.exe'
+        $directory = Join-Path $root 'Inno Setup 6'
+        $candidate = Join-Path $directory 'ISCC.exe'
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            $info = (Get-Item -LiteralPath $candidate).VersionInfo
-            [pscustomobject]@{
-                Path    = $candidate
-                Version = '{0}.{1}.{2}' -f $info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart
-            }
+            [pscustomobject]@{ Path = $candidate; Version = Get-InnoVersion $directory }
         }
     }
 }
