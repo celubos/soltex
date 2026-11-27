@@ -1,0 +1,2 @@
+# Vendored third-party sources are kept byte for byte as released (native/Soltex.Rnnoise/source.lock.json checks them).
+native/third_party/** -text
