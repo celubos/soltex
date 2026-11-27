@@ -5,7 +5,7 @@
     <!-- Release version. The SDK derives AssemblyVersion and FileVersion from it (1.0.0 -> 1.0.0.0) and
          InformationalVersion starts with it, so all three move together. eng/make-release.ps1 names the
          release zip after this value; a build can override it with -p:Version=<x.y.z>. -->
-    <Version>1.0.1</Version>
+    <Version>1.1.0</Version>
     <RepositoryUrl>https://github.com/celubos/soltex</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <!-- No legal publisher has been selected, so Company stays the product name. -->
