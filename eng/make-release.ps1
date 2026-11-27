@@ -8,7 +8,7 @@ Takes a package folder made by
 and writes, to -OutputDirectory:
     Soltex-<version>-win-x64.zip   one top-level folder, Soltex-<version>-win-x64, holding the app
                                    (Soltex.exe, its DLLs, the .NET runtime and language folders),
-                                   TaskbarHelper\, Soltex.Audio.Host\, licenses\,
+                                   soltex-rnnoise.dll, TaskbarHelper\, Soltex.Audio.Host\, licenses\,
                                    THIRD-PARTY-NOTICES.txt, LICENSE.txt, README.txt
                                    (eng/package/README.txt), BUILD.json and SHA256.json
     SHA256SUMS.txt                 "<sha256>  <zip name>"
@@ -72,7 +72,8 @@ if (-not (Test-Path -LiteralPath $readmeSource -PathType Leaf)) {
 foreach ($required in @(
     'Soltex.exe', 'BUILD.json', 'SHA256.json', 'LICENSE.txt', 'THIRD-PARTY-NOTICES.txt',
     'TaskbarHelper\x64\SoltexTaskbar.dll', 'TaskbarHelper\arm64\SoltexTaskbar.dll',
-    'Soltex.Audio.Host\Soltex.Audio.Host.Service.exe'
+    'Soltex.Audio.Host\Soltex.Audio.Host.Service.exe',
+    'soltex-rnnoise.dll', 'Soltex.Audio.Host\soltex-rnnoise.dll', 'licenses\rnnoise\COPYING'
 )) {
     if (-not (Test-Path -LiteralPath (Join-Path $package $required) -PathType Leaf)) {
         throw "Not a complete integrated package (missing $required). Build one with eng/build-audio.ps1 -Integrated."

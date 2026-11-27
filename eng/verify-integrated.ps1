@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $true)][string]$DotnetPath,
     [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release',
     [switch]$IncludeNativeReadOnly,
-    # Download the pinned LLVM-MinGW toolchain for the native taskbar helper when it is missing.
+    # Download the pinned LLVM-MinGW toolchain for the native parts (taskbar helper, RNNoise) when it is missing.
     [switch]$Acquire,
     # Where the native build keeps that toolchain (passed to its -CacheRoot).
     [string]$ToolchainCacheRoot
@@ -131,6 +131,18 @@ try {
     }
     catch {
         $results.Add([ordered]@{ name = 'native-taskbar'; exitCode = 1; durationSeconds = $timer.Elapsed.TotalSeconds; log = (Get-RelativeLog 'native-taskbar'); error = (Get-SafeMessage $_.Exception.Message) })
+        throw
+    }
+    # RNNoise (soltex-rnnoise.dll) from the vendored, hash-checked sources; the engine build copies it next to every copy of
+    # the engine, and Audio.Engine.Tests measure neural noise removal through it.
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $log = Join-Path $logs 'native-rnnoise.log'
+    try {
+        & (Join-Path $repoRoot 'native\Soltex.Rnnoise\build.ps1') @nativeArguments *>&1 | Tee-Object -FilePath $log | Out-Host
+        $results.Add([ordered]@{ name = 'native-rnnoise'; exitCode = 0; durationSeconds = $timer.Elapsed.TotalSeconds; log = (Get-RelativeLog 'native-rnnoise') })
+    }
+    catch {
+        $results.Add([ordered]@{ name = 'native-rnnoise'; exitCode = 1; durationSeconds = $timer.Elapsed.TotalSeconds; log = (Get-RelativeLog 'native-rnnoise'); error = (Get-SafeMessage $_.Exception.Message) })
         throw
     }
     if (-not (Invoke-NativeCheck 'build' @('build', (Join-Path $repoRoot 'Soltex.sln'), '--configuration', $Configuration, '--artifacts-path', $buildRoot))) {

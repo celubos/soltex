@@ -74,6 +74,9 @@ afterwards those changes can no longer be undone from Soltex. Undo them
 first (step 1) if you want them reversed.
 
 Soltex is free and open source under the MIT License (LICENSE.txt).
+It includes third-party components under their own licenses (among them
+RNNoise by Xiph.Org, BSD); see THIRD-PARTY-NOTICES.txt and the licenses
+folder.
 
 More information, source code and issue reports:
 https://github.com/celubos/soltex

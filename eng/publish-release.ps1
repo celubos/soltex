@@ -3,11 +3,13 @@
 # eng/make-release.ps1 builds from an integrated package:
 #   Soltex.exe, its DLLs, the .NET runtime and the language folders
 #   TaskbarHelper\{x64,arm64}\SoltexTaskbar.dll   native taskbar helper (native/Soltex.TaskbarStyle)
+#   soltex-rnnoise.dll                            RNNoise 0.2 next to each copy of the audio engine, here and in
+#                                                 Soltex.Audio.Host\ (native/Soltex.Rnnoise)
 #   Soltex.Audio.Host\                            audio helper that the Audio page starts
 #   licenses\, THIRD-PARTY-NOTICES.txt, LICENSE.txt, README.txt
 # The installer is artifacts/installer/Soltex-<version>-<runtime>-setup.exe with a SHA-256 record.
 #
-# The native helper needs the pinned LLVM-MinGW toolchain; pass -Acquire to download and verify it.
+# The native parts need the pinned LLVM-MinGW toolchain; pass -Acquire to download and verify it.
 
 [CmdletBinding()]
 param(
@@ -20,7 +22,7 @@ param(
     # ISCC.exe to compile the installer with (CI passes the pinned one from eng/installer/get-inno-setup.ps1).
     # Without it the script looks in the usual Inno Setup 6 folders and on PATH.
     [string] $Iscc,
-    # Download the pinned LLVM-MinGW toolchain for the native taskbar helper when it is missing.
+    # Download the pinned LLVM-MinGW toolchain for the native parts (taskbar helper, RNNoise) when it is missing.
     [switch] $Acquire,
     # Where the native build keeps that toolchain (passed to its -CacheRoot).
     [string] $ToolchainCacheRoot
@@ -94,6 +96,8 @@ $nativeArguments = @{}
 if ($Acquire) { $nativeArguments.Acquire = $true }
 if ($ToolchainCacheRoot) { $nativeArguments.CacheRoot = $ToolchainCacheRoot }
 & (Join-Path $repoRoot 'native\Soltex.TaskbarStyle\build.ps1') @nativeArguments | Write-Host
+# Likewise RNNoise: the engine project copies it next to Soltex.Audio.Engine.Core.dll only when it is built.
+& (Join-Path $repoRoot 'native\Soltex.Rnnoise\build.ps1') @nativeArguments | Write-Host
 
 if (Test-Path -LiteralPath $publishDir) {
     Remove-Item -LiteralPath $publishDir -Recurse -Force
@@ -125,7 +129,9 @@ foreach ($required in @(
     'THIRD-PARTY-NOTICES.txt',
     'TaskbarHelper\x64\SoltexTaskbar.dll',
     'TaskbarHelper\arm64\SoltexTaskbar.dll',
-    'Soltex.Audio.Host\Soltex.Audio.Host.Service.exe'
+    'Soltex.Audio.Host\Soltex.Audio.Host.Service.exe',
+    'soltex-rnnoise.dll',
+    'Soltex.Audio.Host\soltex-rnnoise.dll'
 )) {
     if (-not (Test-Path -LiteralPath (Join-Path $publishDir $required) -PathType Leaf)) {
         throw "The published app is incomplete; missing: $required"
@@ -157,6 +163,15 @@ New-Item -ItemType Directory -Path $helperLicenses -Force | Out-Null
 Copy-Item -Path (Join-Path $repoRoot 'artifacts\native\taskbar\licenses\*') -Destination $helperLicenses
 if (@(Get-ChildItem -LiteralPath $helperLicenses -File).Count -eq 0) {
     throw 'The taskbar helper license notices are missing.'
+}
+# RNNoise's BSD licence and authors (licenses\rnnoise); its runtime notices are the same files as the helper's.
+foreach ($folder in @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'artifacts\native\rnnoise\licenses') -Directory)) {
+    $target = Join-Path $publishDir "licenses\$($folder.Name)"
+    New-Item -ItemType Directory -Path $target -Force | Out-Null
+    Copy-Item -Path (Join-Path $folder.FullName '*') -Destination $target -Force
+}
+if (-not (Test-Path -LiteralPath (Join-Path $publishDir 'licenses\rnnoise\COPYING') -PathType Leaf)) {
+    throw 'The RNNoise license notice is missing.'
 }
 
 Copy-Item -LiteralPath (Join-Path $repoRoot 'LICENSE.txt') -Destination (Join-Path $publishDir 'LICENSE.txt')

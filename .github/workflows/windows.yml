@@ -62,6 +62,16 @@ jobs:
           "SOLTEX_LLVM_MINGW=$(Join-Path $cacheRoot $lock.packages[0].folder)" |
             Add-Content -Encoding utf8 -Path $env:GITHUB_ENV
 
+      # Must also run before the build: the engine project copies soltex-rnnoise.dll next to every copy of the engine only
+      # when it exists. Same pinned toolchain; the vendored RNNoise sources are checked against their SHA-256 lock first.
+      - name: Build RNNoise
+        id: native_rnnoise
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\native\Soltex.Rnnoise\build.ps1 2>&1 |
+            Tee-Object -FilePath .\artifacts\validation\native-rnnoise.log
+
       - name: Build Release
         id: build
         shell: pwsh
@@ -186,6 +196,7 @@ jobs:
             identity = '${{ steps.identity.outcome }}'
             design_tokens = '${{ steps.design_tokens.outcome }}'
             native = '${{ steps.native.outcome }}'
+            native_rnnoise = '${{ steps.native_rnnoise.outcome }}'
             build = '${{ steps.build.outcome }}'
             default_tests = '${{ steps.default_tests.outcome }}'
             supply_chain = '${{ steps.supply_chain.outcome }}'
