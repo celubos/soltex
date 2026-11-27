@@ -40,6 +40,18 @@ function Get-InnoVersion([string] $directory) {
         $entry = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
         if ($entry -and $entry.PSObject.Properties['DisplayVersion'] -and $entry.DisplayVersion -match '(\d+\.\d+\.\d+)') { return $Matches[1] }
     }
+    # Chocolatey records the package version it installed (GitHub's Windows images install Inno Setup this way).
+    $choco = Get-Command choco -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($choco) {
+        $line = & $choco.Source list innosetup --exact --limit-output 2>$null | Where-Object { $_ -match '^innosetup\|' } | Select-Object -First 1
+        if ($line -match '^innosetup\|(\d+\.\d+\.\d+)') { return $Matches[1] }
+    }
+    # Last resort: the compiler's own banner.
+    $iscc = Join-Path $directory 'ISCC.exe'
+    if (Test-Path -LiteralPath $iscc -PathType Leaf) {
+        $banner = (& $iscc '/?' 2>&1 | Select-Object -First 5) -join ' '
+        if ($banner -match '(\d+\.\d+\.\d+)') { return $Matches[1] }
+    }
     return '0.0.0'
 }
 
