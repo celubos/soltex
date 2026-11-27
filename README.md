@@ -55,7 +55,9 @@ Soltex turns off the ads, tips and tracking in Windows, restyles the taskbar, ad
 **Audio**
 - A five-channel mixer (Mic, Game, Chat, Media, Aux) with a game and chat balance, and a separate stream mix.
 - Microphone setup in a few steps, with a 10-second test that tells you which input your voice arrives on.
-- Microphone chain with a ten-band EQ, noise gate, compressor and noise suppression, plus an optional smooth background setting and an optional safety limiter that catches peaks.
+- **AI noise removal** ([RNNoise](https://github.com/xiph/rnnoise) by Xiph): keyboards, clicks, fans and room noise drop away while your voice stays, with a strength setting.
+- A **curve equalizer**: drag ten points to shape your voice (frequency, level and width per band), with bell, shelf, cut and notch shapes. You hear every change while you make it.
+- Microphone chain with noise gate, compressor, steady-noise suppression and an optional safety limiter that catches peaks.
 - Audio passed between two devices is converted with a high-quality resampler that also corrects the drift between their clocks, so it does not slowly fall behind or drop out.
 - Per-app volume and output device.
 

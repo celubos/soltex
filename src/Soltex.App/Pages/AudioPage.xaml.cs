@@ -21,7 +21,7 @@ public partial class AudioPage : UserControl, IShellPage, IAsyncDisposable
     [
         new("Playback channels: game, chat, media", "Audio › Mixer", Destination.Audio, "playback", "mixer", "volume", "channels", "game chat", "headset", "balance", "sound"),
         new("Set up and test my microphone", "Audio › Microphone", Destination.Audio, "microphone", "mic", "audio interface", "usb mic", "input", "voice", "discord", "test mic", "cable output", "vb-cable"),
-        new("Microphone sound: noise gate, noise reduction, EQ", "Audio › Microphone", Destination.Audio, "microphone", "noise", "gate", "compressor", "equalizer", "eq", "suppression", "broadcast", "preset"),
+        new("Microphone sound: AI noise removal, curve EQ, gate", "Audio › Microphone", Destination.Audio, "microphone", "noise", "ai noise", "noise removal", "rnnoise", "keyboard noise", "gate", "compressor", "equalizer", "eq", "curve", "suppression", "broadcast", "noisy room", "preset"),
         new("Stream mix: separate mix for streaming", "Audio › Mixer", Destination.Audio, "stream", "obs", "streaming"),
         new("App volume and output per app", "Audio › Apps", Destination.Audio, "apps", "app volume", "per app", "route app", "volume mixer"),
         new("Start or stop audio", "Audio › Mixer", Destination.Audio, "playback", "start", "stop audio", "turn on audio"),

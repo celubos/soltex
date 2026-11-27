@@ -17,7 +17,7 @@ Checks, in order:
      and the sign-in value, and leaves no Soltex process behind.
 
 .EXAMPLE
-pwsh eng/installer/test-installer.ps1 -Setup artifacts\installer\Soltex-1.1.1-win-x64-setup.exe -Version 1.1.1
+pwsh eng/installer/test-installer.ps1 -Setup artifacts\installer\Soltex-1.2.0-win-x64-setup.exe -Version 1.2.0
 #>
 [CmdletBinding()]
 param(
