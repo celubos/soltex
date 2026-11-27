@@ -277,6 +277,20 @@ internal static class MicrophoneChecks
             ((System.Windows.Controls.ScrollViewer)window.Content).ScrollToVerticalOffset(curve.TranslatePoint(new Point(0, 0), editor).Y - 90);
             Pump();
             SaveRender(window, "processing-editor-eq");
+            if (Environment.GetEnvironmentVariable("SOLTEX_RENDER_DIR") is { Length: > 0 })
+            {
+                // Light theme at the sound editor's narrowest width (520 px window).
+                double wide = window.Width;
+                global::Soltex.App.Shell.ThemeService.Apply(Application.Current, new global::Soltex.App.Settings.AppSettings { Theme = global::Soltex.App.Settings.ThemePreference.Light });
+                window.Width = 470;
+                Pump();
+                ((System.Windows.Controls.ScrollViewer)window.Content).ScrollToVerticalOffset(curve.TranslatePoint(new Point(0, 0), editor).Y - 140);
+                Pump();
+                SaveRender(window, "processing-editor-eq-light-narrow");
+                global::Soltex.App.Shell.ThemeService.Apply(Application.Current, new global::Soltex.App.Settings.AppSettings());
+                window.Width = wide;
+                Pump();
+            }
 
             // Pick band 6 (1 kHz bell) by number key, then raise it 0.5 dB with the Up arrow.
             curve.Focus();
