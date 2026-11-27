@@ -82,6 +82,18 @@ if (-not $iscc) {
     $iscc = Select-Pinned
 }
 if (-not $iscc) {
+    $all = @(Find-Iscc)
+    # Some Inno Setup builds carry no readable version anywhere; Chocolatey installed the pinned version above, so an
+    # ISCC.exe whose version cannot be read is accepted with a warning. A different, readable version still fails.
+    $unknown = @($all | Where-Object Version -eq '0.0.0') | Select-Object -First 1
+    if ($unknown) {
+        Write-Warning "The Inno Setup version could not be read; using $($unknown.Path) installed as Chocolatey package $Version."
+        $chocoList = Get-Command choco -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($chocoList) { & $chocoList.Source list innosetup --exact 2>&1 | ForEach-Object { Write-Host "  choco: $_" } }
+        $iscc = $unknown
+    }
+}
+if (-not $iscc) {
     $found = @(Find-Iscc | ForEach-Object { "$($_.Path) ($($_.Version))" })
     $list = if ($found.Count -gt 0) { $found -join ', ' } else { 'none' }
     throw "ISCC.exe $Version was not found under Program Files or Program Files (x86). Found: $list."
