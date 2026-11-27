@@ -154,7 +154,7 @@ if ($code -ne 0) { throw "Uninstall exited with $code." }
 # The uninstaller finishes from a copy in the temp folder, so wait for its results.
 for ($i = 0; $i -lt 60 -and ((Test-Path -LiteralPath $exe) -or (Test-Path -LiteralPath $uninstallKey)); $i++) { Start-Sleep -Seconds 1 }
 if (-not $app.HasExited) { throw 'Uninstall left the running Soltex running.' }
-$left = Get-InstalledProcess
+$left = @(Get-InstalledProcess)
 if ($left.Count -gt 0) { throw "Uninstall left Soltex processes running: $(($left | ForEach-Object { $_.ProcessName }) -join ', ')." }
 if (Test-Path -LiteralPath $exe) { throw 'Uninstall left the program files.' }
 if (Test-Path -LiteralPath $shortcut) { throw 'Uninstall left the Start menu shortcut.' }
