@@ -238,7 +238,7 @@ internal static class PersonalizeChecks
                     $"{destination}: {System.Windows.Automation.AutomationProperties.GetName(list)} must be {CustomizePage.ChoiceWidth} wide, and a list that trims its choice must show it as a tooltip.");
         }
         CustomizePage start = shell.Open<CustomizePage>(Destination.Start);
-        True(start.Groups.Children[0] is StackPanel { Children: [TextBlock { Text: "Start and search" }, ..] }, "Start's first rows must sit under their own heading, like the folders below them.");
+        True(start.Groups.Children[0] is StackPanel { Children: [TextBlock { Text: "Start menu" }, ..] }, "Start's first rows must sit under their own heading, like the folders below them.");
         True(StartFolders.All.Any(f => f.Name == "Your user folder") && StartFolders.All.All(f => f.Name != "Personal folder"),
             "Start must call the user folder what Appearance › Desktop icons calls it.");
 
@@ -253,6 +253,41 @@ internal static class PersonalizeChecks
             True(!row.IsStacked, "With room a row's list sits beside its title.");
         }
         finally { shell.Layout(AudioLayoutChecks.Widths[0], 100); }
+    }
+
+    public static void EverySettingIsExplainedAndInASection()
+    {
+        foreach (SettingDefinition d in CalmCatalog.All)
+            True(SettingDescriptions.Covers(d.Id), d.Id + " (" + d.Title + ") needs a line in SettingDescriptions, even an empty one.");
+        foreach (Destination destination in new[] { Destination.Taskbar, Destination.Start, Destination.Explorer })
+        {
+            (string Heading, string[] Ids)[] layout = PageLayouts.For(destination)!;
+            string[] listed = [.. layout.SelectMany(s => s.Ids)];
+            True(listed.Distinct(StringComparer.Ordinal).Count() == listed.Length, destination + ": a setting is listed in two sections.");
+            SettingGroup group = destination switch { Destination.Taskbar => SettingGroup.Taskbar, Destination.Start => SettingGroup.StartAndSearch, _ => SettingGroup.FileExplorer };
+            string[] missing = [.. CalmCatalog.All.Where(d => d.Group == group && !listed.Contains(d.Id, StringComparer.Ordinal)).Select(d => d.Id)];
+            True(missing.Length == 0, destination + ": settings in no section (they would land at the end): " + string.Join(", ", missing));
+            True(listed.All(id => CalmCatalog.All.Any(d => d.Id == id && d.Group == group)), destination + ": a section lists a setting that isn't on this page.");
+        }
+
+        using PageShell shell = new();
+        CustomizePage explorer = shell.Open<CustomizePage>(Destination.Explorer);
+        string[] headings = [.. explorer.Groups.Children.OfType<StackPanel>().Select(h => h.Children.OfType<TextBlock>().First().Text)];
+        True(headings.SequenceEqual(["Files and folders", "Home", "Navigation pane", "Menus and windows"]), "File Explorer's sections: " + string.Join(", ", headings));
+        CustomizePage appearance = shell.Open<CustomizePage>(Destination.Appearance);
+        True(appearance.Groups.Children[0] is StackPanel { Children: [TextBlock { Text: "Mode and colors" }, ..] }, "Appearance's first rows need a heading of their own.");
+
+        // Rows that follow each other form one card: rounded top on the first, rounded bottom on the last, one line between.
+        Border[] rows = [.. explorer.Groups.Children.OfType<Border>().Take(6)];
+        True(rows.Length == 6 && rows[0].CornerRadius == new CornerRadius(8, 8, 0, 0) && rows[1].CornerRadius == new CornerRadius(0)
+            && rows[5].CornerRadius == new CornerRadius(0, 0, 8, 8) && rows[1].BorderThickness.Top == 0 && rows[0].BorderThickness.Top == 1
+            && rows[0].Margin.Bottom == 0 && rows[5].Margin.Bottom > 0,
+            "The rows of a section must join into one card: " + string.Join(" | ", rows.Select(r => r.CornerRadius + "/" + r.BorderThickness + "/" + r.Margin)));
+        // Each row says what it does; a screen reader hears it with the switch.
+        CheckBox extensions = DesktopChecks.Descendants(explorer).OfType<CheckBox>().First(c => c.Tag is SettingDefinition { Id: "explorer.extensions" });
+        True(System.Windows.Automation.AutomationProperties.GetHelpText(extensions) == SettingDescriptions.For("explorer.extensions")
+            && DesktopChecks.Descendants(rows[0]).OfType<TextBlock>().Any(t => t.Text == SettingDescriptions.For("explorer.extensions")),
+            "A row must show its description and give it to screen readers.");
     }
 
     /// <summary>Uses a file that does not exist, so no video window is ever made and the desktop is never touched.</summary>

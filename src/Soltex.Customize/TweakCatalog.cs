@@ -70,7 +70,7 @@ public static class TweakCatalog
             [("Always", D(0)), ("When taskbar is full", D(1)), ("Never", D(2))]),
         Switch("taskbar.alldisplays", SettingGroup.Taskbar, "Show taskbar on all displays", Advanced, "MMTaskbarEnabled", D(1), D(0), D(1), TakesEffect.Immediately),
         Choice("taskbar.mmmode", SettingGroup.Taskbar, "Show my taskbar apps on", Advanced, "MMTaskbarMode", D(0), TakesEffect.Immediately,
-            [("All taskbars", D(0)), ("Main taskbar and where the window is open", D(1)), ("Taskbar where the window is open", D(2))]),
+            [("All taskbars", D(0)), ("Main and the window's taskbar", D(1)), ("The window's taskbar only", D(2))]),
         Choice("taskbar.combineother", SettingGroup.Taskbar, "Combine on other displays", Advanced, "MMTaskbarGlomLevel", D(0), TakesEffect.Immediately,
             [("Always", D(0)), ("When taskbar is full", D(1)), ("Never", D(2))]),
         Switch("taskbar.endtask", SettingGroup.Taskbar, "End task on right-click", TaskbarDeveloper, "TaskbarEndTask", D(1), D(0), D(0), TakesEffect.Immediately,

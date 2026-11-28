@@ -89,7 +89,7 @@ public partial class TaskbarLookPanel : UserControl
         LiveRegion.SetIsLive(note, true); // screen readers read a new problem as it shows
 
         description = new TextBlock { Style = Resource<Style>("Shell.Secondary"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 2) };
-        styleList = new ComboBox { MinWidth = 220, ItemsSource = Styles.Select(s => s.Label).ToArray() };
+        styleList = new ComboBox { Width = CustomizePage.ChoiceWidth, ItemsSource = Styles.Select(s => s.Label).ToArray() };
         styleList.SelectionChanged += Style_Changed;
 
         swatches = new StackPanel { Orientation = Orientation.Horizontal };
@@ -191,7 +191,8 @@ public partial class TaskbarLookPanel : UserControl
             foreach (Row row in rows.Values)
             {
                 TaskbarStateLook look = s.LookFor(row.Info.State);
-                string summary = Summary(look);
+                // A look that is off is not in use: say what the taskbar shows instead of describing a look it doesn't.
+                string summary = row.Switch is not null && !look.Enabled ? "Off: the Desktop look is used" : Summary(look);
                 row.Summary.Text = summary;
                 AutomationProperties.SetHelpText(row.Header, summary);
                 bool here = open == row.Info.State;
@@ -310,10 +311,13 @@ public partial class TaskbarLookPanel : UserControl
         Refresh();
     }
 
-    /// <summary>Changes the look of the state whose editor is open.</summary>
+    /// <summary>
+    /// Changes the look of the state whose editor is open. Editing a look that is off turns it on: a change that never
+    /// shows on the taskbar reads as a control that doesn't work.
+    /// </summary>
     private void UpdateOpen(Func<TaskbarStateLook, TaskbarStateLook> change)
     {
-        if (open is { } state) Update(s => s.WithTaskbarState(state, change));
+        if (open is { } state) Update(s => s.WithTaskbarState(state, l => change(l) with { Enabled = true }));
     }
 
     private void Header_Changed(object sender, RoutedEventArgs e)

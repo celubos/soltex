@@ -34,7 +34,7 @@ public partial class CustomizePage : UserControl, IShellPage
 
     private const string AutoHideTitle = "Automatically hide the taskbar";
     /// <summary>The width of every list on these pages, so the lists line up row under row.</summary>
-    internal const double ChoiceWidth = 220;
+    internal const double ChoiceWidth = 240;
 
     /// <summary>
     /// How a list shows its choices at <see cref="ChoiceWidth"/>: a long one is trimmed in the closed box (the open list
@@ -181,23 +181,37 @@ public partial class CustomizePage : UserControl, IShellPage
             Groups.Children.Add(details);
             foreach (TaskbarTweak tweak in TaskbarTweaks.All) anchors.Add("tweak." + tweak.Id, details.ControlFor(tweak.Id));
             anchors.Add("scrollvolume", details.ScrollVolumeSwitch);
-            Groups.Children.Add(SectionTitle("Behavior", null));
-            Groups.Children.Add(BuildAutoHideRow());
         }
         if (destination is Destination.Start or Destination.Appearance)
         {
             extras = new Personalize.ExtrasPanel(context, destination);
             foreach ((string anchor, FrameworkElement target) in extras.Anchors) anchors.Add(anchor, target);
         }
-        foreach (SettingGroup group in area.Groups)
+        if (PageLayouts.For(destination) is { } layout)
         {
-            // Groups get a heading when the page has more than one section (other groups, or the extras below them). A
-            // heading that repeats the page title (Privacy on the Privacy page) is left out.
-            string heading = CalmCatalog.GroupTitle(group);
-            if ((area.Groups.Length > 1 || extras is not null) && !string.Equals(heading, area.Title, StringComparison.Ordinal))
+            // Long pages are split into sections by topic, not by where a setting is stored.
+            bool first = true;
+            foreach ((string heading, IReadOnlyList<SettingDefinition> settings) in PageLayouts.Arrange(layout, [.. Definitions(area)]))
+            {
                 Groups.Children.Add(SectionTitle(heading, null));
-            foreach (SettingDefinition d in CalmCatalog.All.Where(x => x.Group == group))
-                Groups.Children.Add(BuildRow(d));
+                if (first && destination == Destination.Taskbar) Groups.Children.Add(BuildAutoHideRow());
+                first = false;
+                foreach (SettingDefinition d in settings) Groups.Children.Add(BuildRow(d));
+            }
+        }
+        else
+        {
+            foreach (SettingGroup group in area.Groups)
+            {
+                // Groups get a heading when the page has more than one section (other groups, or the extras below them). A
+                // heading that would repeat the page title (Privacy on the Privacy page) is replaced by a topic of its own.
+                string? heading = CalmCatalog.GroupTitle(group);
+                if (string.Equals(heading, area.Title, StringComparison.Ordinal)) heading = PageLayouts.FirstHeading(destination);
+                if ((area.Groups.Length > 1 || extras is not null) && heading is not null)
+                    Groups.Children.Add(SectionTitle(heading, null));
+                foreach (SettingDefinition d in CalmCatalog.All.Where(x => x.Group == group))
+                    Groups.Children.Add(BuildRow(d));
+            }
         }
         if (extras is not null) Groups.Children.Add(extras);
     }
@@ -217,8 +231,13 @@ public partial class CustomizePage : UserControl, IShellPage
         ResponsiveRow layout = new() { MinPrimaryWidth = 160, Spacing = 16 };
 
         StackPanel text = new() { VerticalAlignment = VerticalAlignment.Center };
-        text.Children.Add(new TextBlock { Text = d.Title, Style = (Style)FindResource("Shell.Body") });
-        TextBlock note = new() { Style = (Style)FindResource("Shell.Secondary"), FontSize = 12, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 2, 0, 0) };
+        text.Children.Add(new TextBlock { Text = d.Title, Style = (Style)FindResource("Shell.Body"), TextWrapping = TextWrapping.Wrap });
+        if (SettingDescriptions.For(d.Id) is { } line)
+        {
+            TextBlock description = new() { Text = line, Style = (Style)FindResource("Shell.Secondary"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) };
+            text.Children.Add(description);
+        }
+        TextBlock note = new() { Style = (Style)FindResource("Shell.Secondary"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 2, 0, 0) };
         text.Children.Add(note);
         layout.Children.Add(text);
 
@@ -244,6 +263,7 @@ public partial class CustomizePage : UserControl, IShellPage
             control = list;
         }
         AutomationProperties.SetName(control, d.Title);
+        if (SettingDescriptions.For(d.Id) is { } help) AutomationProperties.SetHelpText(control, help);
         layout.Children.Add(control);
 
         Border row = new() { Style = (Style)FindResource("Studio.Row"), Child = layout };
@@ -487,8 +507,8 @@ public partial class CustomizePage : UserControl, IShellPage
             autoHideNote.Text = on switch
             {
                 null => "The taskbar isn't running right now, so this can't be changed.",
-                true => "Changes right away. Turn it off to undo.",
-                false => "Changes right away."
+                // Windows applies it at once; there is nothing to restart.
+                _ => "The taskbar slides out of sight until you point at the edge of the screen."
             };
         }
         finally { autoHideLoading = false; }

@@ -204,13 +204,13 @@ internal static class ShellChecks
         using TestShell shell = new();
         (Destination Page, string[] Headings)[] expected =
         [
-            (Destination.Taskbar, ["Look", "Details", "Behavior"]),
-            // Start's own rows get a heading because the Start11 folders follow them under theirs.
-            (Destination.Start, ["Start and search"]),
-            (Destination.Explorer, []),
-            (Destination.Appearance, ["Desktop icons"]),
-            (Destination.Multitasking, ["Keyboard, mouse and clipboard", "Gaming"]),
-            (Destination.Customize, ["Tips and suggestions"]),
+            (Destination.Taskbar, ["Look", "Details", "Behavior", "App buttons and clock", "Multiple displays"]),
+            // Long pages are split by topic; a first group whose title would repeat the page's gets a topic of its own.
+            (Destination.Start, ["Start menu", "Search"]),
+            (Destination.Explorer, ["Files and folders", "Home", "Navigation pane", "Menus and windows"]),
+            (Destination.Appearance, ["Mode and colors", "Desktop icons"]),
+            (Destination.Multitasking, ["Snap and windows", "Keyboard, mouse and clipboard", "Gaming"]),
+            (Destination.Customize, ["Data and ads", "Tips and suggestions"]),
         ];
         foreach ((Destination destination, string[] headings) in expected)
         {
@@ -313,7 +313,7 @@ internal static class ShellChecks
             "The Desktop editor starts open, with no switch; every other state starts off and closed.");
         Program.True(panel.ColorRow.Visibility == Visibility.Collapsed && panel.OpacityRow.Visibility == Visibility.Collapsed && panel.LineSwitch.IsVisible,
             "Windows default shows only the style and the line.");
-        Program.True(panel.SummaryFor(TaskbarState.Desktop).Text == "Windows default" && panel.SummaryFor(TaskbarState.StartOpen).Text == "Acrylic, 40%",
+        Program.True(panel.SummaryFor(TaskbarState.Desktop).Text == "Windows default" && panel.SummaryFor(TaskbarState.StartOpen).Text == "Off: the Desktop look is used",
             "Rows summarize their look.");
 
         panel.StyleList.SelectedIndex = 2; // Clear
@@ -345,6 +345,20 @@ internal static class ShellChecks
         panel.StyleList.SelectedIndex = 3; // Blur has no color or opacity
         Pump();
         Program.True(panel.ColorRow.Visibility == Visibility.Collapsed && panel.OpacityRow.Visibility == Visibility.Collapsed, "Blur shows no color or opacity rows.");
+
+        // Editing a look that is off turns it on, so the change shows on the taskbar.
+        TaskbarStateLook Maximized() => shell.Services.Settings.Current.LookFor(TaskbarState.MaximizedWindow);
+        Program.True(!Maximized().Enabled && panel.SummaryFor(TaskbarState.MaximizedWindow).Text == "Off: the Desktop look is used", "Window maximized starts off and says so.");
+        panel.HeaderFor(TaskbarState.MaximizedWindow).IsChecked = true;
+        Pump();
+        panel.StyleList.SelectedIndex = 2; // Clear
+        Pump();
+        Program.True(Maximized() is { Enabled: true, Kind: TaskbarLookKind.Clear } && panel.SwitchFor(TaskbarState.MaximizedWindow)!.IsChecked == true
+            && panel.SummaryFor(TaskbarState.MaximizedWindow).Text.StartsWith("Clear", StringComparison.Ordinal),
+            "Changing the style of a look that is off must turn it on: " + Maximized());
+        shell.Services.TryUpdateSettings(s => s.WithTaskbarState(TaskbarState.MaximizedWindow, _ => TaskbarStateLook.DefaultFor(TaskbarState.MaximizedWindow)));
+        panel.HeaderFor(TaskbarState.Desktop).IsChecked = true;
+        Pump();
         Program.True(shell.Services.Settings.Current.TaskbarStates.Where(p => p.Key != TaskbarState.Desktop).All(p => p.Value == TaskbarStateLook.DefaultFor(p.Key)),
             "Editing the Desktop look changed another state.");
         Program.True(First([.. shell.Search("translucent")]) is { Destination: Destination.Taskbar, Anchor: "look" }, "Search does not find the taskbar look.");

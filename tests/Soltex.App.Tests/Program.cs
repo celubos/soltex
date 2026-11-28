@@ -77,6 +77,7 @@ internal static class Program
             ("Key remaps and startup apps update in place and keep focus", ToolsChecks.RemapsAndStartupAppsUpdateInPlace),
             ("Settings that can't be saved show a notice and the saved state", ToolsChecks.FailedSettingsSavesShowTheSavedState),
             ("Customize switches keep position and focus while a change applies", PersonalizeChecks.CustomizeSwitchesKeepFocusWhileApplying),
+            ("Every setting is explained, sits in a section and joins its neighbours in one card", PersonalizeChecks.EverySettingIsExplainedAndInASection),
             ("The File Explorer restart reminder is shared and refusal notes follow Windows", PersonalizeChecks.RestartReminderAndRefusalNotesFollowWindows),
             ("Customize lists line up, rows wrap when narrow and every page links to Windows Settings", PersonalizeChecks.CustomizeListsLineUpAndRowsWrap),
             ("History and De-Windows keep the keyboard; Full De-Windows offers Undo on its card", DesktopChecks.HistoryAndDeWindowsKeepTheKeyboard),

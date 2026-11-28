@@ -175,7 +175,7 @@ static void NewRowsAreWellFormed()
         // A PC that never changed the value shows Windows' own default as one of the options, never "custom".
         Check(engine.Inspect(d).Choice >= 0, id + ": Windows' implied value is not one of its options.");
     }
-    Check(Find("taskbar.mmmode").Options.Select(o => o.Label).SequenceEqual(["All taskbars", "Main taskbar and where the window is open", "Taskbar where the window is open"]),
+    Check(Find("taskbar.mmmode").Options.Select(o => o.Label).SequenceEqual(["All taskbars", "Main and the window's taskbar", "The window's taskbar only"]),
         "The taskbar apps list must offer Windows' three choices in order.");
 
     const string NewStartPanel = @"Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel";

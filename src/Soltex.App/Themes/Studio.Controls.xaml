@@ -3,7 +3,8 @@
     so switching light/dark restyles these live. No colour literals.
 -->
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:controls="clr-namespace:Soltex.App.Controls">
 
     <FontFamily x:Key="Studio.DisplayFont">Segoe UI Variable Display, Segoe UI</FontFamily>
     <FontFamily x:Key="Studio.TextFont">Segoe UI Variable Text, Segoe UI</FontFamily>
@@ -357,6 +358,8 @@
         <Setter Property="Padding" Value="16,10" />
         <Setter Property="Margin" Value="0,0,0,4" />
         <Setter Property="MinHeight" Value="62" />
+        <!-- Rows that follow each other join into one card with a divider between them. -->
+        <Setter Property="controls:RowGrouping.IsGrouped" Value="True" />
     </Style>
 
     <!-- Small rounded label: device names, states, counts. -->

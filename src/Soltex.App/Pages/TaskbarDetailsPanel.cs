@@ -35,20 +35,21 @@ public sealed class TaskbarDetailsPanel : UserControl
             }
             else
             {
-                ComboBox list = new() { MinWidth = 220, Tag = tweak, ItemsSource = tweak.Options.Select(o => o.Label).ToArray() };
+                ComboBox list = new() { Width = CustomizePage.ChoiceWidth, Tag = tweak, ItemsSource = tweak.Options.Select(o => o.Label).ToArray() };
                 list.SelectionChanged += (_, _) => { if (list.SelectedIndex >= 0) Choose(tweak, list.SelectedIndex); };
                 control = list;
             }
             AutomationProperties.SetName(control, tweak.Title);
             controls[tweak.Id] = control;
             // Problems with the details show under the first one, like the background's under "Background".
-            rows.Children.Add(Row(tweak.Title, control, controls.Count == 1 ? detailsNote : null));
+            rows.Children.Add(Row(tweak.Title, control, controls.Count == 1 ? detailsNote : null, Description(tweak.Id)));
         }
         scrollVolume = new CheckBox { Style = (Style)FindResource("Studio.Switch") };
         AutomationProperties.SetName(scrollVolume, "Scroll over the taskbar to change volume");
         scrollVolume.Checked += (_, _) => Update(s => s with { TaskbarScrollVolume = true });
         scrollVolume.Unchecked += (_, _) => Update(s => s with { TaskbarScrollVolume = false });
-        rows.Children.Add(Row("Scroll over the taskbar to change volume", scrollVolume, scrollVolumeNote));
+        rows.Children.Add(Row("Scroll over the taskbar to change volume", scrollVolume, scrollVolumeNote,
+            "Turn the mouse wheel over the taskbar to raise or lower the volume."));
         Content = rows;
     }
 
@@ -139,14 +140,30 @@ public sealed class TaskbarDetailsPanel : UserControl
         return note;
     }
 
-    private Border Row(string title, Control control, TextBlock? note = null)
+    /// <summary>What each detail changes, in one line under its title.</summary>
+    internal static string? Description(string id) => id switch
+    {
+        "indicator" => "The short line under the buttons of apps that are open.",
+        "clock" => "What the clock in the corner of the taskbar shows.",
+        "iconsize" => "The size of app icons on the taskbar.",
+        "corners" => "Rounded or square corners on taskbar buttons.",
+        _ => null
+    };
+
+    private Border Row(string title, Control control, TextBlock? note = null, string? description = null)
     {
         Grid grid = new();
         grid.ColumnDefinitions.Add(new ColumnDefinition());
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        TextBlock label = new() { Text = title, Style = (Style)FindResource("Shell.Body"), VerticalAlignment = VerticalAlignment.Center };
-        if (note is null) grid.Children.Add(label);
-        else grid.Children.Add(new StackPanel { VerticalAlignment = VerticalAlignment.Center, Children = { label, note } });
+        StackPanel text = new() { VerticalAlignment = VerticalAlignment.Center };
+        text.Children.Add(new TextBlock { Text = title, Style = (Style)FindResource("Shell.Body"), TextWrapping = TextWrapping.Wrap });
+        if (description is not null)
+        {
+            text.Children.Add(new TextBlock { Text = description, Style = (Style)FindResource("Shell.Secondary"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
+            AutomationProperties.SetHelpText(control, description);
+        }
+        if (note is not null) text.Children.Add(note);
+        grid.Children.Add(text);
         control.VerticalAlignment = VerticalAlignment.Center;
         control.Margin = new Thickness(16, 0, 0, 0);
         Grid.SetColumn(control, 1);
